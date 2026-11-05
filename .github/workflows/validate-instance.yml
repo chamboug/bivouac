@@ -1,0 +1,42 @@
+# Validation of an instance repo, called from its own workflow
+# (template/.github/workflows/validate.yml). It never decrypts secrets:
+# the age key never goes to GitHub (D35).
+name: Validate instance
+
+on:
+  workflow_call:
+    inputs:
+      bivouac-ref:
+        description: Version of the Bivouac monorepo whose checks to run.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the instance repo
+        uses: actions/checkout@v7
+        with:
+          path: instance
+          persist-credentials: false
+      - name: Check out Bivouac
+        uses: actions/checkout@v7
+        with:
+          repository: chamboug/bivouac
+          ref: ${{ inputs.bivouac-ref }}
+          path: bivouac
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: bivouac/.nvmrc
+          cache: npm
+          cache-dependency-path: bivouac/package-lock.json
+      - name: Build the bivy CLI
+        working-directory: bivouac
+        run: npm ci && npm run build
+      - name: Validate manifests, SSH keys, secrets and Butane
+        run: node bivouac/packages/bivy/dist/cli.js validate instance

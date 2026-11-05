@@ -1,0 +1,5 @@
+# Public SSH keys allowed to log in to the server as `core`.
+# One key per machine and per use, never a private key copied between
+# machines. Changing this list is a high-risk change.
+# `bivy init` adds the first keys; validation fails while the list is empty.
+keys: []

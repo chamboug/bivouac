@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.tsbuildinfo
+# never commit an age private key
+keys.txt
+*.agekey
