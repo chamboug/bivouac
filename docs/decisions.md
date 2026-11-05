@@ -191,3 +191,13 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 - **Context**: the monorepo is public and meant as a showcase; French would limit its audience. Gaëtan reads English, but finds the subject hard even in French. (5 November 2026)
 - **Choice**: the public monorepo is entirely in English, including PRs (English only, in plain language for rule 3). Conversations with Gaëtan stay in French. The private instance repo stays in French.
 - **Rejected**: a French public repo; a mixed repo; two versions of the brief (they would drift apart); a French summary section in public PRs.
+
+### D42 — Resource usage display
+- **Context**: Gaëtan wants to see CPU, RAM and disk usage. (5 November 2026)
+- **Choice**: the reconciler samples host and container usage every minute into a small Postgres table kept 30 days; the status page shows current values and history. The pre-prod alerting decision must include a disk alert above 80%.
+- **Rejected**: current values only (no history); Prometheus + Grafana (two more components, several hundred MB of RAM, from memory).
+
+### D43 — Environments
+- **Context**: should there be a dedicated dev instance? (5 November 2026)
+- **Choice**: no permanent extra instance. Apps are developed locally against the end-to-end test platform; a `<app>-preview` manifest tries an app on the real server; platform changes go through end-to-end CI and `bivy rebuild --test`.
+- **Rejected**: a permanent dev instance (Gaëtan's first idea: a second server to pay for and maintain, with separate Pocket ID accounts).

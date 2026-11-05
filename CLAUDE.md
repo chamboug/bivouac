@@ -232,6 +232,7 @@ History to know:
 - **No interface for editing config**: it goes through Git, often via PRs from Claude.
 - Managing users, invitations and groups: **Pocket ID's interface**.
 - **A status page**: a small Nuxt app on the platform (`status.apps.xaet.fr`), behind Pocket ID, restricted to the admin group. It shows the apps, their versions, their health, the latest logs, the latest backup and pending Renovate PRs, by querying the reconciler's internal API; it never has the Docker socket (D8). Its only action is a "Sync now" button. A good first project to break in the conventions.
+- **Resource usage** (D42): the status page shows CPU, RAM and disk for the host and for each container, current values and **30 days of history**. The reconciler takes one sample per minute and stores it in a small table in the shared Postgres. No Prometheus or Grafana.
 - **Platform MCP server**, served by the reconciler **over stdio through SSH**: in `.mcp.json`, a command like `ssh core@<server> docker exec bivouac-reconciler mcp`. No public exposure, and the SSH key serves as authentication. Claude can read state and logs, and trigger a sync (D32). *Revised: the first draft exposed the MCP through the status page via `@nuxtjs/mcp-toolkit`, which would have required OAuth authentication of MCP clients against Pocket ID.*
 
 ### Tests
@@ -240,7 +241,17 @@ History to know:
 2. **End-to-end tests of the reconciler, in the monorepo CI**: a miniature platform (Postgres, Pocket ID, Caddy, Tinyauth, test app). We check creation of the database and extensions, of the OIDC client and of the route, idempotence, archiving on removal, and rollback with a failed image being marked. SSO login testable with Playwright and Chrome's virtual WebAuthn authenticator.
 3. **In prod**: mandatory health check per app, with automatic rollback to the previous image.
 4. **Restore**: automatic test every week on the server, and a full `bivy rebuild --test` before moving to prod (D9, D39).
-5. **Monitoring: to be decided before the prod phase** (D37). Verified options: healthchecks.io (free plan: 20 checks) for backups, the restore test and a reconciler heartbeat; UptimeRobot (free plan: 50 monitors at 5 min, commercial use allowed) for HTTP availability. In the meantime, no external monitor.
+5. **Monitoring: to be decided before the prod phase** (D37). It must include an alert when the disk goes above 80% (a full disk stops Postgres) (D42). Verified options: healthchecks.io (free plan: 20 checks) for backups, the restore test and a reconciler heartbeat; UptimeRobot (free plan: 50 monitors at 5 min, commercial use allowed) for HTTP availability. In the meantime, no external monitor.
+
+### Environments
+
+No permanent dev or staging instance: it would be a second server to pay for and maintain, with its own Pocket ID accounts (D43). Instead, three levels, none of them permanent:
+
+1. **Developing an app**: locally on the Mac, against the miniature platform used by the end-to-end tests (Postgres, Pocket ID, Caddy), started with one command.
+2. **Trying an app on the real server before users see it**: declare a second app, for example `recettes-preview`, with its own database and another image. To the platform it is just one more app; remove it afterwards.
+3. **Testing a platform change**: the end-to-end tests in CI, plus `bivy rebuild --test` on a temporary server billed by the hour.
+
+Until the prod phase, the server itself is the dev environment.
 
 ### Conventions for Claude
 
@@ -272,6 +283,8 @@ History to know:
 - **Publicly exposed MCP**: would require OAuth authentication of MCP clients; stdio over SSH exposes nothing (D32).
 - **Depending on `gh`, `hcloud` or `sops` in the CLI**: extra intermediaries between the CLI and the official APIs (D31).
 - **Arm (CAX)**: every image would have to be built for multiple architectures (D25).
+- **Prometheus + Grafana**: two more components and several hundred MB of RAM on a 4 GB server; a lightweight history in the status page is enough (D42).
+- **Permanent dev or staging instance**: a second server to pay for and maintain (D43).
 
 ## Before the prod phase
 
@@ -279,7 +292,7 @@ Moving to the prod phase (rule 2) requires having:
 
 - completed a full **`bivy rebuild --test`** (D39);
 - decided on the **email login code** (D37);
-- decided on **alerting**: channel (email?) and monitoring tools (D37);
+- decided on **alerting**: channel (email?) and monitoring tools, including the disk-usage alert (D37, D42);
 - done the rule 6 security review of the whole base.
 
 ## Points to check at implementation time
