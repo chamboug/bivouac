@@ -235,3 +235,9 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
   - Secrets: every file in `secrets/` must be SOPS-encrypted with no value left in plain text, and encrypted for exactly the age keys in `.sops.yaml`. Format verified by encrypting a sample with SOPS v3.13.3. Any file containing an age or SSH private key fails validation, wherever it is.
   - Butane is compiled with `--strict`: a warning fails the check. This caught a real trap: a YAML 1.2 parser reads `mode: 0600` as decimal 600, while Butane reads it as octal. The CLI therefore never re-serializes the Butane file.
 - **Not yet**: `caddy validate` on the generated Caddyfile comes with the reconciler, which generates it (layer 2).
+
+### D49 — OVH API key scope
+- **Context**: Gaëtan creates the OVH keys used for DNS (5 November 2026). Verified (OVHcloud API guide and the official `python-ovh` README): script credentials are created at `https://api.eu.ovhcloud.com/createToken/` (the brief still had the older `eu.api.ovh.com`), rights can be pre-filled in the URL, and three keys are issued (application key, application secret, consumer key).
+- **Choice**: rights limited to GET, POST and PUT on `/domain/zone/xaet.fr/*`, unlimited validity. No DELETE: a record to remove is removed by hand in the OVH interface, or the right is added when a real need appears. Stricter than the brief, which planned `/domain/zone*` (every zone of the account).
+- **To check at first use**, with a read before any write: that this path covers creating records, updating the SPF record and the zone refresh.
+- **Rejected**: rights on every zone (needless access to Gaëtan's other domains); DELETE "just in case".

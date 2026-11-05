@@ -205,7 +205,7 @@ History to know:
 
 - **`bivy` CLI, in TypeScript on Node LTS, used as a black box** (even by Gaëtan). This is a priority: the whole server lifecycle must fit in a few commands. It **depends on neither `gh`, `hcloud` nor `sops`**: it talks directly to the official APIs, and everything else runs in containers (D31). Distribution: `npx` (the monorepo is public) or a Docker image.
   - **`bivy init`**:
-    1. Asks for the few required inputs: Hetzner API token, domain, B2 keys, Brevo SMTP credentials, OVH keys (link `https://eu.api.ovh.com/createToken/` shown with rights pre-filled on `/domain/zone*`), temporary GitHub PAT, GHCR PAT and `bivouac-deploy` PAT (pre-filled links).
+    1. Asks for the few required inputs: Hetzner API token, domain, B2 keys, Brevo SMTP credentials, OVH keys (link `https://api.eu.ovhcloud.com/createToken/` shown with GET, POST and PUT pre-filled on `/domain/zone/<zone>/*`, D49), temporary GitHub PAT, GHCR PAT and `bivouac-deploy` PAT (pre-filled links).
     2. Generates the age master key and shows it **only once**. It **does not continue** until Gaëtan has confirmed, by typing a word (not just Enter), that it is stored in his password manager. At the same moment it reminds him to store the restic password and the GitHub recovery codes (D38). It places the age key on the Mac.
     3. Creates the instance repo from the template.
     4. Prepares the Flatcar snapshot if needed and generates the Ignition.
