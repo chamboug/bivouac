@@ -1,0 +1,3 @@
+# Base domain of the platform: each app is served on <name>.<domain>.
+# A wildcard DNS record *.<domain> points to the server.
+domain: apps.example.com

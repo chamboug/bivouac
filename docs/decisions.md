@@ -218,3 +218,20 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 - **Context**: the monorepo is public; without a license, nobody may legally reuse the code. Gaëtan hesitated between MIT and AGPLv3. (5 November 2026)
 - **Choice**: MIT for the whole monorepo. The app template lives in this repo and every app created from it copies its code; under AGPL, anyone using the template would have to offer their app's source to its users, which would make the template useless to others. The scenario AGPL protects against (a company reselling the software as a hosted service without sharing changes) is unlikely for a self-hosting tool.
 - **Rejected**: AGPLv3 (see above); AGPL for the platform with MIT for the templates (two licenses in one repo, complexity for little benefit).
+
+### D47 — Monorepo tooling
+- **Context**: start of the foundations layer (5 November 2026). Versions verified the same day: Node 26 is the active LTS (nodejs.org release index), TypeScript 7.0.2, Zod 4.6.7, Vitest 5.1.0, Butane v0.29.0, SOPS v3.13.3.
+- **Choice**: npm workspaces (npm ships with Node, nothing else to install), TypeScript in strict mode, Zod for the manifest schema, Vitest for tests, Node 26 LTS. Butane runs in its official container, like SOPS later (D31).
+- **Rejected**: pnpm (stricter about undeclared dependencies and faster, but one more tool to install on the Mac, in CI and in images, for a repo with a handful of packages).
+
+### D48 — Instance repo validation rules
+- **Context**: the first version of `bivy validate`, run by the instance repo's CI on every PR (5 November 2026).
+- **Choice**:
+  - The instance repo's workflow calls a reusable workflow in the public monorepo, so improving the checks needs no change in the instance. Verified (GitHub docs): a workflow stored in a public repository can be called from any repository.
+  - Images must name an exact version (tag or digest); `latest` is refused, since rolling back to the previous image (D21) needs exact images.
+  - `oidc` and `forward` require at least one group: an app without groups would let every Pocket ID account in. Groups are refused where they have no effect (`public`, `local`).
+  - Unknown fields are refused, so a typo is never silently ignored. So are files in `apps/` or `sites/` that are not `.yml`, and a manifest whose `name` differs from its file name.
+  - `ssh-keys.yml` is the only list of SSH keys: Butane holds none, they are appended to it when generating Ignition. An empty list is refused (it would lock everyone out), and so is a private key.
+  - Secrets: every file in `secrets/` must be SOPS-encrypted with no value left in plain text, and encrypted for exactly the age keys in `.sops.yaml`. Format verified by encrypting a sample with SOPS v3.13.3. Any file containing an age or SSH private key fails validation, wherever it is.
+  - Butane is compiled with `--strict`: a warning fails the check. This caught a real trap: a YAML 1.2 parser reads `mode: 0600` as decimal 600, while Butane reads it as octal. The CLI therefore never re-serializes the Butane file.
+- **Not yet**: `caddy validate` on the generated Caddyfile comes with the reconciler, which generates it (layer 2).

@@ -1,0 +1,20 @@
+hetzner_token: ENC[AES256_GCM,data:I7HHKoG2JUj9ECFS2z5/gyRS,iv:Li1bTW2J5R9rgVJFezU6IcByLanNmlzG6kF+ThTrhtM=,tag:92sot+uOfF9BZqZL8ohWEQ==,type:str]
+brevo:
+    smtp_user: ENC[AES256_GCM,data:p1n015pw9u7ONfrmwPLIWA==,iv:nitgKiBTMhXaADs9/KNKWl1sXF0FvskgZW1qGBBWuGQ=,tag:FudHybjq+fQcF7oAgAsICg==,type:str]
+    smtp_key: ENC[AES256_GCM,data:wg4sqJ/ajQq9uyEn8A==,iv:p4kXRb9m1aje7gktQDYBSZLlWlaBCx8kVWZLMQuRVts=,tag:AjuR5AinkvCpvJ+sxvSBuA==,type:str]
+restic_password: ENC[AES256_GCM,data:apPCXHYzReJm5HxJO/X3nC91d7c=,iv:tXbqbwIKLm3wV+GMzrE6n6zasbkUN+UOrTzB/qYvNVA=,tag:gF21ksCni0j14vXDVbszag==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBieGJmazY1QUlQYWpXc05E
+            bnJOZkU5TjIzTXI2SFBNaGtGTWJCbVB0NW5ZCktRSEtMQUhFU0w5U2Q5MHZyRkov
+            N3d2UmlCR3NCVTlPM1hxRGh2N25Ma1EKLS0tIDlXSXNoNDZEUW1mTFhHUlZnNUlu
+            VWlZSHRienR0QnNpN2VPaXd0TDdybkkKmxMvCqNrFNVogh0kts/LdkE5LJc6lQUw
+            wen7Hnyxvr4yAqKAMb1z794sFVS84TxoEheuEJZ4dzQDFsjvDnW48g==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1nc65xzejv2j8890a68t6676dst3jvkk3wamf5smthxrrmeuawdvq2qaq5w
+    lastmodified: "2026-11-05T19:40:43Z"
+    mac: ENC[AES256_GCM,data:8lBGBo2h8p1ZW+jAg7exR+MFL0+iKAKjb8h1pKwyGTgf29eDRxkj9Ovpkz/iOk6gOHANDVYhtuOJRinXXlCc06KJ7zCoCOUgmuGIVWintGmhmvOKhUzoSe9TwBnOSAPtQhl2kYGjqJNUwWxahe3jOOjUgCI2SNKnYteAhvGpf+8=,iv:MWibb3nXejsjNNURlL5dbhOFmmqwVD/BZc2m4gwlgQo=,tag:/GDcO4KcADoWww23qazy3A==,type:str]
+    unencrypted_suffix: _unencrypted
+    version: 3.13.3

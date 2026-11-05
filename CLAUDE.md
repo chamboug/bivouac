@@ -305,9 +305,9 @@ Moving to the prod phase (rule 2) requires having:
 
 - **Better Auth**: current status, Nuxt and Next integration, generic OAuth plugin for Pocket ID.
 - **Fine-grained PAT**: can it create a repo on a personal account? If not, `bivy` asks Gaëtan to create the empty repo in one click. Also check the format of pre-filled creation links.
-- **`authorized_keys.d`** on Flatcar: exact path and mechanism.
+- **`authorized_keys.d`** on Flatcar: partly verified (Flatcar docs, 5 Nov. 2026): keys go in files under `~core/.ssh/authorized_keys.d/`, and `update-ssh-keys` regenerates `~core/.ssh/authorized_keys` from them. Hetzner's metadata keys land in `authorized_keys.d/coreos-metadata`. Still to check on the server: how the reconciler should run `update-ssh-keys` from its container.
 - **Visibility of the public monorepo's GHCR packages** (reconciler, CLI): public, no token needed.
-- **Current Node LTS version.**
+- ~~Current Node LTS version~~: Node 26 (verified 5 Nov. 2026, D47).
 - **Hetzner hourly billing** (actual cost of a `rebuild --test`) and **CX23 availability** at rebuild time: the pricing page showed them as "unavailable" in early November 2026.
 - **Assigning the Primary IP at server creation** (`public_net`), without powering off.
 - **Brevo**: whether SPF is still required for domain authentication.

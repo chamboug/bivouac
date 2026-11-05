@@ -1,0 +1,15 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    # The checks live in the public Bivouac monorepo, so improving them
+    # needs no change here.
+    uses: chamboug/bivouac/.github/workflows/validate-instance.yml@main

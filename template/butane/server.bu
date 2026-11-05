@@ -1,0 +1,57 @@
+# Butane base for the server, compiled to Ignition by `bivy ignition`.
+# Ignition only runs on first boot: anything that must change later belongs
+# to the reconciler, not here. This file holds no secrets (it ends up in the
+# server's user-data, readable from the server).
+# SSH keys are not written here: they are added from ssh-keys.yml.
+variant: flatcar
+version: 1.1.0
+storage:
+  files:
+    - path: /etc/ssh/sshd_config.d/10-bivouac.conf
+      mode: 0600
+      overwrite: true
+      contents:
+        inline: |
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          AllowUsers core
+    # Reboot after an OS update only between 04:00 and 05:00 (server time, UTC).
+    - path: /etc/flatcar/update.conf
+      mode: 0420
+      overwrite: true
+      contents:
+        inline: |
+          REBOOT_STRATEGY=reboot
+          LOCKSMITHD_REBOOT_WINDOW_START=04:00
+          LOCKSMITHD_REBOOT_WINDOW_LENGTH=1h
+  directories:
+    - path: /etc/bivouac
+      mode: 0700
+systemd:
+  units:
+    # Starts the reconciler, which then manages everything else from Git.
+    # The age key and deploy key are placed in /etc/bivouac over SSH by
+    # `bivy init` / `bivy rebuild`, never through user-data.
+    - name: bivouac-reconciler.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Bivouac reconciler
+        Requires=docker.service
+        After=docker.service network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Restart=always
+        RestartSec=10
+        ExecStartPre=-/usr/bin/docker rm --force bivouac-reconciler
+        ExecStart=/usr/bin/docker run --rm --name bivouac-reconciler \
+          --volume /var/run/docker.sock:/var/run/docker.sock \
+          --volume /etc/bivouac:/etc/bivouac:ro \
+          --volume /var/lib/bivouac:/var/lib/bivouac \
+          ghcr.io/chamboug/bivouac-reconciler:main
+        ExecStop=/usr/bin/docker stop bivouac-reconciler
+
+        [Install]
+        WantedBy=multi-user.target
