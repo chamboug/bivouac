@@ -39,5 +39,5 @@ describeWithDocker("ignition", () => {
     });
     expect(ignition.passwd.users).toEqual([{ name: "core", sshAuthorizedKeys: [key] }]);
     expect(ignition.systemd.units.map((unit: { name: string }) => unit.name)).toEqual(["bivouac-reconciler.service"]);
-  });
+  }, 120_000); // the first run pulls the Butane image
 });
