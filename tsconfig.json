@@ -1,7 +1,14 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/manifest" },
-    { "path": "packages/bivy" }
+    {
+      "path": "packages/manifest"
+    },
+    {
+      "path": "packages/bivy"
+    },
+    {
+      "path": "packages/reconciler"
+    }
   ]
 }

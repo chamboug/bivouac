@@ -13,6 +13,9 @@ described in the [runbook](docs/runbook.md).
 - `packages/manifest`: schema of app and site manifests, and validation of an
   instance repo (shared by the CLI and the reconciler).
 - `packages/bivy`: the `bivy` CLI. For now: `bivy validate` and `bivy ignition`.
+- `packages/reconciler`: the reconciler that runs on the server. For now: it
+  follows the instance repo and writes the Caddyfile. Published as
+  `ghcr.io/chamboug/bivouac-reconciler:sha-<commit>`.
 - `template/`: the instance repo template.
 
 ## Development

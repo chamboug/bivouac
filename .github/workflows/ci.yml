@@ -21,3 +21,29 @@ jobs:
       - run: npm run typecheck
       # Docker is available on GitHub runners: the Butane test runs here.
       - run: npm test
+
+  # Publishes the reconciler image after the tests pass on main, tagged with
+  # the exact commit (`sha-<7 characters>`): servers name an exact version,
+  # never a moving tag, so a rollback is always possible (D21, D48).
+  publish-reconciler:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build and push ghcr.io/${{ github.repository_owner }}/bivouac-reconciler
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/bivouac-reconciler:sha-${GITHUB_SHA::7}"
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker build --file packages/reconciler/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --tag "$image" .
+          docker push "$image"
+          echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
