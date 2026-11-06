@@ -22,11 +22,33 @@ jobs:
       # Docker is available on GitHub runners: the Butane test runs here.
       - run: npm test
 
+  # The miniature platform: the reconciler image built from this commit
+  # creates Postgres, Pocket ID, Caddy and test apps on the runner's Docker,
+  # and the tests check the result (database, OIDC client, routes,
+  # idempotence). Nothing secret: keys are generated for the run.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e
+      - name: Reconciler and base service logs, on failure
+        if: failure()
+        run: |
+          for name in $(docker ps --all --format '{{.Names}}' | grep '^bivouac'); do
+            echo "::group::$name"; docker logs --tail 100 "$name" 2>&1; echo "::endgroup::"
+          done
+
   # Publishes the reconciler image after the tests pass on main, tagged with
   # the exact commit (`sha-<7 characters>`): servers name an exact version,
   # never a moving tag, so a rollback is always possible (D21, D48).
   publish-reconciler:
-    needs: test
+    needs: [test, e2e]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

@@ -14,7 +14,10 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b && tsc -p tsconfig.tests.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "platform:up": "node packages/reconciler/e2e/cli.ts up",
+    "platform:down": "node packages/reconciler/e2e/cli.ts down"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
