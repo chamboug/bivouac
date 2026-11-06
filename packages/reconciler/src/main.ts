@@ -2,7 +2,10 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runPass, type PassConfig } from "./pass.js";
+import { checkStateMount, type Runtime } from "./base.js";
+import { parsePorts } from "./containers.js";
+import { Docker } from "./docker.js";
+import { runPass, type PassConfig, type PassResult } from "./pass.js";
 
 /**
  * Entry point of the reconciler container. Everything it needs comes from
@@ -11,33 +14,58 @@ import { runPass, type PassConfig } from "./pass.js";
  *   BIVOUAC_REPOSITORY        address of the instance repo (required)
  *   BIVOUAC_BRANCH            branch to follow (default: main)
  *   BIVOUAC_INTERVAL_SECONDS  delay between passes (default: 60, D2)
+ *   BIVOUAC_STATE_DIR         generated files, mounted at the same path on
+ *                             the host (default: /var/lib/bivouac)
+ *   BIVOUAC_CONTAINER         the reconciler's own container name
+ *                             (default: bivouac-reconciler)
+ *   BIVOUAC_CADDY_PORTS       ports Caddy publishes, `container=host` pairs
+ *                             (default: 80/tcp=80,443/tcp=443,443/udp=443)
+ *   BIVOUAC_HEALTH_TIMEOUT    seconds to wait for a container to be healthy
+ *                             (default: 180)
  *   /etc/bivouac/deploy_key   read-only deploy key (D30)
- *   /var/lib/bivouac/         checkout and generated files
+ *   /etc/bivouac/age.key      age key decrypting the secrets (D7)
+ *
+ * `main.js once` runs a single pass and exits: 0 if everything applied,
+ * 1 otherwise. Used by the tests and the local platform.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-function configFromEnvironment(): PassConfig & { interval: number } {
-  const repository = process.env.BIVOUAC_REPOSITORY;
+function configFromEnvironment(): PassConfig & { interval: number; self: string; runtime: Runtime } {
+  const env = process.env;
+  const repository = env.BIVOUAC_REPOSITORY;
   if (!repository) {
     throw new Error("BIVOUAC_REPOSITORY is not set: it is the address of the instance repo");
   }
-  const deployKey = process.env.BIVOUAC_DEPLOY_KEY ?? "/etc/bivouac/deploy_key";
-  const state = process.env.BIVOUAC_STATE_DIR ?? "/var/lib/bivouac";
-  const interval = Number(process.env.BIVOUAC_INTERVAL_SECONDS ?? "60");
+  const deployKey = env.BIVOUAC_DEPLOY_KEY ?? "/etc/bivouac/deploy_key";
+  const stateDir = env.BIVOUAC_STATE_DIR ?? "/var/lib/bivouac";
+  const interval = Number(env.BIVOUAC_INTERVAL_SECONDS ?? "60");
   if (!Number.isFinite(interval) || interval < 10) {
     throw new Error("BIVOUAC_INTERVAL_SECONDS must be a number of seconds, at least 10");
   }
+  const healthTimeout = Number(env.BIVOUAC_HEALTH_TIMEOUT ?? "180");
+  const self = env.BIVOUAC_CONTAINER ?? "bivouac-reconciler";
+  const docker = new Docker();
   return {
     source: {
       repository,
-      branch: process.env.BIVOUAC_BRANCH ?? "main",
+      branch: env.BIVOUAC_BRANCH ?? "main",
       ...(existsSync(deployKey) ? { deployKey } : {}),
       knownHosts: join(here, "..", "github_known_hosts"),
     },
-    checkout: join(state, "repo"),
-    caddyfile: join(state, "caddy", "Caddyfile"),
+    checkout: join(stateDir, "repo"),
+    ageKey: env.BIVOUAC_AGE_KEY ?? "/etc/bivouac/age.key",
     interval,
+    self,
+    runtime: {
+      docker,
+      stateDir,
+      self,
+      caddyPorts: parsePorts(env.BIVOUAC_CADDY_PORTS ?? "80/tcp=80,443/tcp=443,443/udp=443"),
+      // Public images only for now; private app images need the GHCR token (D17).
+      pull: (image) => docker.pull(image),
+      healthTimeout,
+    },
   };
 }
 
@@ -45,8 +73,31 @@ function log(message: string, fields: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ time: new Date().toISOString(), message, ...fields }));
 }
 
-function main(): void {
+function report(result: PassResult): boolean {
+  if (result.status === "invalid") {
+    log("instance is invalid: nothing applied", { commit: result.commit, errors: result.errors });
+    return false;
+  }
+  log(`pass ${result.status}`, { commit: result.commit, changes: result.changes });
+  for (const failure of result.failures) log("app failed", { app: failure.app, error: failure.message });
+  return result.failures.length === 0;
+}
+
+async function main(argv: string[]): Promise<number> {
   const config = configFromEnvironment();
+  const version = await config.runtime.docker.checkVersion();
+  await checkStateMount(config.runtime.docker, config.self, config.runtime.stateDir);
+  log("starting", { repository: config.source.repository, interval: config.interval, docker: version });
+
+  if (argv[0] === "once") {
+    try {
+      return report(await runPass(config, config.runtime)) ? 0 : 1;
+    } catch (error) {
+      log("pass failed", { error: (error as Error).message });
+      return 1;
+    }
+  }
+
   let stopping = false;
   let timer: NodeJS.Timeout | undefined;
   const stop = () => {
@@ -57,23 +108,26 @@ function main(): void {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 
-  const loop = () => {
+  const loop = async () => {
     try {
-      const result = runPass(config);
-      if (result.status === "invalid") {
-        log("instance is invalid: nothing applied", { commit: result.commit, errors: result.errors });
-      } else {
-        log(`pass ${result.status}`, { commit: result.commit, changes: result.changes });
-      }
+      report(await runPass(config, config.runtime));
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
     }
     if (!stopping) {
-      timer = setTimeout(loop, config.interval * 1000);
+      timer = setTimeout(() => void loop(), config.interval * 1000);
     }
   };
-  log("starting", { repository: config.source.repository, interval: config.interval });
-  loop();
+  await loop();
+  return 0;
 }
 
-main();
+main(process.argv.slice(2)).then(
+  (code) => {
+    if (code !== 0) process.exitCode = code;
+  },
+  (error: unknown) => {
+    log("cannot start", { error: (error as Error).message });
+    process.exitCode = 1;
+  },
+);
