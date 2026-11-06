@@ -4,7 +4,14 @@
     "composite": false,
     "declaration": false,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": true
   },
-  "include": ["packages/*/src/**/*.ts"]
+  "include": [
+    "packages/*/src/**/*.ts",
+    "packages/*/e2e/**/*.ts",
+    "vitest.e2e.config.ts"
+  ]
 }
