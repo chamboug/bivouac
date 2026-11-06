@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { runPass, type PassConfig } from "./pass.js";
+import { prepare, type PassConfig } from "./pass.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const template = join(here, "..", "..", "..", "template");
@@ -23,7 +23,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** An instance repo on disk, filled from the template, and a reconciler config reading it. */
-function setup(): { work: string; config: PassConfig; commit: (message: string) => string } {
+function setup(): { work: string; config: Pick<PassConfig, "source" | "checkout">; commit: (message: string) => string } {
   const root = mkdtempSync(join(tmpdir(), "bivouac-reconciler-"));
   roots.push(root);
   const work = join(root, "work");
@@ -44,56 +44,56 @@ function setup(): { work: string; config: PassConfig; commit: (message: string) 
       // file:// makes git use its normal transport, so `--depth` is honored.
       source: { repository: `file://${work}`, branch: "main" },
       checkout: join(root, "state", "repo"),
-      caddyfile: join(root, "state", "caddy", "Caddyfile"),
     },
   };
 }
 
 const app = (name: string) => `name: ${name}\nimage: ghcr.io/example/${name}:sha-abc123\ngroups: [family]\n`;
 
-describe("reconciler pass", () => {
-  it("clones the repo and writes the Caddyfile, then changes nothing on the next pass", () => {
-    const { config, work } = setup();
-    const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: work, encoding: "utf8" }).stdout.trim();
+const appNames = (config: Pick<PassConfig, "source" | "checkout">) => {
+  const prepared = prepare(config);
+  return prepared.status === "valid" ? prepared.instance.apps.map((entry) => entry.name) : prepared;
+};
 
-    expect(runPass(config)).toEqual({ status: "applied", commit: head, changes: ["Caddyfile"] });
-    expect(readFileSync(config.caddyfile, "utf8")).toContain("auth.apps.example.com {");
-    expect(runPass(config)).toEqual({ status: "unchanged", commit: head, changes: [] });
+describe("reading the desired state", () => {
+  it("clones the repo, then follows new commits", () => {
+    const { config, work, commit } = setup();
+    const head = git(work, "rev-parse", "HEAD");
+    expect(prepare(config)).toMatchObject({ status: "valid", commit: head });
+
+    writeFileSync(join(work, "apps", "recipes.yml"), app("recipes"));
+    const next = commit("add recipes");
+    expect(prepare(config)).toMatchObject({ status: "valid", commit: next });
+    expect(appNames(config)).toEqual(["recipes"]);
   });
 
-  it("follows new commits", () => {
+  it("reports an invalid commit, so nothing gets applied", () => {
     const { config, work, commit } = setup();
-    runPass(config);
-    writeFileSync(join(work, "apps", "recipes.yml"), app("recipes"));
-    const head = commit("add recipes");
-
-    expect(runPass(config)).toEqual({ status: "applied", commit: head, changes: ["Caddyfile"] });
-    expect(readFileSync(config.caddyfile, "utf8")).toContain("reverse_proxy bivouac-app-recipes:3000");
-  });
-
-  it("applies nothing from an invalid commit and keeps the last valid state", () => {
-    const { config, work, commit } = setup();
-    writeFileSync(join(work, "apps", "recipes.yml"), app("recipes"));
-    commit("add recipes");
-    runPass(config);
-    const before = readFileSync(config.caddyfile, "utf8");
-
-    writeFileSync(join(work, "apps", "library.yml"), "name: library\nimage: ghcr.io/example/library:latest\n");
+    writeFileSync(join(work, "apps", "library.yml"), "name: library\nimage: ghcr.io/example/library:latest\ngroups: [family]\n");
     const head = commit("broken manifest");
-    const result = runPass(config);
+    const result = prepare(config);
 
-    expect(result.status).toBe("invalid");
-    expect(result.commit).toBe(head);
-    expect(readFileSync(config.caddyfile, "utf8")).toBe(before);
+    expect(result).toMatchObject({ status: "invalid", commit: head });
+    expect(result.status === "invalid" && result.errors).toEqual([
+      { file: "apps/library.yml", message: expect.stringContaining("latest") },
+    ]);
+  });
+
+  it("refuses what the Caddyfile cannot serve yet (auth forward)", () => {
+    const { config, work, commit } = setup();
+    writeFileSync(join(work, "apps", "red.yml"), "name: red\nimage: nodered/node-red:4.0.9\nauth: forward\ngroups: [admin]\n");
+    commit("forward app");
+    expect(prepare(config).status).toBe("invalid");
   });
 
   it("discards local edits in the checkout: Git is the only source of truth", () => {
     const { config } = setup();
-    runPass(config);
+    prepare(config);
     writeFileSync(join(config.checkout, "platform.yml"), "domain: hacked.example.com\n");
     writeFileSync(join(config.checkout, "apps", "stray.yml"), app("stray"));
 
-    expect(runPass(config).status).toBe("unchanged");
-    expect(readFileSync(config.caddyfile, "utf8")).not.toContain("hacked");
+    const result = prepare(config);
+    expect(result.status === "valid" && result.instance.platform.domain).toBe("apps.example.com");
+    expect(appNames(config)).toEqual([]);
   });
 });
