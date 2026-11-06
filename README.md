@@ -5,7 +5,8 @@ source of truth, nightly off-site backups and one-command rebuilds. Its
 maintenance is meant to be rare, guided and never silent.
 
 The design, and the reason behind each choice, are in [`CLAUDE.md`](CLAUDE.md)
-and the [decision log](docs/decisions.md).
+and the [decision log](docs/decisions.md). Installing a server by hand is
+described in the [runbook](docs/runbook.md).
 
 ## Layout
 
