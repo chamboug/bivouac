@@ -1,10 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { PLATFORM_IMAGES } from "@bivouac/manifest";
 
-/**
- * Caddy runs in its official container, like Butane (D31). Same version as
- * the one the platform runs. Verified on 6 November 2026 (latest release).
- */
-export const CADDY_IMAGE = "caddy:2.11.9";
+/** Caddy runs in its official container, like Butane (D31), at the platform's version. */
+export const CADDY_IMAGE = PLATFORM_IMAGES.caddy;
 
 export class CaddyError extends Error {}
 

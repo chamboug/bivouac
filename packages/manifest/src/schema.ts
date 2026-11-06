@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ALLOWED_EXTENSIONS } from "./platform.js";
 
 /**
  * Names that can never be used for an app or a site, because the platform
@@ -45,6 +46,13 @@ export type EnvReference = keyof typeof ENV_REFERENCES;
 const MAX_NAME_LENGTH = 40;
 
 /**
+ * Names Postgres keeps for itself: databases every server has, and role
+ * names it refuses (`pg_*`, `public`, `current_user`…). An app's database
+ * and role take the app's name with `-` turned into `_`.
+ */
+const POSTGRES_NAMES = ["postgres", "template0", "template1", "public", "none", "current-user", "current-role", "session-user"] as const;
+
+/**
  * An app or site name. It becomes a DNS label (`<name>.apps.example.com`)
  * and, with `-` turned into `_`, a Postgres database and role name. The
  * length limit leaves room for the archive suffix (D18) within Postgres'
@@ -62,7 +70,11 @@ export const nameSchema = z
     (name) => !(RESERVED_NAMES as readonly string[]).includes(name),
     `is reserved by the platform (${RESERVED_NAMES.join(", ")})`,
   )
-  .refine((name) => !name.startsWith("archived"), "must not start with 'archived' (used for archived apps)");
+  .refine((name) => !name.startsWith("archived"), "must not start with 'archived' (used for archived apps)")
+  .refine(
+    (name) => !name.startsWith("bivouac") && !name.startsWith("pg-") && !(POSTGRES_NAMES as readonly string[]).includes(name),
+    `would clash with the platform's own containers or with names Postgres keeps ('bivouac…', 'pg-…', ${POSTGRES_NAMES.join(", ")})`,
+  );
 
 export const hostnameSchema = z
   .string()
@@ -131,7 +143,13 @@ export const appManifestSchema = z
       .default("/api/health"),
     database: z
       .strictObject({
-        extensions: z.array(z.string().regex(/^[a-z][a-z0-9_]*$/, "is not a valid extension name")).default([]),
+        extensions: z
+          .array(
+            z.enum(ALLOWED_EXTENSIONS, {
+              error: `is not an allowed extension (allowed: ${ALLOWED_EXTENSIONS.join(", ")})`,
+            }),
+          )
+          .default([]),
       })
       .optional(),
     auth: authSchema.default("oidc"),
