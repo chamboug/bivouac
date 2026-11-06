@@ -120,6 +120,7 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 - **Context**: Gaëtan has a CX23 with the IPv4 `5.75.230.119`, which can be wiped.
 - **Choice**: wipe this server to install Flatcar and reuse the IP as a Primary IP (`auto_delete=false`), with explicit confirmation before destruction. `xaet.fr` and `www.xaet.fr` serve a static page.
 - **Rejected**: a second server during a migration (nothing important runs on the current one).
+- **Revised (6 November 2026)**: verified (Hetzner API): the CX23 can no longer be ordered in `fsn1`, the IP's location (still available in `nbg1` and `hel1`, an indicator without guarantee), and a Primary IP only goes to a server in its own location. A new CX23 costs €5.49 excl. VAT a month, while the current server is billed at an older price (€4.79 incl. VAT). The server is therefore **reinstalled in place** with Hetzner's `rebuild` action (snapshot and Ignition as `user_data`): same server, type, location, price and IP. Rejected: moving to `nbg1` with a new IP (higher price, one more DNS change, for the only benefit of exercising the "new server with an existing Primary IP" path, which `bivy rebuild --test` can exercise with a temporary IP). **Open for `bivy rebuild`**: if the server is lost and no CX23 is available in `fsn1`, choose between another type in `fsn1` (the cheapest available x86 one was €23.39 incl. VAT) and another location with a new IP and a DNS update.
 
 ### D25 — Server architecture
 - **Choice**: x86 (the existing CX23).
@@ -235,9 +236,35 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
   - Secrets: every file in `secrets/` must be SOPS-encrypted with no value left in plain text, and encrypted for exactly the age keys in `.sops.yaml`. Format verified by encrypting a sample with SOPS v3.13.3. Any file containing an age or SSH private key fails validation, wherever it is.
   - Butane is compiled with `--strict`: a warning fails the check. This caught a real trap: a YAML 1.2 parser reads `mode: 0600` as decimal 600, while Butane reads it as octal. The CLI therefore never re-serializes the Butane file.
 - **Not yet**: `caddy validate` on the generated Caddyfile comes with the reconciler, which generates it (layer 2).
+- **Revised (6 November 2026)**: done. `bivy validate` generates the Caddyfile with the same code as the reconciler and runs `caddy validate` (Caddy 2.11.9, in its container) on it; like Butane, a warning fails the check.
 
 ### D49 — OVH API key scope
 - **Context**: Gaëtan creates the OVH keys used for DNS (5 November 2026). Verified (OVHcloud API guide and the official `python-ovh` README): script credentials are created at `https://api.eu.ovhcloud.com/createToken/` (the brief still had the older `eu.api.ovh.com`), rights can be pre-filled in the URL, and three keys are issued (application key, application secret, consumer key).
 - **Choice**: rights limited to GET, POST and PUT on `/domain/zone/xaet.fr/*`, unlimited validity. No DELETE: a record to remove is removed by hand in the OVH interface, or the right is added when a real need appears. Stricter than the brief, which planned `/domain/zone*` (every zone of the account).
 - **To check at first use**, with a read before any write: that this path covers creating records, updating the SPF record and the zone refresh.
 - **Rejected**: rights on every zone (needless access to Gaëtan's other domains); DELETE "just in case".
+
+### D50 — Reconciler versions
+- **Context**: the Butane started the reconciler with the moving `:main` tag, against D5 and D48 (exact versions only). Ignition only runs on first boot, so it cannot carry later versions. (6 November 2026)
+- **Choice**: CI publishes `ghcr.io/<owner>/bivouac-reconciler:sha-<7 characters>` after the tests pass on `main`. The Butane starts an exact version; afterwards, the version to run is declared in the instance repo's `platform.yml` (Renovate can propose updates). The reconciler writes it to a file read by its systemd unit and restarts on the new image. Observed: the package was anonymously pullable right after its first publication, although the GitHub docs say a new package is private by default.
+- **Accepted limitation (MVP)**: a broken new version cannot roll itself back; it is fixed over SSH, then in Git. The end-to-end tests in CI are the safeguard. To revisit before prod.
+- **Status**: publication done; the Butane and the self-update are not built yet.
+- **Rejected**: keeping `:main` (no exact rollback); a rebuild for every reconciler version.
+
+### D51 — Postgres image
+- **Context**: the brief planned an image shipping PostGIS and pgvector. Verified (Docker Hub, 6 November 2026): Postgres 18 is the current major (19 is at rc1); the official `postgis/postgis:18-3.7` image does not include pgvector.
+- **Choice**: `postgis/postgis:18-3.7`, without pgvector. An image of our own (PostGIS + pgvector) will be built in CI the day an app needs pgvector.
+- **Rejected**: building our own image now (one more thing to maintain, for no app).
+
+### D52 — Pocket ID settings
+- **Context**: verified (Pocket ID docs and swagger, v2.19.2 is the latest release, 6 November 2026): port 1411; `TRUST_PROXY` is `false`, `true` or a list of IPs/CIDRs; `STATIC_API_KEY` (at least 16 characters, admin rights) and `ENCRYPTION_KEY` have `_FILE` variants; `ALLOW_INSECURE_CALLBACK_URLS` defaults to `true`; the health check is the `/app/pocket-id healthcheck` command; an OIDC client's chosen secret is set through `POST /api/oidc/clients/{id}/secrets` (at least 16 characters), not at creation. The docs site describes the unreleased version: every call is checked against v2.19.2 by the end-to-end tests.
+- **Choice**: `TRUST_PROXY` set to Caddy's Docker subnet only (D27), `ALLOW_INSECURE_CALLBACK_URLS=false`, secrets passed as `_FILE`. D14 still holds.
+
+### D53 — Generated Caddyfile
+- **Context**: the reconciler generates the Caddyfile (6 November 2026).
+- **Choice**: upstreams are reached by container name on the shared Docker network (`bivouac-pocket-id:1411`, `bivouac-app-<name>:<port>`); Caddy's admin API listens only inside its container (`admin localhost:2019`) and the reconciler reloads it with `docker exec`. Pocket ID's first-admin page and API (`/setup`, `/api/signup/setup`) are always refused, except from the IP in `platform.yml`'s `auth.setupFrom` during installation (D15); verified with `caddy adapt` that the refusal is evaluated before the proxy. Auth `forward` and static sites are refused with an error until they are built, instead of being served unprotected.
+- **To check on the server**: that Caddy sees the client's real IP, including over IPv6 (Docker's userland proxy would replace it with the gateway's).
+
+### D54 — Reconciler pass rules
+- **Context**: first version of the reconciler (6 November 2026).
+- **Choice**: the checkout is a shallow clone, then fetch and hard reset with `git clean`, so a change made by hand on the server never survives a pass. A commit that fails validation applies nothing: the server keeps the last valid state. Generated files are written atomically and only when they change, so a pass with no change does nothing. GitHub's SSH host keys are pinned in the image (from `api.github.com/meta`), and SSH refuses any other key.
