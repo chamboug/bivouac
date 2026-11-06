@@ -43,8 +43,19 @@ describe("app manifest", () => {
     ).toEqual([]);
   });
 
+  it("only accepts well-known Postgres extensions", () => {
+    expect(appErrors({ name: "geo", image: IMAGE, auth: "public", database: { extensions: ["postgis", "pg_trgm"] } })).toEqual([]);
+    expect(appErrors({ name: "geo", image: IMAGE, auth: "public", database: { extensions: ["plpython3u"] } })).toEqual([
+      expect.stringContaining("not an allowed extension"),
+    ]);
+  });
+
   it.each(["auth", "gate", "status"])("rejects the reserved name %s", (name) => {
     expect(appErrors({ name, image: IMAGE, auth: "public" })).toEqual([expect.stringContaining("reserved")]);
+  });
+
+  it.each(["postgres", "template1", "bivouac", "bivouac-pocket-id", "pg-stat", "public", "current-user"])("rejects %s, used by the platform", (name) => {
+    expect(appErrors({ name, image: IMAGE, auth: "public" })).toEqual([expect.stringContaining("clash")]);
   });
 
   it.each(["Recettes", "1app", "app-", "a--b", "my_app", "archived-recettes", "a".repeat(41)])(
