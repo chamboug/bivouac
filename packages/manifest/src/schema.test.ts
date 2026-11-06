@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appManifestSchema, siteManifestSchema, sshKeysSchema } from "./schema.js";
+import { appManifestSchema, platformConfigSchema, siteManifestSchema, sshKeysSchema } from "./schema.js";
 
 const IMAGE = "ghcr.io/someone/recettes:sha-abc123";
 const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBmN1jW3cGmRk2c3Jx4m8b9e0Y3tB0v6pLqW2x1Yy7Zz gaetan@mac";
@@ -163,5 +163,14 @@ describe("ssh keys", () => {
       "'a' is listed twice",
       "is the same key as another entry",
     ]);
+  });
+});
+
+describe("platform config", () => {
+  it("accepts an IPv4 or IPv6 address for the first-admin page, and nothing else", () => {
+    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "203.0.113.7" } }).success).toBe(true);
+    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "2001:db8::1" } }).success).toBe(true);
+    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "0.0.0.0/0" } }).success).toBe(false);
+    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "anyone" } }).success).toBe(false);
   });
 });

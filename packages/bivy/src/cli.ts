@@ -2,13 +2,14 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { loadInstance } from "@bivouac/manifest";
+import { generateCaddyfile, loadInstance } from "@bivouac/manifest";
+import { CaddyError, validateCaddyfile } from "./caddy.js";
 import { IgnitionError, buildButane, compileButane } from "./ignition.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
 Commands:
-  validate [dir]              check an instance repo (manifests, keys, secrets, Butane)
+  validate [dir]              check an instance repo (manifests, keys, secrets, Butane, Caddyfile)
   ignition [dir] [-o file]    print the server's Ignition config (JSON)
 
 [dir] defaults to the current directory.`;
@@ -46,6 +47,20 @@ function validate(root: string): number {
     } catch (error) {
       if (!(error instanceof IgnitionError)) throw error;
       errors.push({ file: "butane/server.bu", message: error.message });
+    }
+  }
+  // Only check the Caddyfile when the manifests themselves are valid: an
+  // invalid manifest is left out of the instance and would hide its route.
+  if (instance.platform && errors.length === 0) {
+    const generated = generateCaddyfile(instance.platform, instance.apps, instance.sites);
+    errors.push(...generated.errors);
+    if (generated.errors.length === 0) {
+      try {
+        validateCaddyfile(generated.caddyfile);
+      } catch (error) {
+        if (!(error instanceof CaddyError)) throw error;
+        errors.push({ file: "(generated Caddyfile)", message: error.message });
+      }
     }
   }
 

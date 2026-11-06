@@ -214,6 +214,15 @@ function checkGroups(auth: AuthMode, groups: string[], ctx: z.RefinementCtx): vo
 export const platformConfigSchema = z.strictObject({
   /** Base domain of the platform: apps are served on `<name>.<domain>`. */
   domain: hostnameSchema,
+  auth: z
+    .strictObject({
+      /**
+       * The only IP allowed to open Pocket ID's first-admin page, while the
+       * instance is being installed (D15). Removed once the admin exists.
+       */
+      setupFrom: z.union([z.ipv4(), z.ipv6()], { error: "must be an IPv4 or IPv6 address" }).optional(),
+    })
+    .optional(),
 });
 
 const SSH_KEY_TYPES = [
