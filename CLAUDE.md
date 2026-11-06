@@ -90,11 +90,12 @@ History to know:
 - **age master key and deploy key** placed over SSH by `bivy init` / `bivy rebuild` (`/etc/bivouac/`, mode 600), never through user-data. Verified: Hetzner user-data can be read from the server at `http://169.254.169.254/hetzner/v1/userdata`, so potentially from any container (D7).
 - **Access to the metadata service blocked** from Docker networks (`DOCKER-USER` rule towards `169.254.169.254`), as defense in depth (D7).
 - **Hetzner Cloud firewall** (outside the machine, free, IPv4 and IPv6, verified), created through the API by the CLI: inbound allowed on 22/tcp, 80/tcp, 443/tcp and 443/udp (HTTP/3), everything else blocked. Since it filters before the server, Docker's iptables rules cannot bypass it.
-- **No container port published**, except Caddy's. Postgres, Pocket ID, Tinyauth, the reconciler and the apps stay on the internal Docker network. Enforced by the reconciler and validated in CI.
+- **No container port published**, except Caddy's. Postgres, Pocket ID, Tinyauth, the reconciler and the apps stay on internal Docker networks. Enforced by the reconciler and validated in CI.
+- **Two Docker networks with fixed subnets** (D56): `bivouac` (apps, Caddy, Postgres, reconciler) and `bivouac-internal` (Pocket ID, Caddy, Postgres, reconciler). No app can reach Pocket ID except through Caddy. Every container drops `NET_RAW` and runs with `no-new-privileges`.
 - **The Docker socket is mounted only in the reconciler**, which is not publicly exposed. The status page and the MCP go through the reconciler's internal API (D8).
 - **Updates**: OS and Docker via Flatcar, third-party images via Renovate.
 - **Least privilege**: one Postgres role per app, OVH keys limited to DNS zones, a dedicated Hetzner token, GitHub tokens limited to the strict minimum (see "GitHub tokens").
-- **Login attempt limits**: handled by Pocket ID and by the auth library of `local` apps. Verified (Pocket ID docs): `TRUST_PROXY` is not a boolean but a list of IPs or CIDRs; we set it to **only Caddy's Docker subnet**, otherwise all users share the same limit (D27).
+- **Login attempt limits**: handled by Pocket ID and by the auth library of `local` apps. Verified (Pocket ID docs): `TRUST_PROXY` is not a boolean but a list of IPs or CIDRs; we set it to **only Caddy's fixed address on the internal network**, otherwise all users share the same limit (D27, D56).
 - Options rejected by default, can be added later: CrowdSec and fail2ban (pointless with SSH keys only and a surface reduced to Caddy).
 
 ### Domain names
@@ -117,7 +118,7 @@ History to know:
 
 ### Data
 
-- **A single shared Postgres** (18, image `postgis/postgis:18-3.7`), with one database and one role per app and `REVOKE CONNECT ... FROM PUBLIC`. The image ships PostGIS; pgvector will need an image of our own, built the day an app needs it (D51). Extensions are enabled per database according to the manifest. Accepted trade-off: all apps share the same major version.
+- **A single shared Postgres** (18, image `postgis/postgis:18-3.7`), with one database and one role per app and `REVOKE CONNECT ... FROM PUBLIC`. The image ships PostGIS; pgvector will need an image of our own, built the day an app needs it (D51). Extensions are enabled per database according to the manifest, from an allowlist (D56). Accepted trade-off: all apps share the same major version.
 - **Postgres major upgrades**: Renovate never proposes them (exclusion rule). They follow a documented procedure (dump then restore, the same path as `rebuild`) and are high-risk changes, approved by Gaëtan (D29).
 - **Files stored locally**, in volumes declared per app (`name → mount path`), included in backups. No paid S3.
 - No BaaS layer: Nuxt server routes and Drizzle are enough.
@@ -311,7 +312,7 @@ Moving to the prod phase (rule 2) requires having:
 - **Hetzner hourly billing** (actual cost of a `rebuild --test`): a CX23 is €0.01056/hour incl. VAT (verified, API); a snapshot is €0.0143/GB/month excl. VAT.
 - **CX23 availability** at rebuild time: no longer orderable in `fsn1` (verified, 6 Nov. 2026). The fallback for a real `bivy rebuild` is still to decide (D24).
 - ~~Assigning the Primary IP at server creation~~: verified (Hetzner API): `public_net.ipv4` takes the ID of an unassigned Primary IP in the same location.
-- **On the server, at first boot**: whether a snapshot can be used in another location than the one it was made in (from memory: yes); Docker's version on Flatcar; whether the `DOCKER-USER` rule blocking the metadata service survives Docker restarts; whether Caddy sees the client's real IP over IPv4 and IPv6 (D53); whether sshd reads `authorized_keys.d` directly or only through `update-ssh-keys`.
+- **On the server, at first boot**: whether a snapshot can be used in another location than the one it was made in (from memory: yes); that Docker on Flatcar (28.2.2 in stable 4757.2.3) accepts API 1.48 (D55); that apps reach the public issuer URL (`https://auth.<domain>`) through the server's own public IP (D56); pulling a private app image with the GHCR token (D17); whether the `DOCKER-USER` rule blocking the metadata service survives Docker restarts; whether Caddy sees the client's real IP over IPv4 and IPv6 (D53); whether sshd reads `authorized_keys.d` directly or only through `update-ssh-keys`.
 - **Brevo**: whether SPF is still required for domain authentication.
 - **Pocket ID**: exact behavior if the `ENCRYPTION_KEY` is lost (undocumented).
 - **healthchecks.io**: that the Pushover integration is available on the free plan (inferred from the docs, not stated).
@@ -337,8 +338,8 @@ Built in layers (D44): each layer is useful on its own, so if the project stalls
   2. ~~Written runbook~~ (`docs/runbook.md`).
   3. ~~Instance repo `bivouac-platform`~~ (created; age key generated by Gaëtan; validation CI green).
   4. ~~Caddyfile generator, `caddy validate` in `bivy validate`, reconciler skeleton and its image~~.
-  5. **Next**: miniature platform (Postgres, Pocket ID v2.19.2, Caddy, test app) and end-to-end tests in CI, adding one capability at a time: database, role and extensions per app; OIDC client with derived secret and groups; containers (pull, run, wait for health) and route; idempotence. Archiving and rollback stay in layer 6.
-  6. Butane: reconciler at an exact version and self-update (D50), metadata block (D7), SSH key hook.
+  5. ~~Miniature platform and end-to-end tests~~ (D55–D59): the reconciler runs the base services, databases, OIDC clients and app containers; 34 end-to-end tests in CI; `npm run platform:up` locally. Archiving and rollback stay in layer 6.
+  6. **Next** — Butane: reconciler at an exact version and self-update (D50), its environment (`BIVOUAC_REPOSITORY`, D55), metadata block (D7), SSH key hook. Before the server: create `secrets/platform.sops.yaml` in the instance repo (D57), with values generated on the Mac and encrypted for the age key, never shown.
   7. Flatcar snapshot (temporary server outside `fsn1`).
   8. In-place reinstall of the server, then firewall rules, IPv6, name, keys over SSH (each with Gaëtan's consent).
   9. Wildcard DNS (consent).

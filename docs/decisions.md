@@ -135,6 +135,7 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 - **Context**: verified, Pocket ID's `TRUST_PROXY` is a list of IPs or CIDRs, not a boolean.
 - **Choice**: `TRUST_PROXY` and Tinyauth's `TRUSTEDPROXIES` limited to Caddy's subnet. Tinyauth runs with `ACLS_POLICY=deny`.
 - **Rejected**: `TRUST_PROXY=true`.
+- **Revised (6 November 2026)**: `TRUST_PROXY` is Caddy's single fixed address on the internal network, not a subnet: apps share a subnet with Caddy and could otherwise pass for it (D56).
 
 ### D28 — Komodo and doco-cd
 - **Choice**: rejected; the container part stays custom code (about a hundred lines with the Docker API).
@@ -255,10 +256,12 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 - **Context**: the brief planned an image shipping PostGIS and pgvector. Verified (Docker Hub, 6 November 2026): Postgres 18 is the current major (19 is at rc1); the official `postgis/postgis:18-3.7` image does not include pgvector.
 - **Choice**: `postgis/postgis:18-3.7`, without pgvector. An image of our own (PostGIS + pgvector) will be built in CI the day an app needs pgvector.
 - **Rejected**: building our own image now (one more thing to maintain, for no app).
+- **Note (6 November 2026)**: verified, the image has no arm64 build. On an Apple Silicon Mac the local platform runs it under amd64 emulation (slower first start, works).
 
 ### D52 — Pocket ID settings
 - **Context**: verified (Pocket ID docs and swagger, v2.19.2 is the latest release, 6 November 2026): port 1411; `TRUST_PROXY` is `false`, `true` or a list of IPs/CIDRs; `STATIC_API_KEY` (at least 16 characters, admin rights) and `ENCRYPTION_KEY` have `_FILE` variants; `ALLOW_INSECURE_CALLBACK_URLS` defaults to `true`; the health check is the `/app/pocket-id healthcheck` command; an OIDC client's chosen secret is set through `POST /api/oidc/clients/{id}/secrets` (at least 16 characters), not at creation. The docs site describes the unreleased version: every call is checked against v2.19.2 by the end-to-end tests.
 - **Choice**: `TRUST_PROXY` set to Caddy's Docker subnet only (D27), `ALLOW_INSECURE_CALLBACK_URLS=false`, secrets passed as `_FILE`. D14 still holds.
+- **Revised (6 November 2026)**: the API was checked on a real v2.19.2 container, and the end-to-end tests check it again on every change. Findings: creating a client also creates a random secret, and a client can hold several; `PUT /api/oidc/clients/{id}` replaces the whole client, and leaving out `isGroupRestricted` turns it off and empties the allowed groups; setting the allowed groups alone does not turn the restriction on. The reconciler therefore always sends the full client with `isGroupRestricted: true`, then the groups, then leaves exactly one secret: the derived one, checked against the token endpoint (`invalid_grant` for a right secret with a bogus code, `invalid_client` for a wrong one). Also set, from the v2.19.2 source: `FILE_BACKEND=database` (uploads go into Postgres and its backups, no volume), `ANALYTICS_DISABLED=true` (no heartbeat to analytics.pocket-id.org), and `DB_CONNECTION_STRING_FILE`. `AUTO_CREATE_OIDC_CLIENT_SECRET` exists but is an application setting, not reliable from the environment. The container drops to UID 1000.
 
 ### D53 — Generated Caddyfile
 - **Context**: the reconciler generates the Caddyfile (6 November 2026).
@@ -268,3 +271,36 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 ### D54 — Reconciler pass rules
 - **Context**: first version of the reconciler (6 November 2026).
 - **Choice**: the checkout is a shallow clone, then fetch and hard reset with `git clean`, so a change made by hand on the server never survives a pass. A commit that fails validation applies nothing: the server keeps the last valid state. Generated files are written atomically and only when they change, so a pass with no change does nothing. GitHub's SSH host keys are pinned in the image (from `api.github.com/meta`), and SSH refuses any other key.
+
+### D55 — Reconciler: containers through the Docker API
+- **Context**: step 5 of layer 2, the reconciler runs the base services and the apps (6 November 2026). Verified: Docker 29.7 accepts API 1.40 to 1.55; Flatcar stable 4757.2.3 ships Docker 28.2.2. Pull, create, start, inspect (health) and exec work over the socket with plain HTTP; exec output is multiplexed in 8-byte-header frames.
+- **Choice**:
+  - The Docker Engine API is spoken with Node's own HTTP module, pinned to API 1.48 (from memory Docker 28.0; checked at startup, to confirm on the server), with timeouts (15 min for a pull, 2 for anything else). Postgres through node-postgres, the reconciler's only new dependency.
+  - Each container carries a fingerprint of its full spec (and of the secret files it reads) in a label; a pass recreates it only when the fingerprint changes. Images are pulled only when missing, so base images are pinned by digest (Renovate bumps them).
+  - Base services (Postgres, Pocket ID, Caddy) use Docker health checks and come up in order. Apps are checked over HTTP by the reconciler itself, so an image needs no `curl`; redirects are not followed. Caddy routes to an app only once it is healthy; a new container that fails is stopped and stays stopped until the manifest changes (D21). Rolling back to the previous image is layer 6.
+  - Caddy is reloaded with `docker exec caddy reload`; if it refuses the file, the previous Caddyfile is put back. Health checks use `127.0.0.1`: in Caddy's image `localhost` is `::1`, where the admin API does not listen (observed).
+  - Generated files live in `/var/lib/bivouac`, mounted at the same path on the host and in the reconciler, since the containers it creates name host paths; checked at startup.
+  - Logs: at most 3 × 10 MB per container.
+- **Rejected**: a Docker library such as dockerode (rule 9); `psql` through `docker exec` (passwords on a command line); Docker health checks for apps (they need a tool inside the image).
+
+### D56 — Network isolation and Postgres hardening
+- **Context**: the rule 6 security review of step 5 (6 November 2026) found that apps shared a network with Pocket ID: on a fresh install, any app could call Pocket ID's first-admin API directly, bypassing Caddy, and with Docker's default `NET_RAW` capability (verified present on Docker 29.7) a compromised app could forge packets to impersonate Caddy or listen to the reconciler's calls carrying the admin API key.
+- **Choice**:
+  - Two networks with fixed subnets: `bivouac` (10.209.0.0/24: apps, Caddy, Postgres, reconciler) and `bivouac-internal` (10.209.1.0/24: Pocket ID, Caddy, Postgres, reconciler). Docker assigns addresses only from the upper half; Caddy has the fixed address 10.209.1.10, the only one Pocket ID trusts.
+  - Every container drops `NET_RAW` and runs with `no-new-privileges`.
+  - Apps may only ask for allowlisted extensions (PostGIS family, pg_trgm, unaccent, citext, pgcrypto, hstore, btree_gin, btree_gist, fuzzystrmatch): extensions are created by the superuser in a database the app owns, a known route to privilege escalation for untrusted scripts. App names that clash with Postgres (`pg-…`, `public`, `postgres`, `template1`…) or the platform (`bivouac…`) are refused. `CONNECT` on `postgres` and `template1` is revoked from everyone. The reconciler's superuser sessions never log failing statements (they may carry a password).
+  - Inside its container, the Postgres image trusts local connections without a password (its default `pg_hba.conf`); only someone who can already run `docker exec` (root) benefits, so it stays. Tests check passwords over the network.
+- **To check on the server**: apps reach the public issuer URL through the server's own public IP.
+- **Rejected**: one network for everything (above); not starting apps before the first admin exists (protects only the setup page, not the rest).
+
+### D57 — Platform secrets file
+- **Choice**: `secrets/platform.sops.yaml` in the instance repo holds `master_secret` (at least 32 characters), `pocket_id.encryption_key` and `pocket_id.static_api_key` (at least 16). Other entries (tokens used by `bivy`) may sit next to them. It is decrypted by sops v3.13.3, copied from its official image (pinned by digest) into the reconciler's image; a decryption failure applies nothing, and no error message ever quotes decrypted text. Derived secrets are `HMAC-SHA256(master_secret, purpose)` in hexadecimal; purposes in use: `postgres:superuser`, `db:<database>`, `oidc:<app>`. Secrets reach Postgres and Pocket ID as read-only files (`_FILE` variables), without a trailing newline, in a per-service directory under a `secrets/` directory closed to all but root; apps receive theirs in the environment, as the contract requires (D19). The future internal API must never expose container environments.
+- **Rejected**: Pocket ID's keys derived from the master secret (rotating the master secret would then lose Pocket ID's signing keys); changing file ownership per container (Docker Desktop's file sharing does not let the container's root bypass permissions, so it breaks the local platform).
+
+### D58 — OIDC callback convention
+- **Choice**: an `oidc` app's client accepts `https://<host>/auth/callback` on each of its hosts, and `https://<host>/` after logout; the client ID is the app's name. A platform convention for the app template (layer 4); a manifest field will come with the first third-party app that needs another path.
+
+### D59 — Miniature platform and end-to-end tests
+- **Context**: D43 calls for a local platform started with one command, shared with the end-to-end tests.
+- **Choice**: the tests build the reconciler image from the checkout and run it (`main.js once`) against a throwaway instance repo with a generated age key and secrets, on the local Docker; the reconciler then creates the real base services and two test apps. One test file, in order, like passes on a server: base services and isolation, secrets, databases, OIDC clients, routes and injected variables, a failed deployment, idempotence and repair of manual changes (34 tests, about 2 minutes on a Mac). Domain `apps.bivouac.localhost`, for which Caddy uses its own local authority (verified). The CI job `e2e` runs them, and the reconciler image is only published when they pass. `npm run platform:up` starts the same platform with the reconciler running every 10 s (Caddy on 127.0.0.1:8443); `platform:down` removes everything named `bivouac…`, and refuses on a machine holding `/etc/bivouac/age.key`.
+- **Not covered yet**: a real login with a passkey (Playwright and a virtual authenticator, with the app template, layer 4).
