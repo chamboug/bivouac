@@ -100,8 +100,18 @@ Record the result in the operations log.
 2. Create the secrets file and encrypt it with SOPS in its container
    (`ghcr.io/getsops/sops:v3.13.3-alpine`). For layer 2 it holds the master
    secret (D14), Pocket ID's `ENCRYPTION_KEY` and `STATIC_API_KEY`, each
-   generated randomly. **(not built yet)**: the exact file layout is set by
-   the reconciler.
+   generated randomly, in `secrets/platform.sops.yaml` (layout: D57). Generate
+   and encrypt in one pipe, so no value is ever shown or written in plain
+   text:
+
+   ```bash
+   R=$(grep -o 'age1[0-9a-z]*' .sops.yaml)
+   { printf 'master_secret: %s\n' "$(openssl rand -hex 32)"
+     printf 'pocket_id:\n  encryption_key: %s\n' "$(openssl rand -base64 32)"
+     printf '  static_api_key: %s\n' "$(openssl rand -hex 32)"; } |
+     docker run --rm -i ghcr.io/getsops/sops:v3.13.3 encrypt --input-type yaml \
+       --output-type yaml --age "$R" /dev/stdin > secrets/platform.sops.yaml
+   ```
 3. `bivy validate` checks the file is encrypted for exactly the keys in
    `.sops.yaml`, without decrypting it (D35).
 
