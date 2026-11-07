@@ -3,7 +3,7 @@
  * run in order and share one platform: each step builds on the previous one,
  * like passes on a real server.
  */
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CADDY_ADDRESS,
@@ -22,6 +22,7 @@ import {
   readStateFile,
   removeStateFile,
   run,
+  writeStateFile,
   runOnce,
   reachableFromApps,
   throughCaddy,
@@ -339,3 +340,35 @@ describe("g. the reconciler moves itself to the version in platform.yml (D50)", 
   });
 });
 
+
+describe("h. SSH keys for the host (D12)", () => {
+  it("writes the list of ssh-keys.yml for the host's path unit, and follows its changes", () => {
+    const list = readStateFile(platform, "ssh/authorized_keys");
+    expect(list).toMatch(/^ssh-ed25519 \S+ .*\n$/);
+    const [key] = (list ?? "").trim().split("\n");
+    // Another well-formed ed25519 key: its type, then 32 bytes.
+    const type = Buffer.from("ssh-ed25519");
+    const blob = Buffer.concat([Buffer.from([0, 0, 0, type.length]), type, Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 7)]);
+    const other = `ssh-ed25519 ${blob.toString("base64")} other@machine`;
+    platform.commit({ "ssh-keys.yml": `keys:\n  - name: fixture\n    key: ${key}\n  - name: other\n    key: ${other}\n` }, "add a key");
+    const pass = runOnce(platform);
+    expect(pass.status).toBe(0);
+    expect(changesOf(pass)).toEqual(["SSH keys"]);
+    expect(readStateFile(platform, "ssh/authorized_keys")?.trim().split("\n")).toHaveLength(2);
+  });
+
+  it("reports a list the host refused, once its grace period is over, until the host applies it", () => {
+    const hash = createHash("sha256").update(readStateFile(platform, "ssh/authorized_keys") ?? "").digest("hex");
+    writeStateFile(platform, "ssh-status/applied", `refused ${hash}: update-ssh-keys did not accept the list\n`);
+    // Past the grace period the host has to apply a new list.
+    docker("run", "--rm", "--volume", `${platform.state}:/state`, "alpine:3.24", "touch", "-d", "2000-01-01 00:00:00", "/state/ssh/authorized_keys");
+    const refused = runOnce(platform);
+    expect(refused.status).toBe(1);
+    expect(refused.logs).toContainEqual(expect.objectContaining({
+      app: "(platform)",
+      error: expect.stringMatching(/^the host refused the SSH keys of ssh-keys\.yml \(update-ssh-keys did not accept the list\)/),
+    }));
+    writeStateFile(platform, "ssh-status/applied", `applied ${hash}\n`);
+    expect(runOnce(platform).status).toBe(0);
+  });
+});

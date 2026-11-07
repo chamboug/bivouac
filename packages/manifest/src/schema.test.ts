@@ -152,6 +152,19 @@ describe("ssh keys", () => {
     expect(sshKeysSchema.safeParse({ keys: [{ name: "owner-mac", key: KEY }] }).success).toBe(true);
   });
 
+  it("refuses keys on several lines, odd spacing, control characters and damaged keys", () => {
+    const message = (key: string) => sshKeysSchema.safeParse({ keys: [{ name: "a", key }] }).error?.issues[0]?.message;
+    const [type, data] = KEY.split(" ") as [string, string];
+    expect(message(`${KEY}\n`)).toBeUndefined();
+    expect(message(`${type} ${data}`)).toBeUndefined();
+    for (const key of [`${KEY}\n${KEY}`, `${KEY} café`, `${type}\t${data} x`, `${type}  ${data}`, `${KEY}\u0007`, `command="sh" ${KEY}`]) {
+      expect(message(key), JSON.stringify(key)).toMatch(/^is not an SSH public key on one line/);
+    }
+    // Cut short, or declared with another type than the one inside.
+    expect(message(`${type} ${data.slice(0, 40)}`)).toMatch(/^is damaged/);
+    expect(message(`ssh-rsa ${data} x`)).toMatch(/^is damaged/);
+  });
+
   it("refuses an empty list, which would lock everyone out", () => {
     expect(sshKeysSchema.safeParse({ keys: [] }).success).toBe(false);
   });

@@ -46,6 +46,75 @@ storage:
               ip daddr 169.254.169.254 counter reject
             }
           }
+    # Applies the SSH keys the reconciler writes from ssh-keys.yml (D12).
+    - path: /opt/bivouac/sync-ssh-keys
+      mode: 0700
+      overwrite: true
+      contents:
+        inline: |
+          #!/bin/sh
+          # Applies the SSH keys of the instance repo's ssh-keys.yml, written by
+          # the reconciler, to the `core` user (D12). Run by bivouac-ssh-keys.path
+          # when the list changes, by its timer as a backstop, and at every boot.
+          # Writes the outcome to ssh-status/applied, which the reconciler reads:
+          # a list that cannot be applied is reported, never silently ignored.
+          set -eu
+          # Byte-wise matching, the same on every system.
+          export LC_ALL=C
+          list=/var/lib/bivouac/ssh/authorized_keys
+          status=/var/lib/bivouac/ssh-status/applied
+          fragments=/home/core/.ssh/authorized_keys.d
+          copy=/run/bivouac-ssh-keys.list
+          report() {
+            mkdir -p "${status%/*}"
+            printf '%s\n' "$1" > "$status.tmp"
+            mv "$status.tmp" "$status"
+            echo "$1"
+          }
+          if [ ! -f "$list" ]; then
+            echo "no key list from the reconciler yet: nothing to do"
+            exit 0
+          fi
+          # Every line must be one public key, and there must be at least one:
+          # anything else would lock everyone out, or let something odd in. The
+          # same pattern as the reconciler's schema.
+          key='^(ssh-ed25519|sk-ssh-ed25519@openssh\.com|ecdsa-sha2-nistp(256|384|521)|sk-ecdsa-sha2-nistp256@openssh\.com|ssh-rsa) [A-Za-z0-9+/]+={0,3}( [ -~]*)?$'
+          # The list may change while it is applied: work on a copy, and start
+          # again if the list moved meanwhile.
+          for attempt in 1 2 3; do
+            cp "$list" "$copy"
+            hash=$(sha256sum "$copy" | cut -d ' ' -f 1)
+            if grep -Evq "$key" "$copy"; then
+              report "refused $hash: a line is not a public key"
+              exit 1
+            fi
+            if ! grep -Eq "$key" "$copy"; then
+              report "refused $hash: the list is empty, it would lock everyone out"
+              exit 1
+            fi
+            if ! update-ssh-keys -u core -a bivouac "$copy"; then
+              report "refused $hash: update-ssh-keys did not accept the list"
+              exit 1
+            fi
+            # Only once the list is in place: remove every other set of keys
+            # (Ignition's, the provider's metadata…), so ssh-keys.yml is the only
+            # list and removing a key there really removes it.
+            for path in "$fragments"/*; do
+              name=${path##*/}
+              if [ -f "$path" ] && [ "$name" != bivouac ]; then
+                if ! update-ssh-keys -u core -d "$name"; then
+                  report "refused $hash: could not remove the keys of '$name'"
+                  exit 1
+                fi
+              fi
+            done
+            report "applied $hash"
+            if [ "$(sha256sum "$list" | cut -d ' ' -f 1)" = "$hash" ]; then
+              exit 0
+            fi
+          done
+          echo "the list kept changing while it was applied: the next run will catch up"
+          exit 1
   directories:
     # Age key and deploy key, placed over SSH (D7, D30).
     - path: /etc/bivouac
@@ -53,6 +122,14 @@ storage:
     # Files the reconciler generates (Caddyfile, secret files for the
     # containers): mounted at the same path in the reconciler (D55, D57).
     - path: /var/lib/bivouac
+      mode: 0700
+    # The key list written by the reconciler, watched by
+    # bivouac-ssh-keys.path.
+    - path: /var/lib/bivouac/ssh
+      mode: 0700
+    # Where sync-ssh-keys reports what it applied. Its presence tells the
+    # reconciler that a host script is expected to answer.
+    - path: /var/lib/bivouac/ssh-status
       mode: 0700
 systemd:
   units:
@@ -75,6 +152,47 @@ systemd:
             [Unit]
             Requires=bivouac-metadata-block.service
             After=bivouac-metadata-block.service
+    # SSH keys (D12): the reconciler, which has no access to core's home,
+    # writes ssh-keys.yml to /var/lib/bivouac/ssh/authorized_keys; this
+    # path unit notices the change and the script applies it with
+    # update-ssh-keys. The service also runs at every boot and every 15
+    # minutes, in case a change was missed; it is harmless to run again.
+    - name: bivouac-ssh-keys.path
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Watch the SSH keys listed in the instance repo
+
+        [Path]
+        PathChanged=/var/lib/bivouac/ssh/authorized_keys
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: bivouac-ssh-keys.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Apply the SSH keys listed in the instance repo
+        After=coreos-metadata-sshkeys@core.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/opt/bivouac/sync-ssh-keys
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: bivouac-ssh-keys.timer
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Apply the SSH keys listed in the instance repo, as a backstop
+
+        [Timer]
+        OnBootSec=15min
+        OnUnitActiveSec=15min
+
+        [Install]
+        WantedBy=timers.target
     # Starts the reconciler, which then manages everything else from Git.
     # The age key and deploy key are placed in /etc/bivouac over SSH by
     # `bivy init` / `bivy rebuild`, never through user-data.

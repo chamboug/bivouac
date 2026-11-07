@@ -16,6 +16,7 @@ import { syncRepository, type GitSource } from "./git.js";
 import { PocketId } from "./pocket-id.js";
 import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
 import type { SelfUpdater } from "./self-update.js";
+import { sshKeysProblem, writeSshKeys } from "./ssh-keys.js";
 import { isReachable } from "./metadata-check.js";
 
 export interface PassConfig {
@@ -61,9 +62,10 @@ export function prepare(config: Pick<PassConfig, "source" | "checkout">): Prepar
  * the server and correct the difference, in order:
  *
  *   0. a new reconciler version in platform.yml stops the pass there;
- *   1. secrets decrypted, network, Postgres, Pocket ID (each healthy first);
- *   2. for each app: database, role and extensions; OIDC client; container;
- *   3. Caddyfile with the routes of the healthy apps, then Caddy.
+ *   1. the SSH keys, applied on the host by a path unit (D12);
+ *   2. secrets decrypted, network, Postgres, Pocket ID (each healthy first);
+ *   3. for each app: database, role and extensions; OIDC client; container;
+ *   4. Caddyfile with the routes of the healthy apps, then Caddy.
  *
  * Idempotent: a second pass with the same commit changes nothing. One app
  * failing does not stop the others.
@@ -79,6 +81,9 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   const { domain } = instance.platform;
 
   const changes: string[] = [];
+  // First, and independent of the secrets: a broken secrets file must not
+  // keep a key change from reaching the server.
+  if (instance.sshKeys && writeSshKeys(runtime.stateDir, instance.sshKeys)) changes.push("SSH keys");
   const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
   await ensureBase(runtime, secrets, domain, changes);
 
@@ -104,6 +109,8 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   await ensureCaddy(runtime, caddyfile, changes);
 
   const failures = results.flatMap((result) => (result.failure ? [{ app: result.name, message: result.failure }] : []));
+  const keysProblem = sshKeysProblem(runtime.stateDir);
+  if (keysProblem) failures.push({ app: "(platform)", message: keysProblem });
   if (runtime.metadataCheck && (await isReachable(runtime.metadataCheck))) {
     failures.push({
       app: "(platform)",

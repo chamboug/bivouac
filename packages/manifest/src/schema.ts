@@ -304,9 +304,22 @@ export const sshPublicKeySchema = z.string().superRefine((key, ctx) => {
     ctx.addIssue({ code: "custom", message: "is a PRIVATE key: never put it in Git, use the .pub file" });
     return;
   }
-  const [type, data] = key.trim().split(/\s+/);
-  if (!type || !SSH_KEY_TYPES.includes(type) || !data || !/^[A-Za-z0-9+/]+={0,3}$/.test(data)) {
-    ctx.addIssue({ code: "custom", message: "is not an SSH public key (expected 'ssh-ed25519 AAAA… comment')" });
+  // One line: type, base64 data and an optional printable ASCII comment, each
+  // separated by one space. The host script that applies the keys checks
+  // the same pattern (butane/server.bu): a key accepted here is never
+  // refused there, and one entry can never hide a second line.
+  const match = /^(\S+) ([A-Za-z0-9+/]+={0,3})( [\x20-\x7e]*)?$/.exec(key.trim());
+  const [, type, data] = match ?? [];
+  if (!type || !data || !SSH_KEY_TYPES.includes(type)) {
+    ctx.addIssue({ code: "custom", message: "is not an SSH public key on one line (expected 'ssh-ed25519 AAAA… comment')" });
+    return;
+  }
+  // The data starts with the key type again, as a length-prefixed string:
+  // a damaged copy-paste would lock its owner out.
+  const blob = Buffer.from(data, "base64");
+  const length = blob.length >= 4 ? blob.readUInt32BE(0) : 0;
+  if (blob.length < 4 + length + 16 || blob.subarray(4, 4 + length).toString("latin1") !== type) {
+    ctx.addIssue({ code: "custom", message: `is damaged: its data is not a complete '${type}' key (copy the .pub file again)` });
   }
 });
 

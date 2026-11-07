@@ -283,3 +283,10 @@ export function readStateFile(platform: Platform, file: string): string | undefi
 export function removeStateFile(platform: Platform, file: string): void {
   docker("run", "--rm", "--volume", `${platform.state}:/state`, ALPINE_IMAGE, "rm", "-f", `/state/${file}`);
 }
+
+/** Writes a file in the state directory, as root, the way a host script would. */
+export function writeStateFile(platform: Platform, file: string, content: string): void {
+  const result = run("docker", ["run", "--rm", "--interactive", "--volume", `${platform.state}:/state`, ALPINE_IMAGE,
+    "sh", "-c", `mkdir -p "$(dirname /state/${file})" && cat > /state/${file}`], { input: content });
+  if (result.status !== 0) throw new Error(`could not write ${file}: ${result.stderr}`);
+}
