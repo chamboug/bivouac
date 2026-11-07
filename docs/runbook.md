@@ -117,26 +117,88 @@ Record the result in the operations log.
 
 ## 4. Flatcar snapshot
 
-There is no official Flatcar image at Hetzner. `hcloud-upload-image` creates
-a temporary server, writes the image to its disk, takes a snapshot and deletes
-the server. It costs a few cents. Pin both the tool and the Flatcar version
-(current stable: check `https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt`).
+There is no official Flatcar image at Hetzner. `hcloud-upload-image`
+(v1.5.0, read at its tag; D65) creates a temporary SSH key and server, both
+named `hcloud-upload-image-<random>` and labelled
+`apricote.de/created-by=hcloud-upload-image`, boots the server into the rescue
+system, erases its disk, writes the image, takes a snapshot, then deletes the
+server and the key. It costs a few cents. Verified (Hetzner FAQ): a snapshot is
+not bound to a location; the server it later goes to must have the same
+architecture.
 
-The tool's temporary server defaults to `cx23` in `fsn1`: pass a location
-where that type is available (`--location`), or another x86 type
-(`--server-type`).
+1. **Pick the version** (stable channel, an exact version):
 
-```bash
-HCLOUD_TOKEN="$(cat ~/.config/bivouac/hetzner-token)" docker run --rm -e HCLOUD_TOKEN \
-  ghcr.io/apricote/hcloud-upload-image:v1.5.0 upload \
-  --image-url https://stable.release.flatcar-linux.net/amd64-usr/<version>/flatcar_production_hetzner_image.bin.bz2 \
-  --architecture x86 --compression bz2 --location nbg1 \
-  --description flatcar-stable-<version> \
-  --labels os=flatcar,flatcar-channel=stable,flatcar-version=<version>
-```
+   ```bash
+   curl -fsSL https://stable.release.flatcar-linux.net/amd64-usr/current/version.txt | grep FLATCAR_VERSION=
+   ```
 
-The snapshot ID is printed at the end; `hc '/images?type=snapshot&label_selector=os=flatcar'`
-lists them. From memory, to check: a snapshot can be used in any location.
+2. **Download and verify the image on the Mac**, in a new empty folder
+   (`V=<version>`). Flatcar signs the list of checksums with its image signing
+   key (primary key `F88CFEDEFF29A5B4D9523864E25D9AED0593B34A`, ID
+   `E25D9AED0593B34A`, published at `https://www.flatcar.org/security/image-signing-key/`).
+   The check runs in a throwaway container:
+
+   ```bash
+   B=https://stable.release.flatcar-linux.net/amd64-usr/$V/flatcar_production_hetzner_image.bin.bz2
+   curl -fsSL -o image.bin.bz2 "$B" && curl -fsSL -o image.DIGESTS.asc "$B.DIGESTS.asc" &&
+     curl -fsSL -o flatcar.asc https://www.flatcar.org/security/image-signing-key/Flatcar_Image_Signing_Key.asc
+   docker run --rm -v "$PWD:/w:ro" alpine:3.24 sh -euc '
+     apk add -q gnupg >/dev/null; export GNUPGHOME=$(mktemp -d); gpg -q --import /w/flatcar.asc
+     gpg --status-fd 1 -o /tmp/d --decrypt /w/image.DIGESTS.asc 2>/dev/null |
+       grep -q "VALIDSIG .* F88CFEDEFF29A5B4D9523864E25D9AED0593B34A$" && echo signature OK
+     [ "$(awk "/SHA512/{getline; print \$1}" /tmp/d)" = "$(sha512sum /w/image.bin.bz2 | cut -d" " -f1)" ] && echo sha512 OK'
+   ```
+
+   Both lines must print OK. The tool itself checks nothing: it writes
+   whatever it is given, which is why the verified file is sent rather than a
+   URL (`--image-url` would make the temporary server download it unchecked).
+
+3. **A temporary token.** The tool receives a token that can do anything in
+   the project (Hetzner tokens cannot be narrowed). The owner creates a
+   dedicated Read & Write token in the console (Security → API tokens), stores
+   it in `~/.config/bivouac/hetzner-token-upload` with the `read -s` command of
+   section 0 (in a real terminal), and deletes it once the snapshot exists.
+
+4. **Protect what exists (consent)**, so that a mistaken deletion fails:
+   `hc /servers/<id>/actions/change_protection -X POST -d '{"delete": true, "rebuild": true}'`
+   and `hc /primary_ips/<ipv4-id>/actions/change_protection -X POST -d '{"delete": true}'`.
+   It does not stop a malicious tool, which could lift it first. Lift the
+   server's protection again before a rebuild (section 6).
+
+5. **Run the tool (consent)**, pinned by digest (the image is not signed, and a
+   tag can be pushed again). `--server-type` sets the architecture; pick an
+   x86 type available in the chosen location with a disk no larger than the
+   final server's (from memory: a snapshot only goes to a disk at least as
+   large as its own). The default `cx23` was available nowhere on
+   7 November 2026.
+
+   ```bash
+   HCLOUD_TOKEN="$(cat ~/.config/bivouac/hetzner-token-upload)" docker run --rm --read-only \
+     --cap-drop ALL --security-opt no-new-privileges -e HCLOUD_TOKEN \
+     -v "$PWD/image.bin.bz2:/image.bz2:ro" \
+     ghcr.io/apricote/hcloud-upload-image@sha256:1cd09ab0e26662a8c244e76a52c1d2f436de27681ca4d56d99d9cc6de1175078 \
+     upload --image-path /image.bz2 --compression bz2 --server-type cpx12 --location fsn1 \
+     --description flatcar-stable-$V --labels os=flatcar,flatcar-channel=stable,flatcar-version=$V
+   ```
+
+   Never pass `-v`. If the run is interrupted (Ctrl-C, sleep), the tool does
+   not clean up: run the same image with `cleanup`, which deletes every server
+   and SSH key carrying its label, and never images.
+
+6. **Check for leftovers** (GET only): no server, SSH key or Primary IP
+   labelled `apricote.de/created-by`, besides the snapshot itself
+   (`hc '/images?type=snapshot&label_selector=os=flatcar'`: status
+   `available`, architecture `x86`, the expected labels). The existing server
+   and IPs are unchanged. Then the owner deletes the temporary token (console,
+   then `rm ~/.config/bivouac/hetzner-token-upload`), and the local image
+   files are deleted.
+
+Observed (7 November 2026, 4757.2.3): the run took about 5 minutes; the
+snapshot has `disk_size` 40 (the temporary server's disk) and is stored as
+0.55 GB, about €0.01 a month. Hetzner labels it `os_flavor: ubuntu`, inherited
+from the temporary server's unused image; from memory, to check at first
+boot: it changes nothing, since Flatcar reads its Ignition from the metadata
+service itself.
 
 ## 5. Ignition
 
@@ -182,7 +244,9 @@ hc /primary_ips/<ipv4-id> -X PUT -d '{"auto_delete": false}'
 **A. Reinstalling an existing server in place (consent)**: keeps the server,
 its type, location, price and IPs, and **erases its disk**. `rebuild` takes
 the snapshot and the Ignition as `user_data`; the server is powered off
-automatically first.
+automatically first. If the server is protected (section 4), lift its
+protection first (`{"delete": false, "rebuild": false}`: the API requires
+both to have the same value, verified) and set it again afterwards.
 
 ```bash
 hc /servers/<id>/actions/rebuild -X POST -d "$(jq -n --arg ud "$(cat ignition.json)" '{image: <snapshot-id>, user_data: $ud}')"
