@@ -277,6 +277,24 @@ describe("f. idempotence", () => {
   });
 });
 
+describe("f2. the metadata block (D7)", () => {
+  it("reports when containers can reach the metadata service", () => {
+    // Postgres stands in for a metadata service with no block in front of it.
+    const pass = runOnce(platform, { env: { BIVOUAC_METADATA_CHECK: "bivouac-postgres:5432" } });
+    expect(pass.status).toBe(1);
+    expect(pass.logs).toContainEqual(expect.objectContaining({
+      message: "app failed",
+      app: "(platform)",
+      error: "containers can reach the metadata service (bivouac-postgres:5432): its block is missing (D7)",
+    }));
+  });
+
+  it("is quiet when the address refuses connections", () => {
+    const pass = runOnce(platform, { env: { BIVOUAC_METADATA_CHECK: "bivouac-postgres:5999" } });
+    expect(pass.status).toBe(0);
+  });
+});
+
 describe("g. the reconciler moves itself to the version in platform.yml (D50)", () => {
   const IMAGE_ENV = "reconciler/image.env";
 
@@ -320,3 +338,4 @@ describe("g. the reconciler moves itself to the version in platform.yml (D50)", 
     expect(runOnce(platform).logs).toContainEqual(expect.objectContaining({ message: "pass unchanged" }));
   });
 });
+

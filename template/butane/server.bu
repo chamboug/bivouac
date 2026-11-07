@@ -27,6 +27,25 @@ storage:
           REBOOT_STRATEGY=reboot
           LOCKSMITHD_REBOOT_WINDOW_START=04:00
           LOCKSMITHD_REBOOT_WINDOW_LENGTH=1h
+    # Containers must not read the metadata service: it serves this
+    # file's compiled form (user-data) and other details of the server
+    # (D7). A table of our own, which Docker never touches, so the rule
+    # holds whatever Docker does to its own rules when it restarts. It
+    # only sees forwarded traffic: the host itself still reads its
+    # metadata at boot. Loading it twice gives the same result.
+    - path: /etc/bivouac-metadata-block.nft
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          table inet bivouac_metadata
+          flush table inet bivouac_metadata
+          table inet bivouac_metadata {
+            chain forward {
+              type filter hook forward priority filter - 10; policy accept;
+              ip daddr 169.254.169.254 counter reject
+            }
+          }
   directories:
     # Age key and deploy key, placed over SSH (D7, D30).
     - path: /etc/bivouac
@@ -37,6 +56,25 @@ storage:
       mode: 0700
 systemd:
   units:
+    # Loads the metadata block. Docker requires it (drop-in below): no
+    # container ever runs without the block, and if it cannot be loaded
+    # Docker does not start at all.
+    - name: bivouac-metadata-block.service
+      contents: |
+        [Unit]
+        Description=Keep containers away from the metadata service
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/nft -f /etc/bivouac-metadata-block.nft
+    - name: docker.service
+      dropins:
+        - name: 10-bivouac-metadata-block.conf
+          contents: |
+            [Unit]
+            Requires=bivouac-metadata-block.service
+            After=bivouac-metadata-block.service
     # Starts the reconciler, which then manages everything else from Git.
     # The age key and deploy key are placed in /etc/bivouac over SSH by
     # `bivy init` / `bivy rebuild`, never through user-data.

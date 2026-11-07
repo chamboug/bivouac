@@ -69,14 +69,19 @@ describeWithDocker("ignition", () => {
     expect(modes).toEqual({
       "/etc/ssh/sshd_config.d/10-bivouac.conf": "600",
       "/etc/flatcar/update.conf": "420",
+      "/etc/bivouac-metadata-block.nft": "644",
       "/etc/bivouac": "700",
       "/var/lib/bivouac": "700",
     });
     expect(ignition.passwd.users).toEqual([{ name: "core", sshAuthorizedKeys: [key] }]);
     const units = Object.fromEntries(
-      ignition.systemd.units.map((unit: { name: string; contents: string }) => [unit.name, unit.contents]),
+      ignition.systemd.units.map((unit: { name: string; contents?: string }) => [unit.name, unit.contents]),
     );
-    expect(Object.keys(units)).toEqual(["bivouac-reconciler.service"]);
+    expect(Object.keys(units)).toEqual(["bivouac-metadata-block.service", "docker.service", "bivouac-reconciler.service"]);
+    // Docker requires the metadata block, explicitly, in a drop-in.
+    const docker = ignition.systemd.units.find((unit: { name: string }) => unit.name === "docker.service");
+    expect(docker.contents).toBeUndefined();
+    expect(docker.dropins[0].contents).toContain("Requires=bivouac-metadata-block.service\nAfter=bivouac-metadata-block.service");
     const reconciler: string = units["bivouac-reconciler.service"];
     expect(reconciler).toContain(`Environment=BIVOUAC_RECONCILER_IMAGE=${platform.reconciler.image}\n`);
     expect(reconciler).toContain("EnvironmentFile=-/var/lib/bivouac/reconciler/image.env\n");

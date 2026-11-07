@@ -7,6 +7,7 @@ import { checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
 import { Docker } from "./docker.js";
 import { runPass, type PassConfig, type PassResult } from "./pass.js";
+import { METADATA_ADDRESS, parseAddress } from "./metadata-check.js";
 import { SelfUpdater } from "./self-update.js";
 
 /**
@@ -24,6 +25,9 @@ import { SelfUpdater } from "./self-update.js";
  *                             (default: 80/tcp=80,443/tcp=443,443/udp=443)
  *   BIVOUAC_HEALTH_TIMEOUT    seconds to wait for a container to be healthy
  *                             (default: 180)
+ *   BIVOUAC_METADATA_CHECK    metadata service that must be out of reach,
+ *                             `host:port` (default: 169.254.169.254:80), or
+ *                             `off` where there is none to protect (D7)
  *   BIVOUAC_RECONCILER_IMAGE  the image this reconciler runs, set by the
  *                             systemd unit; without it, the reconciler does
  *                             not update itself (D50)
@@ -54,6 +58,8 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
   }
   const healthTimeout = Number(env.BIVOUAC_HEALTH_TIMEOUT ?? "180");
   const self = env.BIVOUAC_CONTAINER ?? "bivouac-reconciler";
+  const metadataCheck = env.BIVOUAC_METADATA_CHECK ?? METADATA_ADDRESS;
+  if (metadataCheck !== "off") parseAddress(metadataCheck);
   const docker = new Docker();
   return {
     source: {
@@ -75,6 +81,7 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
       // Public images only for now; private app images need the GHCR token (D17).
       pull: (image) => docker.pull(image),
       healthTimeout,
+      ...(metadataCheck === "off" ? {} : { metadataCheck }),
     },
   };
 }

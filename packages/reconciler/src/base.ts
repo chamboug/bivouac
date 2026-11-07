@@ -34,6 +34,8 @@ export interface Runtime {
   pull: (image: string) => Promise<void>;
   /** Seconds to wait for a base service or an app to become healthy. */
   healthTimeout: number;
+  /** `host:port` of the metadata service, which must be out of reach (D7); unset: not checked. */
+  metadataCheck?: string;
 }
 
 export const POSTGRES_PORT = 5432;

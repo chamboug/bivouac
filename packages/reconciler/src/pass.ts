@@ -16,6 +16,7 @@ import { syncRepository, type GitSource } from "./git.js";
 import { PocketId } from "./pocket-id.js";
 import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
 import type { SelfUpdater } from "./self-update.js";
+import { isReachable } from "./metadata-check.js";
 
 export interface PassConfig {
   source: GitSource;
@@ -77,8 +78,8 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   const { commit, instance } = prepared;
   const { domain } = instance.platform;
 
-  const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
   const changes: string[] = [];
+  const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
   await ensureBase(runtime, secrets, domain, changes);
 
   const context = {
@@ -103,6 +104,12 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   await ensureCaddy(runtime, caddyfile, changes);
 
   const failures = results.flatMap((result) => (result.failure ? [{ app: result.name, message: result.failure }] : []));
+  if (runtime.metadataCheck && (await isReachable(runtime.metadataCheck))) {
+    failures.push({
+      app: "(platform)",
+      message: `containers can reach the metadata service (${runtime.metadataCheck}): its block is missing (D7)`,
+    });
+  }
   return { status: changes.length > 0 ? "applied" : "unchanged", commit, changes, failures };
 }
 

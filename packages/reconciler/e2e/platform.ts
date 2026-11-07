@@ -176,6 +176,9 @@ function reconcilerOptions(platform: Platform, ageKey: string, ports: string): s
     "--env", `BIVOUAC_CADDY_PORTS=${ports}`,
     "--env", "BIVOUAC_HEALTH_TIMEOUT=60",
     "--env", `BIVOUAC_RECONCILER_IMAGE=${RECONCILER_RUNNING}`,
+    // No metadata service to protect here; on CI runners, the cloud's own
+    // is reachable at that address. Tested on its own (see the tests).
+    "--env", "BIVOUAC_METADATA_CHECK=off",
   ];
 }
 
@@ -186,10 +189,14 @@ export interface PassOutput {
 }
 
 /** Runs one reconciler pass (`main.js once`) and returns its exit code and logs. */
-export function runOnce(platform: Platform, options: { ageKey?: string; ports?: string } = {}): PassOutput {
+export function runOnce(
+  platform: Platform,
+  options: { ageKey?: string; ports?: string; env?: Record<string, string> } = {},
+): PassOutput {
   const result = run("docker", [
     "run", "--rm",
     ...reconcilerOptions(platform, options.ageKey ?? platform.ageKey, options.ports ?? ""),
+    ...Object.entries(options.env ?? {}).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
     RECONCILER_IMAGE, "node", "packages/reconciler/dist/main.js", "once",
   ]);
   const logs = result.stdout
