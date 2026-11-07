@@ -3,6 +3,8 @@
 # to the reconciler, not here. This file holds no secrets (it ends up in the
 # server's user-data, readable from the server).
 # SSH keys are not written here: they are added from ssh-keys.yml.
+# `bivy ignition` fills the placeholders (between double @) with the repository and
+# the reconciler image of platform.yml, so they are written in one place.
 variant: flatcar
 version: 1.1.0
 storage:
@@ -26,7 +28,12 @@ storage:
           LOCKSMITHD_REBOOT_WINDOW_START=04:00
           LOCKSMITHD_REBOOT_WINDOW_LENGTH=1h
   directories:
+    # Age key and deploy key, placed over SSH (D7, D30).
     - path: /etc/bivouac
+      mode: 0700
+    # Files the reconciler generates (Caddyfile, secret files for the
+    # containers): mounted at the same path in the reconciler (D55, D57).
+    - path: /var/lib/bivouac
       mode: 0700
 systemd:
   units:
@@ -43,14 +50,22 @@ systemd:
         Wants=network-online.target
 
         [Service]
+        Environment=BIVOUAC_RECONCILER_IMAGE=@@RECONCILER_IMAGE@@
         Restart=always
         RestartSec=10
         ExecStartPre=-/usr/bin/docker rm --force bivouac-reconciler
+        # Only the reconciler gets the Docker socket (D8). It drops NET_RAW
+        # and cannot gain privileges, like every container (D56).
         ExecStart=/usr/bin/docker run --rm --name bivouac-reconciler \
           --volume /var/run/docker.sock:/var/run/docker.sock \
           --volume /etc/bivouac:/etc/bivouac:ro \
           --volume /var/lib/bivouac:/var/lib/bivouac \
-          ghcr.io/chamboug/bivouac-reconciler:main
+          --env BIVOUAC_REPOSITORY=@@REPOSITORY@@ \
+          --env BIVOUAC_RECONCILER_IMAGE=${BIVOUAC_RECONCILER_IMAGE} \
+          --cap-drop NET_RAW \
+          --security-opt no-new-privileges \
+          --log-opt max-size=10m --log-opt max-file=3 \
+          ${BIVOUAC_RECONCILER_IMAGE}
         ExecStop=/usr/bin/docker stop bivouac-reconciler
 
         [Install]

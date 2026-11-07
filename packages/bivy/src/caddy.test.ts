@@ -15,7 +15,7 @@ describeWithDocker("caddy validate", () => {
       groups: ["family"],
       domains: ["recipes.example.org"],
     });
-    const { caddyfile } = generateCaddyfile({ domain: "apps.example.com", auth: { setupFrom: "2001:db8::1" } }, [app], []);
+    const { caddyfile } = generateCaddyfile({ domain: "apps.example.com", repository: "git@github.com:example/bivouac-platform.git", reconciler: { image: "ghcr.io/example/bivouac-reconciler:sha-abc1234" }, auth: { setupFrom: "2001:db8::1" } }, [app], []);
     expect(() => validateCaddyfile(caddyfile)).not.toThrow();
   }, 120_000); // the first run pulls the Caddy image
 

@@ -229,9 +229,55 @@ function checkGroups(auth: AuthMode, groups: string[], ctx: z.RefinementCtx): vo
   }
 }
 
+/**
+ * Name of the reconciler image, whoever publishes it: the CI of a Bivouac
+ * monorepo publishes `ghcr.io/<owner>/bivouac-reconciler:sha-<commit>`.
+ */
+export const RECONCILER_IMAGE_NAME = /^ghcr\.io\/[a-z0-9]([a-z0-9-]*[a-z0-9])?\/bivouac-reconciler$/;
+
+/**
+ * The reconciler's image. It runs with the Docker socket, so it can do
+ * anything on the server: only an exact version of a Bivouac reconciler
+ * image is accepted, never another image (D50).
+ */
+export const reconcilerImageSchema = imageSchema.superRefine((image, ctx) => {
+  const digest = /@sha256:[a-f0-9]{64}$/.exec(image);
+  const withoutDigest = digest ? image.slice(0, digest.index) : image;
+  const tag = /:([^/:]*)$/.exec(withoutDigest)?.[1];
+  const name = tag === undefined ? withoutDigest : withoutDigest.slice(0, -tag.length - 1);
+  if (!RECONCILER_IMAGE_NAME.test(name)) {
+    ctx.addIssue({ code: "custom", message: "must be a Bivouac reconciler image (ghcr.io/<owner>/bivouac-reconciler)" });
+    return;
+  }
+  // Only the tags CI publishes for one commit: a tag such as ':main' moves,
+  // and the server would keep whatever it pulled first.
+  if (tag !== undefined && !/^sha-[0-9a-f]{7,40}$/.test(tag)) {
+    ctx.addIssue({ code: "custom", message: "must name one commit's image (':sha-<commit>') or a digest, never a moving tag" });
+  }
+});
+
+/**
+ * Address of the instance repo, read by the server with its deploy key.
+ * GitHub over SSH only: the reconciler pins GitHub's host keys (D54).
+ */
+export const repositorySchema = z
+  .string()
+  .regex(
+    /^git@github\.com:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+\.git$/,
+    "must be the repo's SSH address on GitHub, such as git@github.com:owner/bivouac-platform.git",
+  );
+
 export const platformConfigSchema = z.strictObject({
   /** Base domain of the platform: apps are served on `<name>.<domain>`. */
   domain: hostnameSchema,
+  /** This instance repo's own address, given to the reconciler by Ignition. */
+  repository: repositorySchema,
+  /**
+   * The reconciler version the server runs. Ignition starts this one on a
+   * new server; afterwards the reconciler moves itself to the version named
+   * here (D50).
+   */
+  reconciler: z.strictObject({ image: reconcilerImageSchema }),
   auth: z
     .strictObject({
       /**

@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { generateCaddyfile } from "./caddyfile.js";
 import { appManifestSchema, siteManifestSchema } from "./schema.js";
 
-const platform = { domain: "apps.example.com" };
+const platform = {
+  domain: "apps.example.com",
+  repository: "git@github.com:example/bivouac-platform.git",
+  reconciler: { image: "ghcr.io/example/bivouac-reconciler:sha-abc1234" },
+};
 const app = (fields: Record<string, unknown>) =>
   appManifestSchema.parse({ image: "ghcr.io/example/app:sha-abc123", groups: ["family"], ...fields });
 

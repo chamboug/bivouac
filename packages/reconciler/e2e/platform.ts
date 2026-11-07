@@ -123,7 +123,13 @@ export function createPlatform(): Platform {
   writeFileSync(join(repo, "secrets", "platform.sops.yaml"), encrypted.stdout);
 
   const sshKey = readFileSync(join(REPO_ROOT, "packages/manifest/fixtures/ssh-key.pub"), "utf8").trim();
-  writeFileSync(join(repo, "platform.yml"), `domain: ${DOMAIN}\n`);
+  writeFileSync(join(repo, "platform.yml"), [
+    `domain: ${DOMAIN}`,
+    "repository: git@github.com:example/bivouac-platform.git",
+    "reconciler:",
+    `  image: ghcr.io/example/bivouac-reconciler:sha-e2e0000`,
+    "",
+  ].join("\n"));
   writeFileSync(join(repo, "ssh-keys.yml"), `keys:\n  - name: fixture\n    key: ${sshKey}\n`);
   const git = (...args: string[]) => {
     const result = run("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", ...args], { cwd: repo });

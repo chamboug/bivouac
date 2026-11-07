@@ -10,6 +10,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const template = join(here, "..", "..", "..", "template");
 const SSH_KEY = readFileSync(join(here, "..", "..", "manifest", "fixtures", "ssh-key.pub"), "utf8").trim();
 
+/** platform.yml beyond the domain. */
+const PLATFORM_REST = "repository: git@github.com:example/bivouac-platform.git\nreconciler:\n  image: ghcr.io/example/bivouac-reconciler:sha-abc1234\n";
+
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
@@ -28,7 +31,7 @@ function setup(): { work: string; config: Pick<PassConfig, "source" | "checkout"
   roots.push(root);
   const work = join(root, "work");
   cpSync(template, work, { recursive: true });
-  writeFileSync(join(work, "platform.yml"), "domain: apps.example.com\n");
+  writeFileSync(join(work, "platform.yml"), `domain: apps.example.com\n${PLATFORM_REST}`);
   writeFileSync(join(work, "ssh-keys.yml"), `keys:\n  - name: fixture\n    key: ${SSH_KEY}\n`);
   git(root, "init", "--quiet", "--initial-branch=main", work);
   const commit = (message: string) => {
@@ -89,7 +92,7 @@ describe("reading the desired state", () => {
   it("discards local edits in the checkout: Git is the only source of truth", () => {
     const { config } = setup();
     prepare(config);
-    writeFileSync(join(config.checkout, "platform.yml"), "domain: hacked.example.com\n");
+    writeFileSync(join(config.checkout, "platform.yml"), `domain: hacked.example.com\n${PLATFORM_REST}`);
     writeFileSync(join(config.checkout, "apps", "stray.yml"), app("stray"));
 
     const result = prepare(config);

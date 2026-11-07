@@ -41,9 +41,9 @@ function main(argv: string[]): number {
 function validate(root: string): number {
   const instance = loadInstance(root);
   const errors = [...instance.errors];
-  if (instance.sshKeys) {
+  if (instance.sshKeys && instance.platform) {
     try {
-      compileButane(buildButane(root, instance.sshKeys));
+      compileButane(buildButane(root, instance.platform, instance.sshKeys));
     } catch (error) {
       if (!(error instanceof IgnitionError)) throw error;
       errors.push({ file: "butane/server.bu", message: error.message });
@@ -80,12 +80,12 @@ function validate(root: string): number {
 
 function ignition(root: string, output: string | undefined): number {
   const instance = loadInstance(root);
-  if (!instance.sshKeys) {
-    console.error("ssh-keys.yml is invalid: run 'bivy validate' for details.");
+  if (!instance.sshKeys || !instance.platform) {
+    console.error("platform.yml or ssh-keys.yml is invalid: run 'bivy validate' for details.");
     return 1;
   }
   try {
-    const json = compileButane(buildButane(root, instance.sshKeys));
+    const json = compileButane(buildButane(root, instance.platform, instance.sshKeys));
     if (output) {
       writeFileSync(output, json);
     } else {

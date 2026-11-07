@@ -178,10 +178,67 @@ describe("ssh keys", () => {
 });
 
 describe("platform config", () => {
+  const base = {
+    domain: "apps.example.com",
+    repository: "git@github.com:example/bivouac-platform.git",
+    reconciler: { image: "ghcr.io/example/bivouac-reconciler:sha-abc1234" },
+  };
+  const parse = (changes: Record<string, unknown>) => platformConfigSchema.safeParse({ ...base, ...changes });
+  const messages = (changes: Record<string, unknown>) =>
+    parse(changes).error?.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`) ?? [];
+
   it("accepts an IPv4 or IPv6 address for the first-admin page, and nothing else", () => {
-    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "203.0.113.7" } }).success).toBe(true);
-    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "2001:db8::1" } }).success).toBe(true);
-    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "0.0.0.0/0" } }).success).toBe(false);
-    expect(platformConfigSchema.safeParse({ domain: "apps.example.com", auth: { setupFrom: "anyone" } }).success).toBe(false);
+    expect(parse({ auth: { setupFrom: "203.0.113.7" } }).success).toBe(true);
+    expect(parse({ auth: { setupFrom: "2001:db8::1" } }).success).toBe(true);
+    expect(parse({ auth: { setupFrom: "0.0.0.0/0" } }).success).toBe(false);
+    expect(parse({ auth: { setupFrom: "anyone" } }).success).toBe(false);
+  });
+
+  it("needs the repo's address on GitHub over SSH", () => {
+    expect(parse({}).success).toBe(true);
+    expect(parse({ repository: "git@github.com:Some-Owner/my.instance.git" }).success).toBe(true);
+    for (const repository of [
+      "https://github.com/example/bivouac-platform.git",
+      "git@gitlab.com:example/bivouac-platform.git",
+      "git@github.com:example/bivouac-platform",
+      "git@github.com:example/bivouac platform.git",
+      "git@github.com:-example/x.git",
+    ]) {
+      expect(messages({ repository })).toEqual([expect.stringMatching(/^repository: must be the repo's SSH address/)]);
+    }
+    expect(parse({ repository: undefined }).success).toBe(false);
+  });
+
+  it("needs an exact version of a Bivouac reconciler image, and nothing else", () => {
+    for (const image of [
+      "ghcr.io/example/bivouac-reconciler:sha-abc1234",
+      `ghcr.io/example/bivouac-reconciler@sha256:${"a".repeat(64)}`,
+      `ghcr.io/example/bivouac-reconciler:sha-abc1234@sha256:${"a".repeat(64)}`,
+    ]) {
+      expect(parse({ reconciler: { image } }).success).toBe(true);
+    }
+    expect(messages({ reconciler: { image: "ghcr.io/example/bivouac-reconciler" } })).toEqual([
+      expect.stringMatching(/^reconciler\.image: must name an exact version/),
+    ]);
+    expect(messages({ reconciler: { image: "ghcr.io/example/bivouac-reconciler:latest" } })).toContain(
+      "reconciler.image: must name one commit's image (':sha-<commit>') or a digest, never a moving tag",
+    );
+    for (const image of ["ghcr.io/example/bivouac-reconciler:main", "ghcr.io/example/bivouac-reconciler:v1", "ghcr.io/example/bivouac-reconciler:sha-XYZ1234"]) {
+      expect(messages({ reconciler: { image } })).toEqual([
+        "reconciler.image: must name one commit's image (':sha-<commit>') or a digest, never a moving tag",
+      ]);
+    }
+    for (const image of [
+      "docker.io/example/bivouac-reconciler:sha-abc1234",
+      "ghcr.io/example/other:sha-abc1234",
+      "ghcr.io/example/bivouac-reconciler-evil:sha-abc1234",
+      "ghcr.io/example/sub/bivouac-reconciler:sha-abc1234",
+      "ghcr.io/bivouac-reconciler:sha-abc1234",
+    ]) {
+      expect(messages({ reconciler: { image } })).toEqual([
+        "reconciler.image: must be a Bivouac reconciler image (ghcr.io/<owner>/bivouac-reconciler)",
+      ]);
+    }
+    expect(parse({ reconciler: { image: base.reconciler.image, tag: "x" } }).success).toBe(false);
   });
 });

@@ -1,30 +1,64 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
-import { buildButane, compileButane } from "./ignition.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { IgnitionError, MAX_IGNITION_BYTES, buildButane, compileButane } from "./ignition.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const template = join(here, "..", "..", "..", "template");
 const key = readFileSync(join(here, "..", "..", "manifest", "fixtures", "ssh-key.pub"), "utf8").trim();
 const sshKeys = { keys: [{ name: "fixture", key }] };
+const platform = {
+  domain: "apps.example.com",
+  repository: "git@github.com:example/bivouac-platform.git",
+  reconciler: { image: "ghcr.io/example/bivouac-reconciler:sha-abc1234" },
+};
+
+const roots: string[] = [];
+afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+
+/** A copy of the template whose Butane file is replaced. */
+function withButane(content: string): string {
+  const root = mkdtempSync(join(tmpdir(), "bivouac-butane-"));
+  roots.push(root);
+  cpSync(template, root, { recursive: true });
+  writeFileSync(join(root, "butane", "server.bu"), content);
+  return root;
+}
 
 // Butane runs in Docker. In CI Docker is always there, so never skip there.
 const hasDocker = spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const describeWithDocker = hasDocker || process.env.CI ? describe : describe.skip;
 
 describe("butane", () => {
-  it("appends the keys without rewriting the base file", () => {
-    const butane = buildButane(template, sshKeys);
-    expect(butane.startsWith(readFileSync(join(template, "butane", "server.bu"), "utf8"))).toBe(true);
+  it("fills the values of platform.yml and appends the keys, without rewriting the rest", () => {
+    const base = readFileSync(join(template, "butane", "server.bu"), "utf8");
+    const butane = buildButane(template, platform, sshKeys);
+    const filled = base
+      .split("@@REPOSITORY@@").join(platform.repository)
+      .split("@@RECONCILER_IMAGE@@").join(platform.reconciler.image);
+    expect(butane.startsWith(filled)).toBe(true);
+    expect(butane).not.toContain("@@");
     expect(butane).toContain(key);
+  });
+
+  it("refuses a Butane file without a placeholder, or with an unknown one", () => {
+    const base = readFileSync(join(template, "butane", "server.bu"), "utf8");
+    const missing = withButane(base.replace("@@RECONCILER_IMAGE@@", "ghcr.io/example/bivouac-reconciler:main"));
+    expect(() => buildButane(missing, platform, sshKeys)).toThrow(IgnitionError);
+    expect(() => buildButane(missing, platform, sshKeys)).toThrow(/must contain @@RECONCILER_IMAGE@@/);
+    const unknown = withButane(`${base}# @@DOMAIN@@\n`);
+    expect(() => buildButane(unknown, platform, sshKeys)).toThrow(/unknown placeholder @@DOMAIN@@/);
   });
 });
 
 describeWithDocker("ignition", () => {
-  it("compiles the template with the exact file modes and the keys", () => {
-    const ignition = JSON.parse(compileButane(buildButane(template, sshKeys)));
+  it("compiles the template with the exact file modes, the keys and the reconciler unit", () => {
+    const json = compileButane(buildButane(template, platform, sshKeys));
+    expect(Buffer.byteLength(json)).toBeLessThan(MAX_IGNITION_BYTES);
+    const ignition = JSON.parse(json);
     const modes = Object.fromEntries(
       [...ignition.storage.files, ...ignition.storage.directories].map((entry: { path: string; mode: number }) => [
         entry.path,
@@ -36,8 +70,17 @@ describeWithDocker("ignition", () => {
       "/etc/ssh/sshd_config.d/10-bivouac.conf": "600",
       "/etc/flatcar/update.conf": "420",
       "/etc/bivouac": "700",
+      "/var/lib/bivouac": "700",
     });
     expect(ignition.passwd.users).toEqual([{ name: "core", sshAuthorizedKeys: [key] }]);
-    expect(ignition.systemd.units.map((unit: { name: string }) => unit.name)).toEqual(["bivouac-reconciler.service"]);
+    const units = Object.fromEntries(
+      ignition.systemd.units.map((unit: { name: string; contents: string }) => [unit.name, unit.contents]),
+    );
+    expect(Object.keys(units)).toEqual(["bivouac-reconciler.service"]);
+    const reconciler: string = units["bivouac-reconciler.service"];
+    expect(reconciler).toContain(`Environment=BIVOUAC_RECONCILER_IMAGE=${platform.reconciler.image}\n`);
+    expect(reconciler).toContain(`--env BIVOUAC_REPOSITORY=${platform.repository} `);
+    expect(reconciler).toMatch(/\$\{BIVOUAC_RECONCILER_IMAGE\}\n/);
+    expect(reconciler).not.toContain(":main");
   }, 120_000); // the first run pulls the Butane image
 });
