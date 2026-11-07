@@ -21,6 +21,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(here, "..", "..", "..");
 
 export const RECONCILER_IMAGE = "bivouac-reconciler:dev";
+/**
+ * The same image under the names platform.yml accepts: the "running"
+ * version, a "newer" one, and a "broken" one (the test app, which cannot
+ * run the reconciler's self-test).
+ */
+export const RECONCILER_RUNNING = "ghcr.io/example/bivouac-reconciler:sha-e2e0000";
+export const RECONCILER_NEWER = "ghcr.io/example/bivouac-reconciler:sha-e2e0001";
+export const RECONCILER_BROKEN = "ghcr.io/example/bivouac-reconciler:sha-e2ebad0";
 export const TEST_APP_IMAGE = "bivouac-test-app:dev";
 export const DOMAIN = "apps.bivouac.localhost";
 /** Caddy's fixed address on the internal network (see PLATFORM_NETWORKS). */
@@ -52,6 +60,9 @@ export function docker(...args: string[]): string {
 export function buildImages(): void {
   docker("build", "--quiet", "--file", join(REPO_ROOT, "packages/reconciler/Dockerfile"), "--tag", RECONCILER_IMAGE, REPO_ROOT);
   docker("build", "--quiet", "--tag", TEST_APP_IMAGE, join(here, "test-app"));
+  docker("tag", RECONCILER_IMAGE, RECONCILER_RUNNING);
+  docker("tag", RECONCILER_IMAGE, RECONCILER_NEWER);
+  docker("tag", TEST_APP_IMAGE, RECONCILER_BROKEN);
 }
 
 /**
@@ -127,7 +138,7 @@ export function createPlatform(): Platform {
     `domain: ${DOMAIN}`,
     "repository: git@github.com:example/bivouac-platform.git",
     "reconciler:",
-    `  image: ghcr.io/example/bivouac-reconciler:sha-e2e0000`,
+    `  image: ${RECONCILER_RUNNING}`,
     "",
   ].join("\n"));
   writeFileSync(join(repo, "ssh-keys.yml"), `keys:\n  - name: fixture\n    key: ${sshKey}\n`);
@@ -164,6 +175,7 @@ function reconcilerOptions(platform: Platform, ageKey: string, ports: string): s
     "--env", `BIVOUAC_STATE_DIR=${platform.state}`,
     "--env", `BIVOUAC_CADDY_PORTS=${ports}`,
     "--env", "BIVOUAC_HEALTH_TIMEOUT=60",
+    "--env", `BIVOUAC_RECONCILER_IMAGE=${RECONCILER_RUNNING}`,
   ];
 }
 
@@ -248,4 +260,19 @@ export function reachableFromApps(url: string): boolean {
 
 export function inspect<T = Record<string, unknown>>(name: string): T {
   return (JSON.parse(docker("inspect", name)) as T[])[0] as T;
+}
+
+/**
+ * A file the reconciler wrote in its state directory, read as root through
+ * a container: on Linux it belongs to root, with no access for others.
+ * Undefined when it does not exist.
+ */
+export function readStateFile(platform: Platform, file: string): string | undefined {
+  const result = run("docker", ["run", "--rm", "--volume", `${platform.state}:/state:ro`, ALPINE_IMAGE, "cat", `/state/${file}`]);
+  return result.status === 0 ? result.stdout : undefined;
+}
+
+/** Removes a file from the state directory, as root (see readStateFile). */
+export function removeStateFile(platform: Platform, file: string): void {
+  docker("run", "--rm", "--volume", `${platform.state}:/state`, ALPINE_IMAGE, "rm", "-f", `/state/${file}`);
 }

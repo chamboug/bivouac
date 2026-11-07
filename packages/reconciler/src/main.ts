@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
 import { Docker } from "./docker.js";
 import { runPass, type PassConfig, type PassResult } from "./pass.js";
+import { SelfUpdater } from "./self-update.js";
 
 /**
  * Entry point of the reconciler container. Everything it needs comes from
@@ -22,16 +24,23 @@ import { runPass, type PassConfig, type PassResult } from "./pass.js";
  *                             (default: 80/tcp=80,443/tcp=443,443/udp=443)
  *   BIVOUAC_HEALTH_TIMEOUT    seconds to wait for a container to be healthy
  *                             (default: 180)
+ *   BIVOUAC_RECONCILER_IMAGE  the image this reconciler runs, set by the
+ *                             systemd unit; without it, the reconciler does
+ *                             not update itself (D50)
  *   /etc/bivouac/deploy_key   read-only deploy key (D30)
  *   /etc/bivouac/age.key      age key decrypting the secrets (D7)
  *
  * `main.js once` runs a single pass and exits: 0 if everything applied,
  * 1 otherwise. Used by the tests and the local platform.
+ *
+ * `main.js selftest` only checks that the image runs and finds its tools
+ * (git, ssh, sops): a new version passes it before the reconciler moves to
+ * it. It needs no environment, network or mount.
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-function configFromEnvironment(): PassConfig & { interval: number; self: string; runtime: Runtime } {
+function configFromEnvironment(): PassConfig & { interval: number; self: string; image?: string; runtime: Runtime } {
   const env = process.env;
   const repository = env.BIVOUAC_REPOSITORY;
   if (!repository) {
@@ -57,6 +66,7 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
     ageKey: env.BIVOUAC_AGE_KEY ?? "/etc/bivouac/age.key",
     interval,
     self,
+    ...(env.BIVOUAC_RECONCILER_IMAGE ? { image: env.BIVOUAC_RECONCILER_IMAGE } : {}),
     runtime: {
       docker,
       stateDir,
@@ -74,6 +84,10 @@ function log(message: string, fields: Record<string, unknown> = {}): void {
 }
 
 function report(result: PassResult): boolean {
+  if (result.status === "restart") {
+    log("restarting on the new reconciler version", { commit: result.commit, image: result.image });
+    return true;
+  }
   if (result.status === "invalid") {
     log("instance is invalid: nothing applied", { commit: result.commit, errors: result.errors });
     return false;
@@ -83,15 +97,38 @@ function report(result: PassResult): boolean {
   return result.failures.length === 0;
 }
 
+/** Checks that the image runs and finds its tools, without anything else. */
+function selftest(): number {
+  for (const [command, args] of [["git", ["--version"]], ["ssh", ["-V"]], ["sops", ["--version", "--disable-version-check"]]] as const) {
+    const result = spawnSync(command, args, { encoding: "utf8" });
+    if (result.error || result.status !== 0) {
+      log("selftest failed", { command, error: result.error?.message ?? result.stderr.trim() });
+      return 1;
+    }
+  }
+  log("selftest passed");
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "selftest") return selftest();
   const config = configFromEnvironment();
   const version = await config.runtime.docker.checkVersion();
   await checkStateMount(config.runtime.docker, config.self, config.runtime.stateDir);
-  log("starting", { repository: config.source.repository, interval: config.interval, docker: version });
+  log("starting", { repository: config.source.repository, interval: config.interval, docker: version, image: config.image });
+  const selfUpdater = config.image
+    ? new SelfUpdater({
+        docker: config.runtime.docker,
+        stateDir: config.runtime.stateDir,
+        current: config.image,
+        pull: config.runtime.pull,
+        log,
+      })
+    : undefined;
 
   if (argv[0] === "once") {
     try {
-      return report(await runPass(config, config.runtime)) ? 0 : 1;
+      return report(await runPass(config, config.runtime, selfUpdater)) ? 0 : 1;
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
       return 1;
@@ -110,7 +147,13 @@ async function main(argv: string[]): Promise<number> {
 
   const loop = async () => {
     try {
-      report(await runPass(config, config.runtime));
+      const result = await runPass(config, config.runtime, selfUpdater);
+      report(result);
+      if (result.status === "restart") {
+        // systemd starts the reconciler again, on the image now named in
+        // image.env (Restart=always).
+        process.exit(0);
+      }
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
     }

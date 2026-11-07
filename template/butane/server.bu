@@ -50,7 +50,12 @@ systemd:
         Wants=network-online.target
 
         [Service]
+        # The version installed with the server. Once platform.yml names
+        # another one, the reconciler writes it to image.env and exits;
+        # systemd restarts it on that version (EnvironmentFile= overrides
+        # Environment=, D50). To go back by hand: delete image.env.
         Environment=BIVOUAC_RECONCILER_IMAGE=@@RECONCILER_IMAGE@@
+        EnvironmentFile=-/var/lib/bivouac/reconciler/image.env
         Restart=always
         RestartSec=10
         ExecStartPre=-/usr/bin/docker rm --force bivouac-reconciler

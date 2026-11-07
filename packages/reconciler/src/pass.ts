@@ -15,6 +15,7 @@ import { ensureBase, ensureService, pocketIdUrl, postgresServer, writeIfChanged,
 import { syncRepository, type GitSource } from "./git.js";
 import { PocketId } from "./pocket-id.js";
 import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
+import type { SelfUpdater } from "./self-update.js";
 
 export interface PassConfig {
   source: GitSource;
@@ -30,7 +31,9 @@ export type Prepared =
 
 export type PassResult =
   | { status: "applied" | "unchanged"; commit: string; changes: string[]; failures: { app: string; message: string }[] }
-  | { status: "invalid"; commit: string; errors: ValidationError[] };
+  | { status: "invalid"; commit: string; errors: ValidationError[] }
+  /** platform.yml names a new reconciler version, ready to run: exit so systemd restarts on it. */
+  | { status: "restart"; commit: string; image: string };
 
 /**
  * Reads the desired state: brings the checkout to the tip of the branch and
@@ -56,6 +59,7 @@ export function prepare(config: Pick<PassConfig, "source" | "checkout">): Prepar
  * One reconciler pass: compare the desired state (Git) with what runs on
  * the server and correct the difference, in order:
  *
+ *   0. a new reconciler version in platform.yml stops the pass there;
  *   1. secrets decrypted, network, Postgres, Pocket ID (each healthy first);
  *   2. for each app: database, role and extensions; OIDC client; container;
  *   3. Caddyfile with the routes of the healthy apps, then Caddy.
@@ -63,8 +67,12 @@ export function prepare(config: Pick<PassConfig, "source" | "checkout">): Prepar
  * Idempotent: a second pass with the same commit changes nothing. One app
  * failing does not stop the others.
  */
-export async function runPass(config: PassConfig, runtime: Runtime): Promise<PassResult> {
+export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?: SelfUpdater): Promise<PassResult> {
   const prepared = prepare(config);
+  // Before anything else, even for an invalid commit: an older version may
+  // not understand a newer instance repo, but must still move on (D50).
+  const image = await selfUpdater?.check(config.checkout);
+  if (image) return { status: "restart", commit: prepared.commit, image };
   if (prepared.status === "invalid") return prepared;
   const { commit, instance } = prepared;
   const { domain } = instance.platform;

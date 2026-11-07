@@ -16,6 +16,12 @@ import {
   inspect,
   pocketIdApi,
   psql,
+  RECONCILER_BROKEN,
+  RECONCILER_NEWER,
+  RECONCILER_RUNNING,
+  readStateFile,
+  removeStateFile,
+  run,
   runOnce,
   reachableFromApps,
   throughCaddy,
@@ -23,6 +29,9 @@ import {
   type PassOutput,
   type Platform,
 } from "./platform.ts";
+
+const platformYml = (image: string) =>
+  `domain: ${DOMAIN}\nrepository: git@github.com:example/bivouac-platform.git\nreconciler:\n  image: ${image}\n`;
 
 const derive = (master: string, purpose: string) => createHmac("sha256", master).update(purpose).digest("hex");
 
@@ -265,5 +274,49 @@ describe("f. idempotence", () => {
     expect(pass.status).toBe(0);
     expect(changesOf(pass)).toEqual(expect.arrayContaining(["container bivouac-pocket-id started", "password of recettes"]));
     expect(psql("recettes", derive(platform.masterSecret, "db:recettes"), "recettes", "SELECT 1").stdout.trim()).toBe("1");
+  });
+});
+
+describe("g. the reconciler moves itself to the version in platform.yml (D50)", () => {
+  const IMAGE_ENV = "reconciler/image.env";
+
+  it("stays on its version when the new one fails its self-test, and applies the pass as usual", () => {
+    platform.commit({ "platform.yml": platformYml(RECONCILER_BROKEN) }, "broken reconciler");
+    const pass = runOnce(platform);
+    expect(pass.status).toBe(0);
+    expect(pass.logs).toContainEqual(expect.objectContaining({
+      message: "new reconciler version refused: staying on the current one",
+      refused: RECONCILER_BROKEN,
+      reason: expect.stringMatching(/self-test failed/),
+    }));
+    expect(pass.logs).toContainEqual(expect.objectContaining({ message: "pass unchanged" }));
+    expect(readStateFile(platform, IMAGE_ENV)).toBeUndefined();
+    expect(run("docker", ["inspect", "bivouac-reconciler-selftest"]).status).not.toBe(0);
+  });
+
+  it("refuses another publisher's image", () => {
+    platform.commit({ "platform.yml": platformYml("ghcr.io/someone-else/bivouac-reconciler:sha-e2e0001") }, "foreign");
+    const pass = runOnce(platform);
+    expect(pass.logs).toContainEqual(expect.objectContaining({
+      message: "new reconciler version refused: staying on the current one",
+      reason: "it is not published as ghcr.io/example/bivouac-reconciler",
+    }));
+    expect(readStateFile(platform, IMAGE_ENV)).toBeUndefined();
+  });
+
+  it("moves to a new version before validating the rest, even a field it does not know", () => {
+    platform.commit({ "platform.yml": `${platformYml(RECONCILER_NEWER)}from_the_future: true\n` }, "new reconciler");
+    const pass = runOnce(platform);
+    expect(pass.status).toBe(0);
+    expect(pass.logs).toContainEqual(expect.objectContaining({
+      message: "restarting on the new reconciler version",
+      image: RECONCILER_NEWER,
+    }));
+    expect(pass.logs.some((line) => line.message.startsWith("pass "))).toBe(false);
+    expect(readStateFile(platform, IMAGE_ENV)).toBe(`BIVOUAC_RECONCILER_IMAGE=${RECONCILER_NEWER}\n`);
+
+    platform.commit({ "platform.yml": platformYml(RECONCILER_RUNNING) }, "back to the running version");
+    removeStateFile(platform, IMAGE_ENV);
+    expect(runOnce(platform).logs).toContainEqual(expect.objectContaining({ message: "pass unchanged" }));
   });
 });

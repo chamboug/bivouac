@@ -162,6 +162,19 @@ export class Docker {
     await this.expect("DELETE", `/containers/${encodeURIComponent(name)}?force=true`, [204, 404]);
   }
 
+  /** Waits for a container to stop (at most 2 minutes) and returns its exit code. */
+  async waitContainer(name: string): Promise<number> {
+    const response = await this.expect("POST", `/containers/${encodeURIComponent(name)}/wait`, [200]);
+    return (JSON.parse(response.body.toString()) as { StatusCode: number }).StatusCode;
+  }
+
+  /** A stopped or running container's output, stdout and stderr together. */
+  async logs(name: string): Promise<string> {
+    const response = await this.expect("GET", `/containers/${encodeURIComponent(name)}/logs?stdout=1&stderr=1&tail=20`, [200]);
+    const { stdout, stderr } = demultiplex(response.body);
+    return `${stdout}${stderr}`;
+  }
+
   /** Runs a command in a running container and waits for it to finish. */
   async exec(container: string, cmd: string[]): Promise<ExecResult> {
     const created = await this.expect("POST", `/containers/${encodeURIComponent(container)}/exec`, [201], {

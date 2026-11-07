@@ -79,6 +79,7 @@ describeWithDocker("ignition", () => {
     expect(Object.keys(units)).toEqual(["bivouac-reconciler.service"]);
     const reconciler: string = units["bivouac-reconciler.service"];
     expect(reconciler).toContain(`Environment=BIVOUAC_RECONCILER_IMAGE=${platform.reconciler.image}\n`);
+    expect(reconciler).toContain("EnvironmentFile=-/var/lib/bivouac/reconciler/image.env\n");
     expect(reconciler).toContain(`--env BIVOUAC_REPOSITORY=${platform.repository} `);
     expect(reconciler).toMatch(/\$\{BIVOUAC_RECONCILER_IMAGE\}\n/);
     expect(reconciler).not.toContain(":main");
