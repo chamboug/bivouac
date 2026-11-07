@@ -65,7 +65,8 @@ describe("SSH keys hook", () => {
   });
 });
 
-describeWithDocker("SSH keys hook (script)", () => {
+// The first run pulls the Alpine image.
+describeWithDocker("SSH keys hook (script)", { timeout: 120_000 }, () => {
   it("does nothing before the reconciler has written a list", () => {
     expect(runScript(undefined, ["ignition"])).toEqual({
       status: 0,
