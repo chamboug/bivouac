@@ -134,12 +134,30 @@ lists them. From memory, to check: a snapshot can be used in any location.
 node packages/bivy/dist/cli.js ignition <instance-dir> -o ignition.json
 ```
 
-The result must stay under 32 KiB (Hetzner's `user_data` limit). It contains
-no secret: user-data can be read from the server (D7).
+`bivy` refuses a result above 32 KiB (Hetzner's `user_data` limit); it is
+about 5.6 KB. It contains no secret: user-data can be read from the server
+(D7). It starts the reconciler at the version and with the repo address of
+`platform.yml` (D60), loads the metadata block before Docker (D62), and
+installs the hook that applies the SSH keys written by the reconciler (D63).
 
-**(not built yet)**: the Butane gains the reconciler at an exact version, the
-instance repo's address, the block on the metadata service from Docker
-networks (D7), and the hook that applies SSH keys written by the reconciler.
+Checks after the first boot (over SSH, read-only except the Docker restart
+and the reboot, which are announced first):
+
+```bash
+# The metadata service: refused from a container, answered on the host.
+docker run --rm alpine:3.24 wget -T3 -qO- http://169.254.169.254/hetzner/v1/userdata   # must fail
+curl -s http://169.254.169.254/hetzner/v1/userdata | head -c 40; echo                  # must answer
+sudo nft list table inet bivouac_metadata                                               # counter > 0
+systemctl list-dependencies docker.service | grep bivouac-metadata-block
+# SSH keys: applied, only the `bivouac` fragment left, still able to log in.
+sudo cat /var/lib/bivouac/ssh-status/applied
+ls ~core/.ssh/authorized_keys.d/
+# The reconciler: its version and its last passes.
+systemctl show bivouac-reconciler -p Environment; docker logs --tail 20 bivouac-reconciler
+```
+
+Repeat the metadata checks after `sudo systemctl restart docker` and after a
+reboot.
 
 ## 6. Server
 

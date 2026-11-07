@@ -10,4 +10,4 @@ repository: git@github.com:example/bivouac-platform.git
 # one (Ignition); afterwards the reconciler moves itself to the version
 # written here (D50). Never a moving tag such as ':main'.
 reconciler:
-  image: ghcr.io/chamboug/bivouac-reconciler:sha-896d3b5
+  image: ghcr.io/chamboug/bivouac-reconciler:sha-49b0479
