@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statfsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import { PLATFORM_CONTAINERS, PLATFORM_IMAGES, PLATFORM_NETWORKS, appContainerName, type AppManifest, type PlatformConfig } from "@bivouac/manifest";
 import { redact, type Observation } from "./alerts.js";
@@ -316,6 +316,9 @@ export async function runRestoreTest(runtime: Runtime, plan: BackupPlan, log: (m
   const data = join(root, "postgres");
   rmSync(root, { recursive: true, force: true });
   mkdirSync(data, { recursive: true, mode: 0o700 });
+  // The image's `postgres` user must cross this directory to reach its own
+  // data. Still closed from the host: `restore-test` above it stays 0700.
+  chmodSync(data, 0o755);
   mkdirSync(join(runtime.stateDir, "backup", "cache"), { recursive: true, mode: 0o700 });
   const { bavail, bsize } = statfsSync(root);
   try {
