@@ -334,3 +334,47 @@ Then:
 3. The `/setup` route is removed from the Caddyfile.
 
 Record everything done in the instance repo's operations log.
+
+## 11. Rescue: no SSH key works any more (consent)
+
+For when nobody can log in as `core` (a wrong `ssh-keys.yml`, a lost
+machine, a broken key sync). Hetzner's rescue system boots a small Debian
+from the network; the server's disk is untouched and can be mounted. Tried
+on 8 November 2026 (D63). About 3 minutes of downtime, free.
+
+1. **Fix Git first.** The reconciler writes `ssh-keys.yml` to the server on
+   every pass: a key repaired by hand comes back wrong if the list in the
+   instance repo is wrong. Correct and merge it, if possible.
+2. **A temporary Hetzner SSH key** holding a public key that still exists on a
+   machine at hand (Hetzner only injects keys it knows into the rescue
+   system):
+   `hc /ssh_keys -X POST -d "$(jq -n --arg k "$(cat ~/.ssh/<key>.pub)" '{name:"bivouac-rescue-temp", public_key:$k}')"`.
+3. **Limit SSH to the owner's IP** for the duration: the rescue system's sshd
+   accepts passwords (observed: `passwordauthentication yes`), and its
+   password is returned by the API. Replace the SSH rule's `source_ips` with
+   the Mac's IPv4 `/32` and IPv6 `/64` (`set_rules`, section 7).
+4. **Boot into rescue**: `enable_rescue` with `{"type":"linux64","ssh_keys":[<key-id>]}`
+   (never print the response: it holds `root_password`; filter it with
+   `jq`), then `shutdown`, wait for `off`, `poweron`. Delete or rebuild
+   protection does not need to be lifted.
+5. **Log in as `root`** with a separate known_hosts file: the rescue system
+   has its own host keys, which must never go into the platform's
+   known_hosts. Nothing secret is sent to it.
+6. **Mount Flatcar's root partition**: `mount /dev/disk/by-partlabel/ROOT /mnt`
+   (read-only, `-o ro`, to look first). Keys are in
+   `/mnt/home/core/.ssh/`: sshd reads only `authorized_keys`, which
+   `update-ssh-keys` regenerates from the fragments in `authorized_keys.d/`
+   (`bivouac` is the reconciler's). To repair: remount read-write, put the
+   right public keys in both `authorized_keys.d/bivouac` and
+   `authorized_keys` (owner `500:500`, `core` on Flatcar, mode 644), then
+   `umount`.
+7. **Back to Flatcar**: `reboot` from the rescue system (rescue mode turns
+   itself off at the first boot into it; observed: `reboot` printed a D-Bus
+   error and still rebooted). Wait for Flatcar's own host key (the one in
+   the platform's known_hosts), then log in as `core`.
+8. **Put everything back** and check through the API: the SSH rule open to
+   everyone again, the temporary key deleted, `rescue_enabled` false.
+
+Anyone holding a Hetzner token of the project can do the same and read the
+whole disk, the age key included: the Hetzner account is as sensitive as
+the server itself.
