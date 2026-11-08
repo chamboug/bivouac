@@ -9,7 +9,11 @@ export interface GitSource {
   repository: string;
   /** Branch the server follows. */
   branch: string;
-  /** Read-only deploy key (D30). Unset for local repos in tests. */
+  /**
+   * Read-only deploy key (D30), used once the file exists: it is placed over
+   * SSH after the server first boots, and checked again on every pass, so the
+   * reconciler needs no restart to pick it up. Unset for local repos in tests.
+   */
   deployKey?: string;
   /** Pinned SSH host keys of the Git host: an unknown host key is refused. */
   knownHosts?: string;
@@ -40,11 +44,16 @@ export function syncRepository(source: GitSource, directory: string): string {
   return run(["rev-parse", "HEAD"], directory);
 }
 
-function sshEnv(source: GitSource): Record<string, string> {
-  if (!source.deployKey) return {};
+/**
+ * SSH options for git. The pinned host keys apply whether or not the deploy
+ * key exists yet (D54): without them, a missing key would fall back to the
+ * user's empty known_hosts and report a misleading host key error.
+ */
+export function sshEnv(source: GitSource): Record<string, string> {
+  const key = source.deployKey && existsSync(source.deployKey) ? source.deployKey : undefined;
+  if (!key && !source.knownHosts) return {};
   const options = [
-    `-i ${source.deployKey}`,
-    "-o IdentitiesOnly=yes",
+    ...(key ? [`-i ${key}`, "-o IdentitiesOnly=yes"] : []),
     "-o BatchMode=yes",
     "-o StrictHostKeyChecking=yes",
     ...(source.knownHosts ? [`-o UserKnownHostsFile=${source.knownHosts}`] : []),

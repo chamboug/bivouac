@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkStateMount, type Runtime } from "./base.js";
@@ -65,7 +64,7 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
     source: {
       repository,
       branch: env.BIVOUAC_BRANCH ?? "main",
-      ...(existsSync(deployKey) ? { deployKey } : {}),
+      deployKey,
       knownHosts: join(here, "..", "github_known_hosts"),
     },
     checkout: join(stateDir, "repo"),
