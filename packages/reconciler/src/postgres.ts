@@ -91,6 +91,14 @@ export async function databasesBytes(server: PostgresServer, names: string[]): P
   });
 }
 
+/** One number from one database, read as superuser. */
+export async function countIn(server: PostgresServer, database: string, sql: string): Promise<number> {
+  return withClient(server, database, "postgres", server.superuserPassword, async (admin) => {
+    const result = await admin.query<{ count: string }>(sql);
+    return Number(result.rows[0]?.count ?? 0);
+  });
+}
+
 async function withClient<T>(
   server: PostgresServer,
   database: string,

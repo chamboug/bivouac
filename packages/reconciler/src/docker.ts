@@ -159,8 +159,9 @@ export class Docker {
     await this.expect("POST", `/containers/${encodeURIComponent(name)}/stop?t=${timeoutSeconds}`, [204, 304]);
   }
 
-  async removeContainer(name: string): Promise<void> {
-    await this.expect("DELETE", `/containers/${encodeURIComponent(name)}?force=true`, [204, 404]);
+  /** `anonymousVolumes` also removes the unnamed volumes an image declares; named ones always stay. */
+  async removeContainer(name: string, options: { anonymousVolumes?: boolean } = {}): Promise<void> {
+    await this.expect("DELETE", `/containers/${encodeURIComponent(name)}?force=true${options.anonymousVolumes ? "&v=true" : ""}`, [204, 404]);
   }
 
   /** Waits for a container to stop (by default at most 2 minutes) and returns its exit code. */
@@ -177,14 +178,14 @@ export class Docker {
   }
 
   /** Runs a command in a running container and waits for it to finish. */
-  async exec(container: string, cmd: string[]): Promise<ExecResult> {
+  async exec(container: string, cmd: string[], timeout?: number): Promise<ExecResult> {
     const created = await this.expect("POST", `/containers/${encodeURIComponent(container)}/exec`, [201], {
       Cmd: cmd,
       AttachStdout: true,
       AttachStderr: true,
     });
     const { Id } = JSON.parse(created.body.toString()) as { Id: string };
-    const started = await this.expect("POST", `/exec/${Id}/start`, [200], { Detach: false, Tty: false });
+    const started = await this.expect("POST", `/exec/${Id}/start`, [200], { Detach: false, Tty: false }, undefined, timeout);
     const { stdout, stderr } = demultiplex(started.body);
     const inspected = await this.expect("GET", `/exec/${Id}/json`, [200]);
     const { ExitCode } = JSON.parse(inspected.body.toString()) as { ExitCode: number };

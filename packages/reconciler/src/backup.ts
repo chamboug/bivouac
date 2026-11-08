@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { PLATFORM_CONTAINERS, PLATFORM_IMAGES, PLATFORM_NETWORKS, appContainerName, type AppManifest, type PlatformConfig } from "@bivouac/manifest";
 import { redact, type Observation } from "./alerts.js";
 import { POCKET_ID_DATABASE, postgresServer, writeIfChanged, type Runtime } from "./base.js";
-import { createBody, type ContainerSpec } from "./containers.js";
-import { databaseName, databasesBytes, type PostgresServer } from "./postgres.js";
+import { createBody, waitFor, type ContainerSpec } from "./containers.js";
+import { countIn, databaseName, databasesBytes, type PostgresServer } from "./postgres.js";
 import type { PlatformSecrets } from "./secrets.js";
 
 /**
@@ -50,6 +50,8 @@ export interface BackupPlan {
   stop: { app: string; container: string }[];
   /** healthchecks.io ping address of this job: a secret. */
   ping?: string;
+  /** The same, for the weekly restore test. */
+  restorePing?: string;
 }
 
 /** What to back up, from the manifests. Undefined when backups are not configured. */
@@ -74,7 +76,7 @@ export function backupPlan(
     stop: apps
       .filter((app) => app.backup.stop && Object.keys(app.volumes).length > 0)
       .map((app) => ({ app: app.name, container: appContainerName(app.name) })),
-    ...(secrets.alerts ? { ping: secrets.alerts.healthchecks.backup } : {}),
+    ...(secrets.alerts ? { ping: secrets.alerts.healthchecks.backup, restorePing: secrets.alerts.healthchecks.restore } : {}),
   };
 }
 
@@ -86,7 +88,7 @@ export interface OneOffResult {
 /** Runs a container to its end and removes it. A leftover of an interrupted run is removed first. */
 export async function runOneOff(runtime: Runtime, spec: ContainerSpec, timeout: number): Promise<OneOffResult> {
   const { docker } = runtime;
-  await docker.removeContainer(spec.name);
+  await docker.removeContainer(spec.name, { anonymousVolumes: true });
   if (!(await docker.imageExists(spec.image))) await runtime.pull(spec.image);
   const body = createBody(spec);
   const host = body.HostConfig as Record<string, unknown>;
@@ -98,7 +100,8 @@ export async function runOneOff(runtime: Runtime, spec: ContainerSpec, timeout: 
     const exitCode = await docker.waitContainer(spec.name, timeout);
     return { exitCode, logs: await docker.logs(spec.name) };
   } finally {
-    await docker.removeContainer(spec.name);
+    // The Postgres image declares a volume: without this, each run leaves one behind.
+    await docker.removeContainer(spec.name, { anonymousVolumes: true });
   }
 }
 
@@ -295,6 +298,96 @@ export async function runMaintenance(runtime: Runtime, plan: BackupPlan, log: (m
   log("old backups cleaned up");
 }
 
+const RESTORE_CONTAINER = "bivouac-restore-test";
+const USER_TABLES = "SELECT count(*) AS count FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
+const POCKET_ID_USERS = "SELECT count(*) AS count FROM users";
+/** A restore needs room for the dumps and for the database rebuilt from them. */
+const RESTORE_SPACE_FACTOR = 2;
+
+/**
+ * The proof that the backups can be used (D9): the repository is checked,
+ * then the latest complete copy goes into a throwaway Postgres with no
+ * network, and is compared with the live databases. The real Postgres only
+ * answers two counts.
+ */
+export async function runRestoreTest(runtime: Runtime, plan: BackupPlan, log: (message: string, fields?: Record<string, unknown>) => void): Promise<void> {
+  const { docker } = runtime;
+  const root = join(runtime.stateDir, "backup", "restore-test");
+  const data = join(root, "postgres");
+  rmSync(root, { recursive: true, force: true });
+  mkdirSync(data, { recursive: true, mode: 0o700 });
+  mkdirSync(join(runtime.stateDir, "backup", "cache"), { recursive: true, mode: 0o700 });
+  const { bavail, bsize } = statfsSync(root);
+  try {
+    const needed = await databasesBytes(plan.postgres, plan.databases);
+    if (!dumpsFit(needed * RESTORE_SPACE_FACTOR, bavail * bsize)) throw new Error(`not enough free disk for the restore test (${Math.ceil(needed / 1048576)} MiB of data)`);
+    await checked("restic check", runRestic(runtime, plan, MAINTENANCE_TIMEOUT, ["check", "--read-data-subset", "10%"]));
+    await checked("restic restore", runRestic(
+      runtime,
+      plan,
+      MAINTENANCE_TIMEOUT,
+      ["restore", "latest", "--host", RESTIC_HOST, "--tag", "nightly", "--include", "/source/dumps", "--target", "/restore"],
+      [{ type: "bind", source: root, target: "/restore" }],
+    ));
+    const dumps = join(root, "source", "dumps");
+    for (const database of plan.databases) {
+      if (!existsSync(join(dumps, `${database}.dump`))) throw new Error(`the latest backup has no dump of ${database}`);
+    }
+
+    await docker.removeContainer(RESTORE_CONTAINER, { anonymousVolumes: true });
+    if (!(await docker.imageExists(PLATFORM_IMAGES.postgres))) await runtime.pull(PLATFORM_IMAGES.postgres);
+    const body = createBody({
+      name: RESTORE_CONTAINER,
+      image: PLATFORM_IMAGES.postgres,
+      // No password to manage: nothing can reach a container without a network.
+      env: { POSTGRES_HOST_AUTH_METHOD: "trust" },
+      mounts: [
+        { type: "bind", source: data, target: "/var/lib/postgresql" },
+        { type: "bind", source: dumps, target: "/dumps", readOnly: true },
+      ],
+      networks: {},
+    });
+    const host = body.HostConfig as Record<string, unknown>;
+    host.RestartPolicy = { Name: "no" };
+    host.Memory = ONE_OFF_MEMORY_BYTES;
+    host.NetworkMode = "none";
+    await docker.createContainer(RESTORE_CONTAINER, body);
+    await docker.startContainer(RESTORE_CONTAINER);
+    await waitFor(async () => {
+      // Over TCP: during its first start the image serves its socket only.
+      const ready = await docker.exec(RESTORE_CONTAINER, ["pg_isready", "-h", "127.0.0.1", "-U", "postgres"]);
+      return ready.exitCode === 0 ? true : "starting";
+    }, runtime.healthTimeout, "the throwaway Postgres");
+
+    const sql = async (database: string, statement: string): Promise<number> => {
+      const result = await docker.exec(RESTORE_CONTAINER, ["psql", "-h", "127.0.0.1", "-U", "postgres", "-d", database, "-At", "-c", statement]);
+      if (result.exitCode !== 0) throw new Error(`reading restored ${database}: ${lastLine(result.stderr)}`);
+      return Number(result.stdout.trim());
+    };
+    let tables = 0;
+    for (const database of plan.databases) {
+      const created = await docker.exec(RESTORE_CONTAINER, ["createdb", "-h", "127.0.0.1", "-U", "postgres", database]);
+      if (created.exitCode !== 0) throw new Error(`creating ${database}: ${lastLine(created.stderr)}`);
+      const restored = await docker.exec(
+        RESTORE_CONTAINER,
+        ["pg_restore", "-h", "127.0.0.1", "-U", "postgres", "--no-owner", "--no-privileges", "--exit-on-error", "--dbname", database, `/dumps/${database}.dump`],
+        MAINTENANCE_TIMEOUT,
+      );
+      if (restored.exitCode !== 0) throw new Error(`restoring ${database}: ${lastLine(restored.stderr)}`);
+      const count = await sql(database, USER_TABLES);
+      if (count === 0 && (await countIn(plan.postgres, database, USER_TABLES)) > 0) throw new Error(`${database} came back with no table`);
+      tables += count;
+    }
+    if (plan.databases.includes(POCKET_ID_DATABASE) && (await countIn(plan.postgres, POCKET_ID_DATABASE, POCKET_ID_USERS)) > 0) {
+      if ((await sql(POCKET_ID_DATABASE, POCKET_ID_USERS)) === 0) throw new Error("Pocket ID came back with no account");
+    }
+    log("restore test passed", { databases: plan.databases.length, tables });
+  } finally {
+    await docker.removeContainer(RESTORE_CONTAINER, { anonymousVolumes: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 /** Weeks start on Sunday (day 0 of the Unix epoch was a Thursday), when the restore test is expected. */
 export const backupWeek = (now: number) => Math.floor((backupDay(now) + 4) / 7);
 
@@ -308,6 +401,9 @@ export interface BackupState {
   /** The week of the last successful clean-up. */
   maintenanceWeek?: number;
   maintenanceError?: string;
+  /** The week of the last passed restore test. */
+  restoreWeek?: number;
+  restoreError?: string;
 }
 
 /** A backup day starts at the backup hour. */
@@ -325,6 +421,7 @@ export interface SchedulerOptions {
   log: (message: string, fields?: Record<string, unknown>) => void;
   run?: (plan: BackupPlan) => Promise<void>;
   maintain?: (plan: BackupPlan) => Promise<void>;
+  restore?: (plan: BackupPlan) => Promise<void>;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }
@@ -336,6 +433,7 @@ export class BackupScheduler {
   private readonly fetch: typeof globalThis.fetch;
   private readonly run: (plan: BackupPlan) => Promise<void>;
   private readonly maintain: (plan: BackupPlan) => Promise<void>;
+  private readonly restore: (plan: BackupPlan) => Promise<void>;
   private readonly state: BackupState;
   private plan: BackupPlan | undefined;
   private running: Promise<void> | undefined;
@@ -346,9 +444,10 @@ export class BackupScheduler {
     this.fetch = options.fetch ?? ((...args) => globalThis.fetch(...args));
     this.run = options.run ?? ((plan) => runBackup(options.runtime, plan, options.log, { mayCreateRepository: this.state.lastSuccessAt === undefined }));
     this.maintain = options.maintain ?? ((plan) => runMaintenance(options.runtime, plan, options.log));
+    this.restore = options.restore ?? ((plan) => runRestoreTest(options.runtime, plan, options.log));
     this.state = this.load();
     // Left by a run that was cut short: no reason to keep a copy of the data there.
-    rmSync(join(options.runtime.stateDir, "backup", "dumps"), { recursive: true, force: true });
+    for (const leftover of ["dumps", "restore-test"]) rmSync(join(options.runtime.stateDir, "backup", leftover), { recursive: true, force: true });
   }
 
   get busy(): boolean {
@@ -384,6 +483,7 @@ export class BackupScheduler {
       incidents: [
         ...(this.state.lastError ? [{ key: "backup:nightly" as const, message: `The backup failed: ${this.state.lastError}` }] : []),
         ...(this.state.maintenanceError ? [{ key: "backup:retention" as const, message: `Cleaning up old backups failed: ${this.state.maintenanceError}` }] : []),
+        ...(this.state.restoreError ? [{ key: "backup:restore" as const, message: `The restore test failed: ${this.state.restoreError}` }] : []),
       ],
       checked: ["backup"],
     };
@@ -409,6 +509,7 @@ export class BackupScheduler {
       await this.ping(plan, "");
       this.options.log("backup done");
       await this.cleanUp(plan);
+      await this.testRestore(plan);
     } catch (error) {
       this.state.lastError = redact((error as Error).message);
       this.save();
@@ -432,11 +533,30 @@ export class BackupScheduler {
     this.save();
   }
 
-  /** The address is a secret: it is never logged. */
-  private async ping(plan: BackupPlan, suffix: string): Promise<void> {
-    if (!plan.ping) return;
+  /** Right after a good backup, so the latest copy holds every current database. */
+  private async testRestore(plan: BackupPlan): Promise<void> {
+    const week = backupWeek(this.now());
+    if (this.state.restoreWeek === week) return;
+    await this.ping(plan, "/start", plan.restorePing);
     try {
-      await this.fetch(`${plan.ping}${suffix}`, { method: "POST", signal: AbortSignal.timeout(10_000) });
+      await this.restore(plan);
+      this.state.restoreWeek = week;
+      delete this.state.restoreError;
+      this.save();
+      await this.ping(plan, "", plan.restorePing);
+    } catch (error) {
+      this.state.restoreError = redact((error as Error).message);
+      this.save();
+      this.options.log("restore test failed", { error: this.state.restoreError });
+      await this.ping(plan, "/fail", plan.restorePing);
+    }
+  }
+
+  /** The address is a secret: it is never logged. */
+  private async ping(plan: BackupPlan, suffix: string, address = plan.ping): Promise<void> {
+    if (!address) return;
+    try {
+      await this.fetch(`${address}${suffix}`, { method: "POST", signal: AbortSignal.timeout(10_000) });
     } catch {
       this.options.log("backup ping not sent");
     }

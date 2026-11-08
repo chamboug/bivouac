@@ -10,12 +10,12 @@ import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
 const at = (day: number, hour: number) => day * DAY + hour * HOUR;
-const plan = { ping: "https://hc-ping.com/job", databases: [], volumes: [], stop: [] } as unknown as BackupPlan;
+const plan = { ping: "https://hc-ping.com/job", restorePing: "https://hc-ping.com/restore", databases: [], volumes: [], stop: [] } as unknown as BackupPlan;
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
-function setup(run: (plan: BackupPlan) => Promise<void> = async () => {}, stateDir = mkdtempSync(join(tmpdir(), "bivouac-backup-")), fresh = false, maintain: (plan: BackupPlan) => Promise<void> = async () => {}) {
+function setup(run: (plan: BackupPlan) => Promise<void> = async () => {}, stateDir = mkdtempSync(join(tmpdir(), "bivouac-backup-")), fresh = false, maintain: (plan: BackupPlan) => Promise<void> = async () => {}, restore: (plan: BackupPlan) => Promise<void> = async () => {}) {
   roots.push(stateDir);
   // Tests start from a server that has already run; `fresh` is a new one.
   if (!fresh) {
@@ -30,6 +30,7 @@ function setup(run: (plan: BackupPlan) => Promise<void> = async () => {}, stateD
     log: (message, fields) => logs.push(JSON.stringify({ message, ...fields })),
     run,
     maintain,
+    restore,
     now: () => clock.now,
     fetch: (async (url: string) => { pings.push(String(url)); return new Response("OK"); }) as unknown as typeof globalThis.fetch,
   });
@@ -61,7 +62,7 @@ describe("the scheduler", () => {
     const { scheduler, pings } = setup();
     scheduler.tick();
     await scheduler.idle();
-    expect(pings).toEqual(["https://hc-ping.com/job/start", "https://hc-ping.com/job"]);
+    expect(pings.slice(0, 2)).toEqual(["https://hc-ping.com/job/start", "https://hc-ping.com/job"]);
     expect(scheduler.observation()).toEqual({ incidents: [], checked: ["backup"] });
   });
 
@@ -185,6 +186,46 @@ describe("the weekly clean-up", () => {
     expect(prune).toEqual(["prune"]);
     expect(retentionCommands().flat()).not.toContain("archive");
     expect(retentionCommands().flat()).not.toContain("--prune");
+  });
+});
+
+describe("the weekly restore test", () => {
+  const nextNight = async (entry: ReturnType<typeof setup>) => {
+    entry.clock.now += DAY;
+    entry.scheduler.tick();
+    await entry.scheduler.idle();
+  };
+
+  it("runs once a week, after the backup, and tells healthchecks.io", async () => {
+    let tests = 0;
+    const entry = setup(async () => {}, undefined, false, undefined, async () => { tests += 1; });
+    await nextNight(entry);
+    await nextNight(entry);
+    expect(tests).toBeGreaterThanOrEqual(1);
+    expect(tests).toBeLessThanOrEqual(2);
+    expect(entry.pings).toContain("https://hc-ping.com/restore/start");
+    expect(entry.pings).toContain("https://hc-ping.com/restore");
+  });
+
+  it("does not run after a backup that failed", async () => {
+    let tests = 0;
+    const entry = setup(async () => { throw new Error("x"); }, undefined, false, undefined, async () => { tests += 1; });
+    await nextNight(entry);
+    expect(tests).toBe(0);
+  });
+
+  it("reports a failure on its own check, and tries again the next night", async () => {
+    let fail = true;
+    let tests = 0;
+    const entry = setup(async () => {}, undefined, false, undefined, async () => { tests += 1; if (fail) throw new Error("empty dump"); });
+    await nextNight(entry);
+    expect(entry.pings).toContain("https://hc-ping.com/restore/fail");
+    expect(entry.pings).not.toContain("https://hc-ping.com/job/fail");
+    expect(entry.scheduler.observation().incidents[0]).toMatchObject({ key: "backup:restore", message: expect.stringContaining("empty dump") });
+    fail = false;
+    await nextNight(entry);
+    expect(tests).toBe(2);
+    expect(entry.scheduler.observation().incidents).toEqual([]);
   });
 });
 

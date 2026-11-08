@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Watch, loadAlertCredentials, sendPushover } from "./alerts.js";
-import { BackupScheduler, runBackup, runMaintenance } from "./backup.js";
+import { BackupScheduler, runBackup, runMaintenance, runRestoreTest } from "./backup.js";
 import { checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
 import { Docker } from "./docker.js";
@@ -43,8 +43,8 @@ import { SelfUpdater } from "./self-update.js";
  * `main.js once` runs a single pass and exits: 0 if everything applied,
  * 1 otherwise. Used by the tests and the local platform.
  *
- * `main.js once --backup [--maintenance]` also runs a backup after the pass,
- * and the weekly clean-up (tests).
+ * `main.js once [--backup] [--maintenance] [--restore]` also runs these jobs
+ * after the pass (tests).
  *
  * `main.js selftest` only checks that the image runs and finds its tools
  * (git, ssh, sops): a new version passes it before the reconciler moves to
@@ -161,11 +161,15 @@ async function main(argv: string[]): Promise<number> {
     try {
       const result = await runPass(config, config.runtime, selfUpdater);
       const ok = report(result);
-      if (argv[1] !== "--backup") return ok ? 0 : 1;
+      const steps = argv.slice(1);
+      if (steps.length === 0) return ok ? 0 : 1;
       if (result.status === "restart" || result.status === "invalid" || !result.backup) throw new Error("nothing to back up");
-      await runBackup(config.runtime, result.backup, log, { mayCreateRepository: true });
-      if (argv[2] === "--maintenance") await runMaintenance(config.runtime, result.backup, log);
-      log("backup done");
+      if (steps.includes("--backup")) {
+        await runBackup(config.runtime, result.backup, log, { mayCreateRepository: true });
+        log("backup done");
+      }
+      if (steps.includes("--maintenance")) await runMaintenance(config.runtime, result.backup, log);
+      if (steps.includes("--restore")) await runRestoreTest(config.runtime, result.backup, log);
       return 0;
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
