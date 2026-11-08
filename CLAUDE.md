@@ -112,6 +112,7 @@ The owner regularly codes small applications with Claude. Some live happily as a
 - **A single shared Postgres** (18, image `postgis/postgis:18-3.7`), with one database and one role per app and `REVOKE CONNECT ... FROM PUBLIC`. The image ships PostGIS; pgvector will need an image of our own, built the day an app needs it (D51). Extensions are enabled per database according to the manifest, from an allowlist (D56). Accepted trade-off: all apps share the same major version.
 - **Postgres major upgrades**: Renovate never proposes them (exclusion rule). They follow a documented procedure (dump then restore, the same path as `rebuild`) and are high-risk changes, approved by the owner (D29).
 - **Files stored locally**, in volumes declared per app (`name → mount path`), included in backups. No paid S3.
+- **S3-ready apps, no S3 server** (D72): apps use one storage module, on the declared volume by default and on S3 when `S3_BUCKET` is set, so an app can leave the platform without a rewrite. Garage runs in the template's CI only, until a trigger listed in D72 appears.
 - No BaaS layer: Nuxt server routes and Drizzle are enough.
 - **Database migrations**: run at app startup, and **additive only** (add, never drop or rename in the same deployment). A destructive migration takes two deployments. This is what makes rolling back to the previous image safe (D21).
 
@@ -256,6 +257,7 @@ Until the prod phase, the server itself is the dev environment.
 ### Conventions for Claude
 
 - **App contract** (any framework): an image that listens on `port`, answers on the health endpoint, reads the standard variables provided by the platform, and applies additive migrations at startup.
+- **User files** (D72), in any framework: never use `fs` directly, only the storage module. The database stores keys (`photos/123.jpg`), never paths or full URLs. Files are served through an app route that checks access (`/api/files/...`). The disk mode refuses keys that leave the app's directory. The module has no framework dependency, so a non-Nuxt app can copy it.
 - **App template repo, Nuxt only**: shared layer (OIDC auth, database connection, health endpoint), a second `local` layer (Better Auth) exclusive with the first, Dockerfile, GitHub workflow (build, push to GHCR, deployment PR), Vitest and a minimal Playwright test, and a `CLAUDE.md` describing these conventions. No Next template for now: the owner's Next app follows the contract by hand, and we will create a template if a second Next app comes along (D23).
 - `.mcp.json` in the template with the **official Nuxt UI MCP** (`https://ui.nuxt.com/mcp`; in Claude Code: `claude mcp add --transport http nuxt-ui https://ui.nuxt.com/mcp`), plus the **official Nuxt UI skill**. Additional references: `https://ui.nuxt.com/llms.txt` and `/llms-full.txt`.
 - **A "new app" skill**: create the repo from the template, set the `bivouac-deploy` secret on it (read from SOPS with the Mac's age key), code the app, push, then open a PR on the instance repo adding the manifest.
