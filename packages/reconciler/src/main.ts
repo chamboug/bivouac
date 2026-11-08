@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Watch, loadAlertCredentials, sendPushover } from "./alerts.js";
 import { checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
 import { Docker } from "./docker.js";
@@ -27,6 +28,9 @@ import { SelfUpdater } from "./self-update.js";
  *   BIVOUAC_METADATA_CHECK    metadata service that must be out of reach,
  *                             `host:port` (default: 169.254.169.254:80), or
  *                             `off` where there is none to protect (D7)
+ *   BIVOUAC_ALERTS            `off` where nothing must reach the owner's
+ *                             phone (local platform); default: on, if the
+ *                             secrets file holds the credentials (D45)
  *   BIVOUAC_RECONCILER_IMAGE  the image this reconciler runs, set by the
  *                             systemd unit; without it, the reconciler does
  *                             not update itself (D50)
@@ -116,8 +120,21 @@ function selftest(): number {
   return 0;
 }
 
+/** Sends one message to the owner's phone, to prove the channel works. */
+async function alertTest(): Promise<number> {
+  const credentials = loadAlertCredentials(process.env.BIVOUAC_STATE_DIR ?? "/var/lib/bivouac");
+  if (!credentials) {
+    log("alert test: no credentials on this server yet");
+    return 1;
+  }
+  await sendPushover(credentials, "Bivouac: test", "This is a test alert from your server.", 0);
+  log("alert test sent");
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === "selftest") return selftest();
+  if (argv[0] === "alert-test") return alertTest();
   const config = configFromEnvironment();
   const version = await config.runtime.docker.checkVersion();
   await checkStateMount(config.runtime.docker, config.self, config.runtime.stateDir);
@@ -141,6 +158,7 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
+  const watch = process.env.BIVOUAC_ALERTS === "off" ? undefined : new Watch({ stateDir: config.runtime.stateDir, log });
   let stopping = false;
   let timer: NodeJS.Timeout | undefined;
   const stop = () => {
@@ -160,8 +178,10 @@ async function main(argv: string[]): Promise<number> {
         // image.env (Restart=always).
         process.exit(0);
       }
+      await watch?.afterPass({ result });
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
+      await watch?.afterPass({ error: error as Error });
     }
     if (!stopping) {
       timer = setTimeout(() => void loop(), config.interval * 1000);

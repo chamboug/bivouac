@@ -13,6 +13,7 @@ import {
   createPlatform,
   destroyPlatform,
   docker,
+  ALERT_TOKEN,
   MAIL_PASSWORD,
   inspect,
   pocketIdApi,
@@ -164,6 +165,14 @@ describe("b. secrets", () => {
     const env = inspect<ContainerState>("bivouac-pocket-id").Config.Env.join("\n");
     expect(env).not.toContain(platform.staticApiKey);
     expect(env).not.toContain(derive(platform.masterSecret, "db:bivouac_pocket_id"));
+  });
+
+  it("keeps the alert credentials for the reconciler alone (D45)", () => {
+    expect(JSON.parse(readStateFile(platform, "secrets/alerts/credentials.json") ?? "{}").pushover_token).toBe(ALERT_TOKEN);
+    for (const container of ["bivouac-pocket-id", "bivouac-postgres", "bivouac-caddy"]) {
+      expect(inspect<ContainerState>(container).Config.Env.join("\n")).not.toContain(ALERT_TOKEN);
+      expect(JSON.stringify(inspect<{ Mounts: { Source: string }[] }>(container).Mounts.map((mount) => mount.Source))).not.toContain("secrets/alerts");
+    }
   });
 
   it("applies nothing when the secrets cannot be decrypted", () => {

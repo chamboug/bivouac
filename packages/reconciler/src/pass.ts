@@ -10,6 +10,7 @@ import {
   type Instance,
   type ValidationError,
 } from "@bivouac/manifest";
+import { saveAlertCredentials } from "./alerts.js";
 import { ensureApp, type AppResult } from "./apps.js";
 import { ensureBase, ensureService, pocketIdUrl, postgresServer, writeIfChanged, type Runtime } from "./base.js";
 import { syncRepository, type GitSource } from "./git.js";
@@ -85,6 +86,12 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   // keep a key change from reaching the server.
   if (instance.sshKeys && writeSshKeys(runtime.stateDir, instance.sshKeys)) changes.push("SSH keys");
   const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
+  let alertsProblem: string | undefined;
+  try {
+    saveAlertCredentials(runtime.stateDir, secrets.alerts);
+  } catch (error) {
+    alertsProblem = `the alert credentials could not be saved: ${(error as Error).message}`;
+  }
   await ensureBase(runtime, secrets, domain, instance.platform.mail, changes);
 
   const context = {
@@ -109,6 +116,7 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   await ensureCaddy(runtime, caddyfile, changes);
 
   const failures = results.flatMap((result) => (result.failure ? [{ app: result.name, message: result.failure }] : []));
+  if (alertsProblem) failures.push({ app: "(platform)", message: alertsProblem });
   const keysProblem = sshKeysProblem(runtime.stateDir);
   if (keysProblem) failures.push({ app: "(platform)", message: keysProblem });
   if (runtime.metadataCheck && (await isReachable(runtime.metadataCheck))) {

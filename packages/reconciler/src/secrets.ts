@@ -21,6 +21,16 @@ export const platformSecretsSchema = z.looseObject({
   }),
   /** Password of the SMTP account named in `platform.yml`. */
   mail: z.looseObject({ password: z.string().min(1, "must not be empty") }).optional(),
+  /** Pushover and healthchecks.io (D45). Without them, the platform runs without alerts. */
+  alerts: z.looseObject({
+    pushover_token: z.string().min(1, "must not be empty"),
+    pushover_user: z.string().min(1, "must not be empty"),
+    healthchecks: z.looseObject({
+      heartbeat: z.url({ protocol: /^https$/ }),
+      backup: z.url({ protocol: /^https$/ }),
+      restore: z.url({ protocol: /^https$/ }),
+    }),
+  }).optional(),
 });
 
 export type PlatformSecrets = z.infer<typeof platformSecretsSchema>;

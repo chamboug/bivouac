@@ -96,6 +96,8 @@ export interface Platform {
   commit(files: Record<string, string | null>, message: string): void;
 }
 
+export const ALERT_TOKEN = "fake-pushover-token-for-tests";
+
 /**
  * A fresh instance repo, created from `template/` like `bivy init` will do,
  * with an encrypted secrets file. The real path is used everywhere: on a
@@ -125,6 +127,13 @@ export function createPlatform(): Platform {
     `  static_api_key: ${staticApiKey}`,
     "mail:",
     `  password: ${MAIL_PASSWORD}`,
+    "alerts:",
+    `  pushover_token: ${ALERT_TOKEN}`,
+    "  pushover_user: fake-user",
+    "  healthchecks:",
+    "    heartbeat: https://hc-ping.invalid/heartbeat",
+    "    backup: https://hc-ping.invalid/backup",
+    "    restore: https://hc-ping.invalid/restore",
     "",
   ].join("\n");
   mkdirSync(join(repo, "secrets"), { recursive: true });
@@ -219,6 +228,8 @@ export function startReconciler(platform: Platform, ports: string): void {
   docker("run", "--detach", "--restart", "unless-stopped",
     ...reconcilerOptions(platform, platform.ageKey, ports),
     "--env", "BIVOUAC_INTERVAL_SECONDS=10",
+    // Fake credentials: the local platform must never try to alert anyone.
+    "--env", "BIVOUAC_ALERTS=off",
     RECONCILER_IMAGE);
 }
 
