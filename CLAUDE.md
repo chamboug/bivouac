@@ -10,7 +10,7 @@ You are Claude. Read this brief in full before proposing anything. Build on the 
 
 - **This repo (public) is written entirely in English**: code, comments, docs, commit messages, and pull requests. PR descriptions are English only, in plain English (rule 3) (D41).
 - **Conversations with the owner** follow the language set in `INSTANCE.md` of the private instance repo.
-- **Personal and instance-specific details stay out of this repo** (D71). `bivouac-platform/INSTANCE.md` holds the real domain, IP and working preferences: read it at the start of every session. Here, `example.org` and `203.0.113.10` stand in for them.
+- **Personal and instance-specific details stay out of this repo** (D71). `bivouac-platform/INSTANCE.md` holds the real domain, IP and working preferences: read it at the start of every session. Here, `example.org` and `203.0.113.10` stand in for them. **This applies to everything written here, every time**: commit messages, the decision log, this brief, the runbook, tests, code comments and PR descriptions. Before each commit, reread the diff and the message for: the owner's name or personal situation, the real domain, IPs or server IDs, what was observed in production that identifies it, where credentials are kept, and remarks about the owner's skills or tastes. Write "the owner", use the stand-ins, and put the real details in the instance repo's operations log. Commits here use the GitHub `noreply` address.
 - **The private instance repo `bivouac-platform` is in French**, including its operations log.
 
 ## How the owner and Claude work together (follow strictly)
