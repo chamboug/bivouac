@@ -5,6 +5,7 @@
  */
 import { createHash, createHmac } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { PLATFORM_IMAGES } from "@bivouac/manifest";
 import {
   CADDY_ADDRESS,
   DOMAIN,
@@ -14,6 +15,7 @@ import {
   destroyPlatform,
   docker,
   ALERT_TOKEN,
+  RESTIC_PASSWORD,
   MAIL_PASSWORD,
   inspect,
   pocketIdApi,
@@ -395,5 +397,73 @@ describe("h. SSH keys for the host (D12)", () => {
     }));
     writeStateFile(platform, "ssh-status/applied", `applied ${hash}\n`);
     expect(runOnce(platform).status).toBe(0);
+  });
+});
+
+describe("i. the nightly backup (D33)", () => {
+  const RESTIC = PLATFORM_IMAGES.restic;
+  const repository = () => `${platform.state}/restic-repo`;
+  const backup = () => runOnce(platform, { args: ["--backup"], env: { BIVOUAC_BACKUP_REPOSITORY: repository() } });
+  const restic = (...args: string[]) =>
+    docker("run", "--rm", "--env", `RESTIC_PASSWORD=${RESTIC_PASSWORD}`, "--env", "RESTIC_REPOSITORY=/repo", "--volume", `${repository()}:/repo`, RESTIC, ...args);
+  const startedAt = (name: string) => inspect<{ State: { StartedAt: string } }>(name).State.StartedAt;
+  let listing = "";
+  let biblioStartedBefore = "";
+
+  beforeAll(() => {
+    docker("run", "--rm", "--volume", "bivouac-app-recettes_uploads:/u", "alpine:3.24", "sh", "-c", "echo keep-this > /u/kept.txt");
+    platform.commit({
+      "platform.yml": `${platformYml(RECONCILER_RUNNING)}backup:\n  repository: s3:https://s3.example.invalid/some-bucket\n`,
+      "apps/biblio.yml": `${BIBLIO}volumes: { data: /data/lite }\nbackup: { stop: true }\n`,
+    }, "backups");
+    runOnce(platform);
+    biblioStartedBefore = startedAt("bivouac-app-biblio");
+  });
+
+  it("creates the repository and sends a snapshot", () => {
+    const pass = backup();
+    expect(pass.logs.map((line) => line.message)).toContain("backup done");
+    expect(pass.status).toBe(0);
+    listing = restic("ls", "latest");
+  });
+
+  it("holds a dump per database and the volumes", () => {
+    expect(listing).toContain("/source/dumps/bivouac_pocket_id.dump");
+    expect(listing).toContain("/source/dumps/recettes.dump");
+    expect(listing).toContain("/source/volumes/bivouac-app-recettes_uploads/kept.txt");
+  });
+
+  it("holds no secret file", () => {
+    expect(listing).not.toMatch(/credentials\.json|age\.key|superuser_password|static_api_key/);
+  });
+
+  it("restores a dump that Postgres can read, with Pocket ID's tables", () => {
+    const contents = run("sh", ["-c", `docker run --rm --env RESTIC_PASSWORD=${RESTIC_PASSWORD} --env RESTIC_REPOSITORY=/repo --volume ${repository()}:/repo ${RESTIC} dump latest /source/dumps/bivouac_pocket_id.dump | docker run --rm --interactive --entrypoint pg_restore ${PLATFORM_IMAGES.postgres} --list`]);
+    expect(contents.status).toBe(0);
+    expect(contents.stdout).toMatch(/TABLE public users/);
+  });
+
+  it("stopped the app that asked for it, and started it again", () => {
+    const after = inspect<ContainerState>("bivouac-app-biblio");
+    expect(after.State.Running).toBe(true);
+    expect(startedAt("bivouac-app-biblio")).not.toBe(biblioStartedBefore);
+  });
+
+  it("leaves no dump on the disk and no container behind", () => {
+    expect(readStateFile(platform, "backup/dumps/recettes.dump")).toBeUndefined();
+    expect(docker("ps", "--all", "--quiet", "--filter", "name=^bivouac-backup")).toBe("");
+  });
+
+  it("a second run reuses the repository, under the same host name", () => {
+    expect(backup().status).toBe(0);
+    const hosts = JSON.parse(restic("snapshots", "--json")) as { hostname: string }[];
+    expect(hosts).toHaveLength(2);
+    expect(new Set(hosts.map((entry) => entry.hostname))).toEqual(new Set(["bivouac"]));
+  });
+
+  it("fails loudly when the destination is unusable, and the others are untouched", () => {
+    const pass = runOnce(platform, { args: ["--backup"], env: { BIVOUAC_BACKUP_REPOSITORY: "/proc/nonexistent/repo" } });
+    expect(pass.status).toBe(1);
+    expect(JSON.parse(restic("snapshots", "--json"))).toHaveLength(2);
   });
 });

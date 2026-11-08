@@ -37,6 +37,8 @@ export interface Runtime {
   pull: (image: string) => Promise<void>;
   /** Seconds to wait for a base service or an app to become healthy. */
   healthTimeout: number;
+  /** Apps stopped on purpose by a running backup: a pass must leave them alone (D20). */
+  pausedApps: Set<string>;
   /** `host:port` of the metadata service, which must be out of reach (D7); unset: not checked. */
   metadataCheck?: string;
 }

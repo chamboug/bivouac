@@ -16,6 +16,8 @@ export const PLATFORM_IMAGES = {
   caddy: "caddy:2.11.9@sha256:0c2243efcf437ab7f7a978f1027fcf0d4f9be8a75df27b1b3fbc5dbe0ffa8cf0",
   postgres: "postgis/postgis:18-3.7@sha256:440bdd14e3edccfce04d080d8a1a0cbae5763fa16a1c4172bff83530828461de",
   pocketId: "ghcr.io/pocket-id/pocket-id:v2.19.2@sha256:3ee23895d6a3adb5dd5de801a4fd31fc31b960e6dfbea9b5200e33cf477695eb",
+  /** Latest release, verified on 8 November 2026. Throwaway containers only (D33). */
+  restic: "restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510",
 } as const;
 
 export interface NetworkSpec {

@@ -190,6 +190,23 @@ describe("ssh keys", () => {
   });
 });
 
+describe("backup destination", () => {
+  const base = {
+    domain: "apps.example.com",
+    repository: "git@github.com:example/bivouac-platform.git",
+    reconciler: { image: "ghcr.io/example/bivouac-reconciler:sha-abc1234" },
+  };
+  const parse = (repository: string) => platformConfigSchema.safeParse({ ...base, backup: { repository } }).success;
+
+  it("accepts an S3 address over HTTPS", () => {
+    expect(parse("s3:https://s3.example.com/my-bucket")).toBe(true);
+  });
+
+  it.each(["s3:http://s3.example.com/bucket", "b2:bucket", "/srv/backups", "s3:https://s3.example.com/", "s3:https://s3.example.com/bucket;rm"])("refuses %s", (repository) => {
+    expect(parse(repository)).toBe(false);
+  });
+});
+
 describe("platform config", () => {
   const base = {
     domain: "apps.example.com",

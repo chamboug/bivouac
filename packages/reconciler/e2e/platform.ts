@@ -97,6 +97,7 @@ export interface Platform {
 }
 
 export const ALERT_TOKEN = "fake-pushover-token-for-tests";
+export const RESTIC_PASSWORD = "fake-restic-password-for-tests";
 
 /**
  * A fresh instance repo, created from `template/` like `bivy init` will do,
@@ -127,6 +128,10 @@ export function createPlatform(): Platform {
     `  static_api_key: ${staticApiKey}`,
     "mail:",
     `  password: ${MAIL_PASSWORD}`,
+    "backup:",
+    `  restic_password: ${RESTIC_PASSWORD}`,
+    "  b2_key_id: fake-id",
+    "  b2_application_key: fake-key",
     "alerts:",
     `  pushover_token: ${ALERT_TOKEN}`,
     "  pushover_user: fake-user",
@@ -207,13 +212,13 @@ export interface PassOutput {
 /** Runs one reconciler pass (`main.js once`) and returns its exit code and logs. */
 export function runOnce(
   platform: Platform,
-  options: { ageKey?: string; ports?: string; env?: Record<string, string> } = {},
+  options: { ageKey?: string; ports?: string; env?: Record<string, string>; args?: string[] } = {},
 ): PassOutput {
   const result = run("docker", [
     "run", "--rm",
     ...reconcilerOptions(platform, options.ageKey ?? platform.ageKey, options.ports ?? ""),
     ...Object.entries(options.env ?? {}).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
-    RECONCILER_IMAGE, "node", "packages/reconciler/dist/main.js", "once",
+    RECONCILER_IMAGE, "node", "packages/reconciler/dist/main.js", "once", ...(options.args ?? []),
   ]);
   const logs = result.stdout
     .split("\n")

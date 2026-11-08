@@ -83,6 +83,14 @@ export async function closePlatformDatabases(server: PostgresServer): Promise<vo
   });
 }
 
+/** Total size of these databases, an upper bound for their uncompressed dumps. */
+export async function databasesBytes(server: PostgresServer, names: string[]): Promise<number> {
+  return withClient(server, "postgres", "postgres", server.superuserPassword, async (admin) => {
+    const result = await admin.query<{ total: string }>("SELECT coalesce(sum(pg_database_size(datname)), 0) AS total FROM pg_database WHERE datname = ANY($1)", [names]);
+    return Number(result.rows[0]?.total ?? 0);
+  });
+}
+
 async function withClient<T>(
   server: PostgresServer,
   database: string,

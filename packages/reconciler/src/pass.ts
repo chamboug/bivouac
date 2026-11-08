@@ -12,6 +12,7 @@ import {
 } from "@bivouac/manifest";
 import { saveAlertCredentials } from "./alerts.js";
 import { ensureApp, type AppResult } from "./apps.js";
+import { backupPlan, type BackupPlan } from "./backup.js";
 import { ensureBase, ensureService, pocketIdUrl, postgresServer, writeIfChanged, type Runtime } from "./base.js";
 import { syncRepository, type GitSource } from "./git.js";
 import { PocketId } from "./pocket-id.js";
@@ -26,6 +27,8 @@ export interface PassConfig {
   checkout: string;
   /** The age key that decrypts the instance's secrets (D7). */
   ageKey: string;
+  /** Replaces platform.yml's backup destination, for the tests. */
+  backupRepository?: string;
 }
 
 export type Prepared =
@@ -33,7 +36,7 @@ export type Prepared =
   | { status: "invalid"; commit: string; errors: ValidationError[] };
 
 export type PassResult =
-  | { status: "applied" | "unchanged"; commit: string; changes: string[]; failures: { app: string; message: string }[] }
+  | { status: "applied" | "unchanged"; commit: string; changes: string[]; failures: { app: string; message: string }[]; backup?: BackupPlan }
   | { status: "invalid"; commit: string; errors: ValidationError[] }
   /** platform.yml names a new reconciler version, ready to run: exit so systemd restarts on it. */
   | { status: "restart"; commit: string; image: string };
@@ -125,7 +128,11 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
       message: `containers can reach the metadata service (${runtime.metadataCheck}): its block is missing (D7)`,
     });
   }
-  return { status: changes.length > 0 ? "applied" : "unchanged", commit, changes, failures };
+  if (instance.platform.backup && !secrets.backup) {
+    failures.push({ app: "(platform)", message: "platform.yml names a backup destination, but 'backup' is missing from the secrets file" });
+  }
+  const backup = backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
+  return { status: changes.length > 0 ? "applied" : "unchanged", commit, changes, failures, ...(backup ? { backup } : {}) };
 }
 
 /**

@@ -21,6 +21,12 @@ export const platformSecretsSchema = z.looseObject({
   }),
   /** Password of the SMTP account named in `platform.yml`. */
   mail: z.looseObject({ password: z.string().min(1, "must not be empty") }).optional(),
+  /** The nightly backups (D16, D33). Without them, nothing is backed up. */
+  backup: z.looseObject({
+    restic_password: z.string().min(1, "must not be empty"),
+    b2_key_id: z.string().min(1, "must not be empty"),
+    b2_application_key: z.string().min(1, "must not be empty"),
+  }).optional(),
   /** Pushover and healthchecks.io (D45). Without them, the platform runs without alerts. */
   alerts: z.looseObject({
     pushover_token: z.string().min(1, "must not be empty"),

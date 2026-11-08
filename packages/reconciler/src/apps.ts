@@ -37,6 +37,7 @@ export interface AppContext {
 export async function ensureApp(context: AppContext, app: AppManifest): Promise<AppResult> {
   const changes: string[] = [];
   const { runtime } = context;
+  if (runtime.pausedApps.has(app.name)) return { name: app.name, routed: true, changes };
   const values = await appValues(context, app, changes);
   const container = appContainerName(app.name);
 

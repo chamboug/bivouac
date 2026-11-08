@@ -44,7 +44,7 @@ interface Response {
 export class Docker {
   constructor(private readonly socketPath = "/var/run/docker.sock") {}
 
-  private call(method: string, path: string, body?: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  private call(method: string, path: string, body?: unknown, headers: Record<string, string> = {}, timeout?: number): Promise<Response> {
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     return new Promise((resolve, reject) => {
       const req = request(
@@ -67,7 +67,8 @@ export class Docker {
       req.on("error", (error) => reject(new DockerError(`cannot reach Docker at ${this.socketPath}: ${error.message}`)));
       // A stuck daemon or registry must not freeze the reconciler (and its
       // alerts) forever: 15 minutes for a pull, 2 for anything else.
-      req.setTimeout(path.startsWith("/images/create") ? 15 * 60_000 : 2 * 60_000, () => {
+      const limit = timeout ?? (path.startsWith("/images/create") ? 15 * 60_000 : 2 * 60_000);
+      req.setTimeout(limit, () => {
         req.destroy(new DockerError(`${method} ${path.split("?")[0]} timed out`));
       });
       req.end(payload);
@@ -75,8 +76,8 @@ export class Docker {
   }
 
   /** Calls the API and fails on any status outside `ok`. */
-  private async expect(method: string, path: string, ok: number[], body?: unknown, headers?: Record<string, string>) {
-    const response = await this.call(method, path, body, headers);
+  private async expect(method: string, path: string, ok: number[], body?: unknown, headers?: Record<string, string>, timeout?: number) {
+    const response = await this.call(method, path, body, headers, timeout);
     if (!ok.includes(response.status)) {
       throw new DockerError(`${method} ${path.split("?")[0]}: ${errorMessage(response)}`, response.status);
     }
@@ -162,9 +163,9 @@ export class Docker {
     await this.expect("DELETE", `/containers/${encodeURIComponent(name)}?force=true`, [204, 404]);
   }
 
-  /** Waits for a container to stop (at most 2 minutes) and returns its exit code. */
-  async waitContainer(name: string): Promise<number> {
-    const response = await this.expect("POST", `/containers/${encodeURIComponent(name)}/wait`, [200]);
+  /** Waits for a container to stop (by default at most 2 minutes) and returns its exit code. */
+  async waitContainer(name: string, timeout?: number): Promise<number> {
+    const response = await this.expect("POST", `/containers/${encodeURIComponent(name)}/wait`, [200], undefined, undefined, timeout);
     return (JSON.parse(response.body.toString()) as { StatusCode: number }).StatusCode;
   }
 

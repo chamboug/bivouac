@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Watch, loadAlertCredentials, sendPushover } from "./alerts.js";
+import { BackupScheduler, runBackup } from "./backup.js";
 import { checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
 import { Docker } from "./docker.js";
@@ -28,6 +29,8 @@ import { SelfUpdater } from "./self-update.js";
  *   BIVOUAC_METADATA_CHECK    metadata service that must be out of reach,
  *                             `host:port` (default: 169.254.169.254:80), or
  *                             `off` where there is none to protect (D7)
+ *   BIVOUAC_BACKUP_REPOSITORY replaces platform.yml's backup destination
+ *                             (tests: a local directory)
  *   BIVOUAC_ALERTS            `off` where nothing must reach the owner's
  *                             phone (local platform); default: on, if the
  *                             secrets file holds the credentials (D45)
@@ -39,6 +42,8 @@ import { SelfUpdater } from "./self-update.js";
  *
  * `main.js once` runs a single pass and exits: 0 if everything applied,
  * 1 otherwise. Used by the tests and the local platform.
+ *
+ * `main.js once --backup` also runs a backup after the pass (tests).
  *
  * `main.js selftest` only checks that the image runs and finds its tools
  * (git, ssh, sops): a new version passes it before the reconciler moves to
@@ -73,6 +78,7 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
     },
     checkout: join(stateDir, "repo"),
     ageKey: env.BIVOUAC_AGE_KEY ?? "/etc/bivouac/age.key",
+    ...(env.BIVOUAC_BACKUP_REPOSITORY ? { backupRepository: env.BIVOUAC_BACKUP_REPOSITORY } : {}),
     interval,
     self,
     ...(env.BIVOUAC_RECONCILER_IMAGE ? { image: env.BIVOUAC_RECONCILER_IMAGE } : {}),
@@ -85,6 +91,7 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
       pull: (image) => docker.pull(image),
       healthTimeout,
       ...(metadataCheck === "off" ? {} : { metadataCheck }),
+      pausedApps: new Set(),
     },
   };
 }
@@ -151,7 +158,13 @@ async function main(argv: string[]): Promise<number> {
 
   if (argv[0] === "once") {
     try {
-      return report(await runPass(config, config.runtime, selfUpdater)) ? 0 : 1;
+      const result = await runPass(config, config.runtime, selfUpdater);
+      const ok = report(result);
+      if (argv[1] !== "--backup") return ok ? 0 : 1;
+      if (result.status === "restart" || result.status === "invalid" || !result.backup) throw new Error("nothing to back up");
+      await runBackup(config.runtime, result.backup, log, { mayCreateRepository: true });
+      log("backup done");
+      return 0;
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
       return 1;
@@ -159,6 +172,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const watch = process.env.BIVOUAC_ALERTS === "off" ? undefined : new Watch({ stateDir: config.runtime.stateDir, log });
+  const backups = new BackupScheduler({ runtime: config.runtime, log });
   let stopping = false;
   let timer: NodeJS.Timeout | undefined;
   const stop = () => {
@@ -171,17 +185,22 @@ async function main(argv: string[]): Promise<number> {
 
   const loop = async () => {
     try {
+      await backups.recover();
       const result = await runPass(config, config.runtime, selfUpdater);
       report(result);
-      if (result.status === "restart") {
+      if (result.status === "restart" && !backups.busy) {
         // systemd starts the reconciler again, on the image now named in
-        // image.env (Restart=always).
+        // image.env (Restart=always). During a backup, this waits for a
+        // later pass, so alerts and the heartbeat carry on meanwhile.
         process.exit(0);
       }
-      await watch?.afterPass({ result });
+      if (result.status === "applied" || result.status === "unchanged") backups.update(result.backup);
+      backups.tick();
+      await watch?.afterPass({ result }, [backups.observation()]);
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
-      await watch?.afterPass({ error: error as Error });
+      backups.tick();
+      await watch?.afterPass({ error: error as Error }, [backups.observation()]);
     }
     if (!stopping) {
       timer = setTimeout(() => void loop(), config.interval * 1000);

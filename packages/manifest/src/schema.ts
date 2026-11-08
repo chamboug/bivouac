@@ -307,6 +307,18 @@ export const platformConfigSchema = z.strictObject({
       user: z.string().min(1),
     })
     .optional(),
+  /**
+   * Where the nightly backups go, as restic names it: S3-compatible API only
+   * (D16). The credentials and the repository password are in the secrets file.
+   */
+  backup: z
+    .strictObject({
+      repository: z.string().regex(
+        /^s3:https:\/\/[a-z0-9.-]+\/[a-z0-9][a-z0-9-]*[a-z0-9]$/,
+        "must be an S3 address over HTTPS, such as s3:https://s3.example.com/my-bucket",
+      ),
+    })
+    .optional(),
 });
 
 /**

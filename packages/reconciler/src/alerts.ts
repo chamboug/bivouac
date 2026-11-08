@@ -73,7 +73,7 @@ export function redact(text: string): string {
     .slice(0, 900);
 }
 
-export type Category = "pass" | "app" | "platform" | "disk";
+export type Category = "pass" | "app" | "platform" | "disk" | "backup";
 
 export interface Incident {
   /** `<category>:<what>`: the same problem keeps the same key from one pass to the next. */
@@ -181,7 +181,7 @@ export class Watch {
     this.disk = options.disk ?? (() => diskPercent(options.stateDir));
   }
 
-  async afterPass(outcome: PassOutcome): Promise<void> {
+  async afterPass(outcome: PassOutcome, others: Observation[] = []): Promise<void> {
     try {
       const credentials = loadAlertCredentials(this.options.stateDir);
       if (!credentials) return;
@@ -190,6 +190,7 @@ export class Watch {
       const send = (title: string, message: string, priority: 0 | 1) => this.send(credentials, state, title, message, priority);
       await this.apply(state, observePass(outcome), send);
       await this.apply(state, observeDisk(this.disk(), state.incidents["disk:root"] !== undefined), send);
+      for (const observation of others) await this.apply(state, observation, send);
       await this.remindRebuild(state, send);
       this.save(state);
       // A pass stopped by an error is no proof of health: the switch stays
