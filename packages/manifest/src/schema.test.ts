@@ -207,6 +207,18 @@ describe("platform config", () => {
     expect(parse({ auth: { setupFrom: "anyone" } }).success).toBe(false);
   });
 
+  it("refuses private, loopback, link-local and other non-public addresses for the first-admin page", () => {
+    for (const address of [
+      "10.209.0.1", "172.17.0.1", "192.168.1.10", "127.0.0.1", "169.254.169.254", "100.64.0.1", "0.0.0.0",
+      "::1", "::", "fe80::1", "fd00::1", "::ffff:10.209.0.1", "ff02::1",
+    ]) {
+      expect(parse({ auth: { setupFrom: address } }).success, address).toBe(false);
+    }
+    expect(messages({ auth: { setupFrom: "10.209.0.1" } })[0]).toMatch(/public address/);
+    expect(parse({ auth: { setupFrom: "88.191.205.91" } }).success).toBe(true);
+    expect(parse({ auth: { setupFrom: "2a01:e0a:ff3:56c0::1" } }).success).toBe(true);
+  });
+
   it("needs the repo's address on GitHub over SSH", () => {
     expect(parse({}).success).toBe(true);
     expect(parse({ repository: "git@github.com:Some-Owner/my.instance.git" }).success).toBe(true);

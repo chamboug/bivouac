@@ -1,3 +1,4 @@
+import { BlockList } from "node:net";
 import { z } from "zod";
 import { ALLOWED_EXTENSIONS } from "./platform.js";
 
@@ -284,10 +285,40 @@ export const platformConfigSchema = z.strictObject({
        * The only IP allowed to open Pocket ID's first-admin page, while the
        * instance is being installed (D15). Removed once the admin exists.
        */
-      setupFrom: z.union([z.ipv4(), z.ipv6()], { error: "must be an IPv4 or IPv6 address" }).optional(),
+      setupFrom: z
+        .union([z.ipv4(), z.ipv6()], { error: "must be an IPv4 or IPv6 address" })
+        .refine(isPublicAddress, {
+          error:
+            "must be a public address: Caddy sees private ones (Docker gateways) for traffic it does not know the source of, which would open the page to anyone",
+        })
+        .optional(),
     })
     .optional(),
 });
+
+/**
+ * Addresses that are not a visitor's own public address. Over IPv6, and for
+ * traffic from the apps, Caddy sees a Docker gateway (10.209.x.1, 172.17.0.1)
+ * instead of the client (observed on the server, D67): `setupFrom` set to
+ * such an address would let anyone open the first-admin page.
+ */
+const NON_PUBLIC = new BlockList();
+for (const [net, prefix] of [
+  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8], ["169.254.0.0", 16],
+  ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16], ["198.18.0.0", 15], ["224.0.0.0", 3],
+] as const) NON_PUBLIC.addSubnet(net, prefix, "ipv4");
+for (const [net, prefix] of [
+  ["::", 96], ["64:ff9b::", 96], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+] as const) NON_PUBLIC.addSubnet(net, prefix, "ipv6");
+
+export function isPublicAddress(address: string): boolean {
+  const family = address.includes(":") ? "ipv6" : "ipv4";
+  // IPv4-mapped IPv6 (::ffff:a.b.c.d) is refused outright: written that way,
+  // it never matches what Caddy sees. (A `::ffff:0:0/96` rule in a BlockList
+  // would also match every plain IPv4 address, observed on Node 26.)
+  if (family === "ipv6" && /^::ffff:/i.test(address)) return false;
+  return !NON_PUBLIC.check(address, family);
+}
 
 const SSH_KEY_TYPES = [
   "ssh-ed25519",
