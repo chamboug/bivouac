@@ -127,7 +127,7 @@ The owner regularly codes small applications with Claude. Some live happily as a
 
 - **Every night**: one `pg_dump` per database plus the file volumes, sent with **restic** (encrypted, deduplicated, retention for example 7 days, 4 weeks and 6 months). **The reconciler triggers them**, running restic in an ephemeral container: no extra component (D33).
 - **Apps that store their data in files** (SQLite, Node-RED): a `backup: { stop: true }` manifest option stops the container for a few seconds during the backup to avoid an inconsistent copy. Off by default (D20).
-- **Off-site destination: Backblaze B2, EU Central region (Amsterdam), through the S3-compatible API.** Verified (restic docs): restic recommends the S3 API over its native B2 backend, because of error-handling issues. Still no rclone (D16). The region is chosen at sign-up, for the whole account, and cannot be changed afterwards.
+- **Off-site destination: Backblaze B2, through the S3-compatible API**, in a region chosen at sign-up (EU Central if the form offers it; not offered on this instance's sign-up, D73). The server's key cannot delete, and the bucket keeps hidden files 30 days (D73). Verified (restic docs): restic recommends the S3 API over its native B2 backend, because of error-handling issues. Still no rclone (D16). The region is chosen at sign-up, for the whole account, and cannot be changed afterwards.
 - **B2 pricing** (verified, Nov. 2026): 10 GB free, then $6.95/TB/month; egress free up to 3 times the stored volume; no minimum storage duration. *Revised: the first draft said $0.005/GB.*
 - **Automatic restore test, every week**: `restic check`, then the latest dump restored into a temporary Postgres, with a minimal check (the tables exist). The result is reported to the dead man's switch (D9). *Revised: the first draft listed this test as "not a priority".*
 - Alternative rejected for now: Koofr (European, 10 GB free), more of a consumer Drive-like service, with no published SLA and reachable only through rclone. Later, the mini PC can serve as a second destination.
@@ -296,6 +296,7 @@ Moving to the prod phase (rule 2) requires having:
 - decided on the **email login code** (D37);
 - **alerts** in place and tested: each case of D45 received at least once on the owner's phone, including a simulated missing backup (D45);
 - done the rule 6 security review of the whole base;
+- for backups (D73): an independent monthly check from outside the server with a separate read-only key, a spending cap at B2, and the backup region settled before real data;
 - restricted who can write to the instance repo's `main` (D64), pinned the reconciler by digest and added its automatic fallback (D61), ~~written and tried the lockout rescue procedure (D63)~~ (done 8 Nov. 2026, runbook section 11); settled how Caddy sees client IPv6 addresses before any `AAAA` record (D67); looked at Pocket ID's minute of failure after each restart (D68); chosen a send-only relay before any app sends mail (D70).
 
 ## Points to check at implementation time
@@ -314,7 +315,7 @@ Moving to the prod phase (rule 2) requires having:
   - not yet checkable: pulling a private app image with the GHCR token (D17; no app, and the token is not wired in yet); `update-ssh-keys` with `sk-*` keys (none in the list); HTTP/3 from outside.
 - **Mail deliverability** (D70): the first test message went to Gmail's spam although SPF and DKIM passed; check again with a real invitation.
 - **Pocket ID**: exact behavior if the `ENCRYPTION_KEY` is lost (undocumented).
-- **healthchecks.io**: that the Pushover integration is available on the free plan (inferred from the docs, not stated).
+- ~~**healthchecks.io**: Pushover integration on the free plan~~: available (confirmed by the owner in their account, 8 Nov. 2026, D76).
 
 ## Suggested build order
 
@@ -343,4 +344,5 @@ Built in layers (D44): each layer is useful on its own, so if the project stalls
   8. ~~In-place reinstall~~ (8 Nov. 2026; D66–D68): firewall limited to 22/80/443 before the rebuild, Primary IPv6 (static in the Butane), server `bivouac` reinstalled with Flatcar and re-protected, host key checked against Hetzner's console, read-only deploy key generated on the server, age key placed over SSH; the reconciler runs Postgres, Pocket ID and Caddy; restarts, self-update and the rescue system tried. Two security reviews (plan and real state).
   9. ~~Wildcard DNS~~ (8 Nov. 2026; D69): `*.apps.example.org`, `A` only; Let's Encrypt production certificate for `auth.apps.example.org`; the first-admin paths refused over HTTPS. Security review done before the write. **Pocket ID is public and has no admin yet**: do not change its version until step 10 is done.
   10. ~~First admin and mail~~ (8 Nov. 2026; D70): one admin with two passkeys, `/setup` closed again; Pocket ID sends through the OVH mailbox, and a real message passed SPF and DKIM. Rule 6 review done. **Layer 2 is done; next is layer 3 (backups and alerts).**
+- **Layer 3 (safety net)**, as of 8 November 2026 (D73-D77). A, secrets and bucket: done. B, alerts and heartbeat: built. C, nightly backup: built, real copies at B2. D, weekly retention: built, ran on B2. E, weekly restore test: built, ran from B2. F, rule 6 review of code and real server: done, its fixes deployed. **G, each case of D45 received on the owner's phone: not done**; then layer 4.
 - **Before the prod phase, from step 6's security reviews** (D64): anyone who can push to the instance repo's `main` is root on the server (the `bivouac-deploy` PAT sits in every app repo): restrict it (branch protection or rulesets if available on the plan, otherwise another deployment path); pin the reconciler image by digest; ~~a rescue procedure for a lockout~~ (done 8 Nov. 2026); an automatic fallback when a new reconciler version crashes after its self-test (D61).

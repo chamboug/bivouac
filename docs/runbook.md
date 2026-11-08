@@ -22,7 +22,7 @@ in the instance repo's operations log.
 - A Primary IPv4 (`auto_delete=false`) and a Primary IPv6.
 - A wildcard DNS record `*.<domain>` pointing to the server.
 - On the server: the age key and the read-only deploy key in `/etc/bivouac/`.
-- Run by the reconciler: Caddy, Postgres and Pocket ID.
+- Run by the reconciler: Caddy, Postgres and Pocket ID, then nightly backups and alerts (section 12).
 
 ## 0. Prerequisites on the Mac
 
@@ -510,3 +510,55 @@ on 8 November 2026 (D63). About 3 minutes of downtime, free.
 Anyone holding a Hetzner token of the project can do the same and read the
 whole disk, the age key included: the Hetzner account is as sensitive as
 the server itself.
+
+## 12. Backups and alerts (consent)
+
+Built in layer 3 (D73-D76). All of it is run by the reconciler; this section is
+how to set it up, and how to act on it by hand.
+
+**Accounts, by the owner**: a B2 account (the region is chosen at sign-up and
+cannot be changed), with its master key at hand; a Pushover application and its
+user key; a healthchecks.io account with three checks, connected to Pushover:
+`heartbeat` (simple, period 5 minutes, grace 10), `backup` (cron `0 2 * * *`,
+UTC, grace 3 h), `restore` (cron `0 2 * * 0`, UTC, grace 6 h). Don't ping them
+by hand: a check starts counting at its first ping.
+
+**Bucket and key, through B2's native API** (`/b2api/v3`), with the master key
+typed in a real terminal: `b2_authorize_account` gives the S3 endpoint;
+`b2_create_bucket` with `bucketType: allPrivate` and the lifecycle rule
+`{"daysFromHidingToDeleting": 30, "daysFromUploadingToHiding": null, "fileNamePrefix": ""}`;
+`b2_create_key` limited to that bucket with `listBuckets`, `listAllBucketNames`,
+`readBuckets`, `listFiles`, `readFiles`, `writeFiles`. Then the owner generates
+a new master key, which voids the one typed.
+
+**Secrets**, added to `secrets/platform.sops.yaml` in one pipe (decrypt, add,
+encrypt), compared after decryption without printing them, plain files deleted:
+`backup.{restic_password, b2_key_id, b2_application_key}` and
+`alerts.{pushover_token, pushover_user, healthchecks.{heartbeat, backup, restore}}`.
+The restic password also goes in the owner's password manager. In
+`platform.yml`: `backup.repository: s3:<endpoint>/<bucket>`.
+
+**Running a job now** instead of at 02:00 UTC: the state is read when the
+reconciler starts, so change it before a new version is deployed, or restart
+the reconciler after:
+
+```bash
+sudo sh -c 'umask 077; f=/var/lib/bivouac/backup/state.json; jq -c ".day=0 | del(.restoreWeek)" $f > $f.new && mv $f.new $f'
+```
+
+`.day=0` makes the backup due, `del(.restoreWeek)` the restore test,
+`del(.maintenanceWeek)` the clean-up. Follow `docker logs bivouac-reconciler`
+(`backup done`, `old backups cleaned up`, `restore test passed`). On a new
+server, the first backup otherwise waits for the next night, on purpose (D74).
+
+**Reading the repository from the Mac**: decrypt the values into environment
+variables, never on a command line, and use `restic --no-lock`, pinned by the
+digest in `packages/manifest/src/platform.ts`. Never write a decrypted dump to
+a shared directory: it holds the data.
+
+**Testing the channel**: `docker exec bivouac-reconciler node packages/reconciler/dist/main.js alert-test`
+sends one message.
+
+**Recovering a hidden file** (from memory, not tried yet): deleting a file's
+hide marker with `b2_delete_file_version` and a key holding `deleteFiles`
+makes the previous version visible again, within 30 days. To try before prod.
