@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appManifestSchema } from "@bivouac/manifest";
 import type { Runtime } from "./base.js";
-import { BackupScheduler, backupPlan, dumpsFit, isDue, restartPaused, type BackupPlan } from "./backup.js";
+import { BackupScheduler, backupPlan, backupWeek, dumpsFit, retentionCommands, isDue, restartPaused, type BackupPlan } from "./backup.js";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 
 const HOUR = 3600_000;
@@ -15,7 +15,7 @@ const plan = { ping: "https://hc-ping.com/job", databases: [], volumes: [], stop
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
 
-function setup(run: (plan: BackupPlan) => Promise<void> = async () => {}, stateDir = mkdtempSync(join(tmpdir(), "bivouac-backup-")), fresh = false) {
+function setup(run: (plan: BackupPlan) => Promise<void> = async () => {}, stateDir = mkdtempSync(join(tmpdir(), "bivouac-backup-")), fresh = false, maintain: (plan: BackupPlan) => Promise<void> = async () => {}) {
   roots.push(stateDir);
   // Tests start from a server that has already run; `fresh` is a new one.
   if (!fresh) {
@@ -29,6 +29,7 @@ function setup(run: (plan: BackupPlan) => Promise<void> = async () => {}, stateD
     runtime: { stateDir } as Runtime,
     log: (message, fields) => logs.push(JSON.stringify({ message, ...fields })),
     run,
+    maintain,
     now: () => clock.now,
     fetch: (async (url: string) => { pings.push(String(url)); return new Response("OK"); }) as unknown as typeof globalThis.fetch,
   });
@@ -133,6 +134,57 @@ describe("the scheduler", () => {
     scheduler.tick();
     await scheduler.idle();
     expect(logs.join()).not.toContain("hc-ping");
+  });
+});
+
+describe("the weekly clean-up", () => {
+  const nextNight = async (entry: ReturnType<typeof setup>) => {
+    entry.clock.now += DAY;
+    entry.scheduler.tick();
+    await entry.scheduler.idle();
+  };
+
+  it("runs once a week, after a backup", async () => {
+    let cleanups = 0;
+    const entry = setup(async () => {}, undefined, false, async () => { cleanups += 1; });
+    for (let night = 0; night < 14; night += 1) await nextNight(entry);
+    expect(cleanups).toBeGreaterThanOrEqual(2);
+    expect(cleanups).toBeLessThanOrEqual(3);
+  });
+
+  it("starts its weeks on Sunday", () => {
+    const sunday = Date.UTC(2026, 10, 8, 3);
+    expect(backupWeek(sunday)).toBe(backupWeek(Date.UTC(2026, 10, 14, 3)));
+    expect(backupWeek(sunday)).not.toBe(backupWeek(Date.UTC(2026, 10, 15, 3)));
+  });
+
+  it("never runs after a backup that failed", async () => {
+    let cleanups = 0;
+    const entry = setup(async () => { throw new Error("no network"); }, undefined, false, async () => { cleanups += 1; });
+    await nextNight(entry);
+    expect(cleanups).toBe(0);
+  });
+
+  it("reports its failure apart from the backup, and tries again the next night", async () => {
+    let fail = true;
+    let cleanups = 0;
+    const entry = setup(async () => {}, undefined, false, async () => { cleanups += 1; if (fail) throw new Error("locked"); });
+    await nextNight(entry);
+    expect(entry.scheduler.observation().incidents.map((incident) => incident.key)).toEqual(["backup:retention"]);
+    expect(entry.pings).not.toContain("https://hc-ping.com/job/fail");
+    fail = false;
+    await nextNight(entry);
+    expect(cleanups).toBe(2);
+    expect(entry.scheduler.observation().incidents).toEqual([]);
+  });
+
+  it("keeps 7 days, 4 weeks and 6 months, and never looks at archives", () => {
+    const [nightly, incomplete, prune] = retentionCommands();
+    expect(nightly).toEqual(["forget", "--host", "bivouac", "--tag", "nightly", "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "6"]);
+    expect(incomplete).toContain("--keep-within");
+    expect(prune).toEqual(["prune"]);
+    expect(retentionCommands().flat()).not.toContain("archive");
+    expect(retentionCommands().flat()).not.toContain("--prune");
   });
 });
 

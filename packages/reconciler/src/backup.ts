@@ -272,6 +272,32 @@ export async function runBackup(
   if (problems.length > 0) throw new Error(problems.join("; "));
 }
 
+/**
+ * What the weekly clean-up keeps. Counted in snapshots that exist, not in
+ * days: nights without a backup never push a good copy out. Only snapshots
+ * with these tags are considered, so an `archive` one (D18) is never touched.
+ */
+export function retentionCommands(): string[][] {
+  return [
+    ["forget", "--host", RESTIC_HOST, "--tag", "nightly", "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "6"],
+    ["forget", "--host", RESTIC_HOST, "--tag", "incomplete", "--keep-within", "30d"],
+    ["prune"],
+  ];
+}
+
+const MAINTENANCE_TIMEOUT = 90 * MINUTE;
+
+/** Applies the retention. Files removed here stay recoverable for a while, by the bucket's own rule. */
+export async function runMaintenance(runtime: Runtime, plan: BackupPlan, log: (message: string, fields?: Record<string, unknown>) => void): Promise<void> {
+  for (const command of retentionCommands()) {
+    await checked(`restic ${command[0]}`, runRestic(runtime, plan, MAINTENANCE_TIMEOUT, command));
+  }
+  log("old backups cleaned up");
+}
+
+/** Weeks start on Sunday (day 0 of the Unix epoch was a Thursday), when the restore test is expected. */
+export const backupWeek = (now: number) => Math.floor((backupDay(now) + 4) / 7);
+
 export interface BackupState {
   /** The backup day of the last attempt. */
   day?: number;
@@ -279,6 +305,9 @@ export interface BackupState {
   lastAttemptAt?: number;
   lastSuccessAt?: number;
   lastError?: string;
+  /** The week of the last successful clean-up. */
+  maintenanceWeek?: number;
+  maintenanceError?: string;
 }
 
 /** A backup day starts at the backup hour. */
@@ -295,6 +324,7 @@ export interface SchedulerOptions {
   runtime: Runtime;
   log: (message: string, fields?: Record<string, unknown>) => void;
   run?: (plan: BackupPlan) => Promise<void>;
+  maintain?: (plan: BackupPlan) => Promise<void>;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
 }
@@ -305,6 +335,7 @@ export class BackupScheduler {
   private readonly now: () => number;
   private readonly fetch: typeof globalThis.fetch;
   private readonly run: (plan: BackupPlan) => Promise<void>;
+  private readonly maintain: (plan: BackupPlan) => Promise<void>;
   private readonly state: BackupState;
   private plan: BackupPlan | undefined;
   private running: Promise<void> | undefined;
@@ -314,6 +345,7 @@ export class BackupScheduler {
     this.now = options.now ?? Date.now;
     this.fetch = options.fetch ?? ((...args) => globalThis.fetch(...args));
     this.run = options.run ?? ((plan) => runBackup(options.runtime, plan, options.log, { mayCreateRepository: this.state.lastSuccessAt === undefined }));
+    this.maintain = options.maintain ?? ((plan) => runMaintenance(options.runtime, plan, options.log));
     this.state = this.load();
     // Left by a run that was cut short: no reason to keep a copy of the data there.
     rmSync(join(options.runtime.stateDir, "backup", "dumps"), { recursive: true, force: true });
@@ -349,7 +381,10 @@ export class BackupScheduler {
   observation(): Observation {
     if (this.running) return { incidents: [], checked: [] };
     return {
-      incidents: this.state.lastError ? [{ key: "backup:nightly", message: `The backup failed: ${this.state.lastError}` }] : [],
+      incidents: [
+        ...(this.state.lastError ? [{ key: "backup:nightly" as const, message: `The backup failed: ${this.state.lastError}` }] : []),
+        ...(this.state.maintenanceError ? [{ key: "backup:retention" as const, message: `Cleaning up old backups failed: ${this.state.maintenanceError}` }] : []),
+      ],
       checked: ["backup"],
     };
   }
@@ -373,12 +408,28 @@ export class BackupScheduler {
       this.save();
       await this.ping(plan, "");
       this.options.log("backup done");
+      await this.cleanUp(plan);
     } catch (error) {
       this.state.lastError = redact((error as Error).message);
       this.save();
       this.options.log("backup failed", { error: this.state.lastError });
       await this.ping(plan, "/fail");
     }
+  }
+
+  /** Only after a backup that worked, once a week. A failure costs space, not the night's copy. */
+  private async cleanUp(plan: BackupPlan): Promise<void> {
+    const week = backupWeek(this.now());
+    if (this.state.maintenanceWeek === week) return;
+    try {
+      await this.maintain(plan);
+      this.state.maintenanceWeek = week;
+      delete this.state.maintenanceError;
+    } catch (error) {
+      this.state.maintenanceError = redact((error as Error).message);
+      this.options.log("clean-up failed", { error: this.state.maintenanceError });
+    }
+    this.save();
   }
 
   /** The address is a secret: it is never logged. */

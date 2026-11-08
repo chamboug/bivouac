@@ -461,6 +461,16 @@ describe("i. the nightly backup (D33)", () => {
     expect(new Set(hosts.map((entry) => entry.hostname))).toEqual(new Set(["bivouac"]));
   });
 
+  it("the weekly clean-up removes what the policy does not keep, and the rest stays readable", () => {
+    const pass = runOnce(platform, { args: ["--backup", "--maintenance"], env: { BIVOUAC_BACKUP_REPOSITORY: repository() } });
+    expect(pass.logs.map((line) => line.message)).toContain("old backups cleaned up");
+    expect(pass.status).toBe(0);
+    // Three that day: restic keeps the newest, and the oldest while its history is short.
+    expect(JSON.parse(restic("snapshots", "--json"))).toHaveLength(2);
+    expect(restic("ls", "latest")).toContain("/source/dumps/bivouac_pocket_id.dump");
+    expect(restic("check", "--read-data")).toContain("no errors were found");
+  });
+
   it("fails loudly when the destination is unusable, and the others are untouched", () => {
     const pass = runOnce(platform, { args: ["--backup"], env: { BIVOUAC_BACKUP_REPOSITORY: "/proc/nonexistent/repo" } });
     expect(pass.status).toBe(1);
