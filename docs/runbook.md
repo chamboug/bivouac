@@ -435,20 +435,35 @@ request.
 443/udp at the firewall (section 6). Removing the record closes nothing, and
 the reconciler restarts a stopped Caddy.
 
-## 10. Base services and first admin
+## 10. Base services, first admin and mail
 
 The reconciler already runs Caddy, Postgres and Pocket ID (section 8).
 Once DNS answers, restart Caddy so it asks for its certificate at once,
 then:
 
-1. Caddy allows `/setup` on `auth.<domain>` only from the owner's IP (D15):
-   `auth.setupFrom` in `platform.yml`, a **public IPv4** read right before
+1. **(consent)** Allow `/setup` on `auth.<domain>` only from the owner's IP
+   (D15): `auth.setupFrom` in `platform.yml`, a **public IPv4** read right before
    (`curl -4 https://api.ipify.org`); private addresses are refused (D67).
-   The owner opens the page over IPv4 (no `AAAA` record). Some providers
-   share one IPv4 between subscribers (from memory): keep the window short.
+   Check the generated Caddyfile and a 403 from another address. The owner
+   opens the page over IPv4 (no `AAAA` record). Some providers share one IPv4
+   between subscribers (from memory): keep the window short.
 2. The owner opens `https://auth.<domain>/setup`, creates the admin account
-   and registers at least two passkeys.
-3. The `/setup` route is removed from the Caddyfile.
+   and registers at least two passkeys that do not depend on the same vault.
+   For a phone: in the admin's user list, **Login Code** gives a one-time link
+   or QR code; open it on the phone, then **Add Passkey** in the account page.
+3. **(consent)** Remove `setupFrom`. Check 403 for everyone, the owner included,
+   and exactly one user (`users` in database `bivouac_pocket_id`).
+4. Mail (D70). Add `mail` to `platform.yml` (`host`, `from`, `user`). Have the
+   owner type the mailbox password in a real terminal into a file of mode 600,
+   test it against the SMTP server with its output filtered to the status codes
+   (a verbose log contains the credentials), add `mail.password` to the secrets
+   file in one pipe (decrypt, append, encrypt), compare it after decryption
+   without printing it, and delete the file. A new `mail` block needs a
+   reconciler version that knows it; it moves to it before validating.
+5. **(consent, Pocket ID restarts, about a minute: D68)** Push. The owner clicks
+   **Send test email** in Pocket ID's email settings. Read the message's
+   `Authentication-Results`: SPF and DKIM must pass. Check the zone has one SPF
+   record and a `p=none` DMARC.
 
 Record everything done in the instance repo's operations log.
 
