@@ -32,6 +32,8 @@ const ONE_OFF_MEMORY_BYTES = 1536 * 1024 * 1024;
 const RESTIC_HOST = "bivouac";
 /** restic's documented exit code for "the repository does not exist". */
 const RESTIC_NO_REPOSITORY = 10;
+/** restic's documented exit code for "snapshot saved, but some files could not be read". */
+const RESTIC_PARTIAL = 3;
 
 const CONTAINER = "bivouac-backup";
 const SECRETS_TARGET = "/run/secrets/bivouac";
@@ -79,6 +81,8 @@ export function backupPlan(
     ...(secrets.alerts ? { ping: secrets.alerts.healthchecks.backup, restorePing: secrets.alerts.healthchecks.restore } : {}),
   };
 }
+
+export const markLatestIncomplete = () => ["tag", "--host", RESTIC_HOST, "--set", "incomplete", "latest"];
 
 export interface OneOffResult {
   exitCode: number;
@@ -254,7 +258,7 @@ export async function runBackup(
         await runtime.docker.stopContainer(entry.container);
       }
     }
-    await checked("restic backup", runRestic(
+    const sent = await runRestic(
       runtime,
       plan,
       remaining(),
@@ -263,7 +267,14 @@ export async function runBackup(
         { type: "bind", source: dumps, target: "/source/dumps", readOnly: true },
         ...plan.volumes.map((volume) => ({ type: "volume" as const, source: volume, target: `/source/volumes/${volume}`, readOnly: true })),
       ],
-    ));
+    );
+    if (sent.exitCode === RESTIC_PARTIAL) {
+      // Saved, but with holes: it must not be taken for the latest good copy.
+      problems.push(`some files could not be read: ${lastLine(sent.logs)}`);
+      await checked("restic tag", runRestic(runtime, plan, remaining(), markLatestIncomplete()));
+    } else if (sent.exitCode !== 0) {
+      throw new Error(`restic backup failed (exit ${sent.exitCode}): ${lastLine(sent.logs)}`);
+    }
     log("backup sent", { databases: plan.databases.length, volumes: plan.volumes.length });
   } catch (error) {
     problems.push((error as Error).message);
@@ -300,7 +311,7 @@ export async function runMaintenance(runtime: Runtime, plan: BackupPlan, log: (m
 
 const RESTORE_CONTAINER = "bivouac-restore-test";
 const USER_TABLES = "SELECT count(*) AS count FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
-const POCKET_ID_USERS = "SELECT count(*) AS count FROM users";
+const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
 /** A restore needs room for the dumps and for the database rebuilt from them. */
 const RESTORE_SPACE_FACTOR = 2;
 
@@ -310,6 +321,12 @@ const RESTORE_SPACE_FACTOR = 2;
  * network, and is compared with the live databases. The real Postgres only
  * answers two counts.
  */
+export function parseCount(text: string, database: string): number {
+  const value = text.trim();
+  if (!/^\d+$/.test(value)) throw new Error(`restored ${database} gave an unreadable answer`);
+  return Number(value);
+}
+
 export async function runRestoreTest(runtime: Runtime, plan: BackupPlan, log: (message: string, fields?: Record<string, unknown>) => void): Promise<void> {
   const { docker } = runtime;
   const root = join(runtime.stateDir, "backup", "restore-test");
@@ -353,6 +370,9 @@ export async function runRestoreTest(runtime: Runtime, plan: BackupPlan, log: (m
     const host = body.HostConfig as Record<string, unknown>;
     host.RestartPolicy = { Name: "no" };
     host.Memory = ONE_OFF_MEMORY_BYTES;
+    // A dump comes from a database an app controls: it may not starve the server.
+    host.PidsLimit = 512;
+    host.NanoCpus = 1_000_000_000;
     host.NetworkMode = "none";
     await docker.createContainer(RESTORE_CONTAINER, body);
     await docker.startContainer(RESTORE_CONTAINER);
@@ -365,7 +385,7 @@ export async function runRestoreTest(runtime: Runtime, plan: BackupPlan, log: (m
     const sql = async (database: string, statement: string): Promise<number> => {
       const result = await docker.exec(RESTORE_CONTAINER, ["psql", "-h", "127.0.0.1", "-U", "postgres", "-d", database, "-At", "-c", statement]);
       if (result.exitCode !== 0) throw new Error(`reading restored ${database}: ${lastLine(result.stderr)}`);
-      return Number(result.stdout.trim());
+      return parseCount(result.stdout, database);
     };
     let tables = 0;
     for (const database of plan.databases) {
@@ -440,6 +460,7 @@ export class BackupScheduler {
   private readonly state: BackupState;
   private plan: BackupPlan | undefined;
   private running: Promise<void> | undefined;
+  private cleaned = false;
 
   constructor(private readonly options: SchedulerOptions) {
     this.path = join(options.runtime.stateDir, "backup", "state.json");
@@ -449,8 +470,6 @@ export class BackupScheduler {
     this.maintain = options.maintain ?? ((plan) => runMaintenance(options.runtime, plan, options.log));
     this.restore = options.restore ?? ((plan) => runRestoreTest(options.runtime, plan, options.log));
     this.state = this.load();
-    // Left by a run that was cut short: no reason to keep a copy of the data there.
-    for (const leftover of ["dumps", "restore-test"]) rmSync(join(options.runtime.stateDir, "backup", leftover), { recursive: true, force: true });
   }
 
   get busy(): boolean {
@@ -460,6 +479,10 @@ export class BackupScheduler {
   /** Before each pass: nothing a backup stopped may look like a failed deployment. */
   async recover(): Promise<void> {
     if (this.running) return;
+    if (!this.cleaned) {
+      await this.removeLeftovers();
+      this.cleaned = true;
+    }
     for (const problem of await restartPaused(this.options.runtime)) this.options.log("backup: app not restarted", { problem: redact(problem) });
   }
 
@@ -490,6 +513,18 @@ export class BackupScheduler {
       ],
       checked: ["backup"],
     };
+  }
+
+  /**
+   * What a run cut short by a restart left behind: its containers first, which
+   * may still be working and hold credentials, then the data they were using.
+   */
+  private async removeLeftovers(): Promise<void> {
+    const { runtime } = this.options;
+    for (const name of [CONTAINER, `${CONTAINER}-dump`, RESTORE_CONTAINER]) {
+      await runtime.docker.removeContainer(name, { anonymousVolumes: true });
+    }
+    for (const leftover of ["dumps", "restore-test"]) rmSync(join(runtime.stateDir, "backup", leftover), { recursive: true, force: true });
   }
 
   private async attempt(plan: BackupPlan): Promise<void> {

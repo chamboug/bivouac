@@ -213,6 +213,32 @@ describe("when things go badly", () => {
   });
 });
 
+describe("when alerts cannot be delivered", () => {
+  it("withholds the heartbeat after a day, so the outside monitor speaks up", async () => {
+    const { pings, passes, clock } = setup({ status: () => 403 });
+    await passes(appFails, CONFIRMATIONS);
+    expect(pings).toHaveLength(CONFIRMATIONS);
+    clock.now += DAY - 1;
+    await passes(appFails, 1);
+    expect(pings).toHaveLength(CONFIRMATIONS + 1);
+    clock.now += 1;
+    await passes(appFails, 1);
+    expect(pings).toHaveLength(CONFIRMATIONS + 1);
+  });
+
+  it("pings again as soon as a message gets through", async () => {
+    let status = 500;
+    const { pings, passes, clock } = setup({ status: () => status });
+    await passes(appFails, CONFIRMATIONS);
+    clock.now += DAY;
+    await passes(appFails, 1);
+    const before = pings.length;
+    status = 200;
+    await passes(appFails, 1);
+    expect(pings.length).toBe(before + 1);
+  });
+});
+
 describe("heartbeat", () => {
   it("pings after a pass that ran, even with a failing app", async () => {
     const { pings, passes } = setup();

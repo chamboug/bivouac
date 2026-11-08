@@ -51,7 +51,10 @@ export async function ensureDatabase(server: PostgresServer, spec: DatabaseSpec)
       const installed = new Set(present.rows.map((row) => row.extname));
       for (const extension of spec.extensions) {
         if (!installed.has(extension)) {
+          // Installed in public; pg_catalog is still searched first, being left out.
+          await admin.query("SET search_path = public");
           await admin.query(`CREATE EXTENSION IF NOT EXISTS ${pg.escapeIdentifier(extension)}`);
+          await admin.query("SET search_path = pg_catalog");
           changes.push(`extension ${extension} in ${spec.name}`);
         }
       }
@@ -106,7 +109,20 @@ async function withClient<T>(
   password: string,
   work: (client: pg.Client) => Promise<T>,
 ): Promise<T> {
-  const client = new pg.Client({ host: server.host, port: server.port, database, user, password });
+  const client = new pg.Client({
+    host: server.host,
+    port: server.port,
+    database,
+    user,
+    password,
+    // A database that stops answering must not hold the reconciler forever.
+    connectionTimeoutMillis: 15_000,
+    query_timeout: 120_000,
+    // The owner of a database can set its search_path, and that setting would
+    // apply to the superuser too: an app could get its own functions run with
+    // the superuser's rights. Startup options win over database settings.
+    ...(user === "postgres" ? { options: "-c search_path=pg_catalog" } : {}),
+  });
   await client.connect();
   try {
     if (user === "postgres") {

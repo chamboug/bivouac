@@ -488,6 +488,16 @@ describe("i. the nightly backup (D33)", () => {
     expect(docker("volume", "ls", "--quiet", "--filter", "dangling=true")).toBe(volumesBefore);
   });
 
+  it("a partial copy, once marked, is no longer taken for the latest good one", () => {
+    const nightly = () => (JSON.parse(restic("snapshots", "--tag", "nightly", "--json")) as { id: string }[]).map((entry) => entry.id);
+    const before = nightly();
+    const newest = before.at(-1) ?? "";
+    restic("tag", "--host", "bivouac", "--set", "incomplete", "latest");
+    expect(nightly()).toHaveLength(before.length - 1);
+    expect(nightly()).not.toContain(newest);
+    restic("tag", "--host", "bivouac", "--set", "nightly", "latest");
+  });
+
   it("fails the restore test when the latest copy lacks a database", () => {
     platform.commit({ "apps/nouvelle.yml": `name: nouvelle\nimage: ${TEST_APP_IMAGE}\nauth: public\ndatabase: {}\n` }, "a new app");
     const pass = runOnce(platform, { args: ["--restore"], env: { BIVOUAC_BACKUP_REPOSITORY: repository() } });
@@ -500,5 +510,23 @@ describe("i. the nightly backup (D33)", () => {
     const pass = runOnce(platform, { args: ["--backup"], env: { BIVOUAC_BACKUP_REPOSITORY: "/proc/nonexistent/repo" } });
     expect(pass.status).toBe(1);
     expect(JSON.parse(restic("snapshots", "--json")).length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("j. an app cannot use its database against the superuser", () => {
+  const owner = (sql: string) => psql("recettes", derive(platform.masterSecret, "db:recettes"), "recettes", sql);
+
+  it("ignores a search_path set by the database's owner", () => {
+    for (const sql of [
+      "CREATE SCHEMA evil",
+      "CREATE TABLE evil.pwned(who text)",
+      "CREATE FUNCTION evil.mark() RETURNS name LANGUAGE sql AS $$ INSERT INTO evil.pwned SELECT current_user RETURNING who::name $$",
+      "CREATE VIEW evil.pg_extension AS SELECT evil.mark() AS extname",
+      "GRANT USAGE ON SCHEMA evil TO PUBLIC",
+      "ALTER DATABASE recettes SET search_path = evil, pg_catalog",
+    ]) expect(owner(sql).stderr).toBe("");
+    platform.commit({ "apps/recettes.yml": RECETTES }, "keep the app with extensions");
+    runOnce(platform);
+    expect(owner("SELECT count(*) FROM evil.pwned").stdout.trim()).toBe("0");
   });
 });

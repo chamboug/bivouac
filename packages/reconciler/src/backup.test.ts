@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appManifestSchema } from "@bivouac/manifest";
 import type { Runtime } from "./base.js";
-import { BackupScheduler, backupPlan, backupWeek, dumpsFit, retentionCommands, isDue, restartPaused, type BackupPlan } from "./backup.js";
+import { BackupScheduler, backupPlan, backupWeek, dumpsFit, markLatestIncomplete, parseCount, retentionCommands, isDue, restartPaused, type BackupPlan } from "./backup.js";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 
 const HOUR = 3600_000;
@@ -261,6 +261,38 @@ describe("apps stopped by a backup", () => {
     } } as unknown as Runtime;
     expect(await restartPaused(runtime)).toHaveLength(1);
     expect(existsSync(join(directory, "backup", "paused.json"))).toBe(true);
+  });
+});
+
+describe("after a restart in the middle of a run", () => {
+  it("removes the containers first, then the data they used", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "bivouac-backup-"));
+    roots.push(stateDir);
+    mkdirSync(join(stateDir, "backup", "dumps"), { recursive: true });
+    mkdirSync(join(stateDir, "backup", "restore-test"), { recursive: true });
+    const removed: string[] = [];
+    const runtime = { stateDir, pausedApps: new Set<string>(), docker: {
+      removeContainer: async (name: string) => { removed.push(`${name}:${existsSync(join(stateDir, "backup", "dumps"))}`); },
+    } } as unknown as Runtime;
+    const scheduler = new BackupScheduler({ runtime, log: () => {} });
+    await scheduler.recover();
+    await scheduler.recover();
+    expect(removed).toEqual(["bivouac-backup:true", "bivouac-backup-dump:true", "bivouac-restore-test:true"]);
+    expect(existsSync(join(stateDir, "backup", "dumps"))).toBe(false);
+    expect(existsSync(join(stateDir, "backup", "restore-test"))).toBe(false);
+  });
+});
+
+describe("reading the restored copy", () => {
+  it("refuses an answer that is not a number", () => {
+    expect(parseCount(" 35\n", "x")).toBe(35);
+    expect(() => parseCount("", "x")).toThrow();
+    expect(() => parseCount("NaN", "x")).toThrow();
+    expect(() => parseCount("1 row", "x")).toThrow();
+  });
+
+  it("marks only the latest snapshot of this host", () => {
+    expect(markLatestIncomplete()).toEqual(["tag", "--host", "bivouac", "--set", "incomplete", "latest"]);
   });
 });
 

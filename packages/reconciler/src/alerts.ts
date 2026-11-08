@@ -31,6 +31,8 @@ const REFUSED_PAUSE = HOUR;
 export const DISK_CLEAR_PERCENT = 75;
 /** Whatever goes wrong, the monthly quota (10,000, D45) must survive it. */
 export const DAILY_MESSAGE_LIMIT = 50;
+/** Past this, alerts cannot reach anyone: the heartbeat stops, so the outside monitor says so. */
+const UNDELIVERED_LIMIT = DAY;
 
 export type AlertCredentials = NonNullable<PlatformSecrets["alerts"]>;
 
@@ -150,6 +152,7 @@ const stateSchema = z.object({
   rebuildReminder: z.number().optional(),
   pausedUntil: z.number().optional(),
   budget: z.object({ day: z.number(), sent: z.number() }).optional(),
+  undeliveredSince: z.number().optional(),
 });
 type State = z.infer<typeof stateSchema>;
 
@@ -195,7 +198,9 @@ export class Watch {
       this.save(state);
       // A pass stopped by an error is no proof of health: the switch stays
       // silent, which also covers a server unable to send anything itself.
-      if (!("error" in outcome)) await this.ping(credentials.healthchecks.heartbeat);
+      const channelLost = state.undeliveredSince !== undefined && this.now() - state.undeliveredSince >= UNDELIVERED_LIMIT;
+      if (channelLost) this.options.log("alerts undelivered for a day: heartbeat withheld");
+      else if (!("error" in outcome)) await this.ping(credentials.healthchecks.heartbeat);
     } catch (error) {
       this.options.log("alerts failed", { error: (error as Error).message });
     }
@@ -255,9 +260,11 @@ export class Watch {
         this.fetch,
       );
       budget.sent += 1;
+      delete state.undeliveredSince;
       this.options.log("alert sent", { title: capped ? "too many alerts" : title });
       return !capped;
     } catch (error) {
+      state.undeliveredSince ??= this.now();
       if (error instanceof Refused) state.pausedUntil = this.now() + REFUSED_PAUSE;
       else this.unreachable = true;
       this.options.log("alert not sent", { title, error: (error as Error).message });
