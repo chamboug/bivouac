@@ -5,7 +5,7 @@
  */
 import { createHash, createHmac } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { PLATFORM_IMAGES } from "@bivouac/manifest";
+import { PLATFORM_IMAGES } from "../../manifest/src/platform.ts";
 import {
   CADDY_ADDRESS,
   DOMAIN,
