@@ -227,7 +227,10 @@ systemd:
           --security-opt no-new-privileges \
           --log-opt max-size=10m --log-opt max-file=3 \
           ${BIVOUAC_RECONCILER_IMAGE}
-        ExecStop=/usr/bin/docker stop bivouac-reconciler
+        # "-": the container is started with --rm, so after a self-update (an
+        # exit) it is already gone, and a failing stop must not mark the unit
+        # failed.
+        ExecStop=-/usr/bin/docker stop bivouac-reconciler
 
         [Install]
         WantedBy=multi-user.target
