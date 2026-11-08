@@ -8,11 +8,14 @@ import {
   PLATFORM_IMAGES,
   PLATFORM_NETWORKS,
   POCKET_ID_PORT,
+  type PlatformConfig,
 } from "@bivouac/manifest";
 import { MANAGED_LABEL, ensureContainer, waitHealthy, type ContainerSpec, type EnsureResult } from "./containers.js";
 import type { Docker } from "./docker.js";
 import { closePlatformDatabases, connectionString, ensureDatabase, type PostgresServer } from "./postgres.js";
-import { deriveSecret, type PlatformSecrets } from "./secrets.js";
+import { SecretsError, deriveSecret, type PlatformSecrets } from "./secrets.js";
+
+type MailConfig = NonNullable<PlatformConfig["mail"]>;
 
 /**
  * Everything the reconciler needs to know about where it runs. In
@@ -57,6 +60,35 @@ export function pocketIdUrl(): string {
 }
 
 /**
+ * Pocket ID reads its application settings from the environment only with
+ * `UI_CONFIG_DISABLED` (verified, v2.19.2): Git stays the source of truth,
+ * and the settings screen becomes read-only. `SMTP_TLS` defaults to `none`,
+ * so it is always set; `starttls` refuses a server that does not offer it.
+ */
+export function pocketIdConfigEnv(mail: MailConfig | undefined): Record<string, string> {
+  return {
+    UI_CONFIG_DISABLED: "true",
+    // Invitations only: open signup stays refused, and the pages that create
+    // and use invitation links are hidden unless this is set (verified).
+    ALLOW_USER_SIGNUPS: "withToken",
+    ...(mail && {
+      SMTP_HOST: mail.host,
+      SMTP_PORT: String(mail.port),
+      SMTP_FROM: mail.from,
+      SMTP_USER: mail.user,
+      SMTP_TLS: "starttls",
+      SMTP_PASSWORD_FILE: `${SECRETS_TARGET}/smtp_password`,
+    }),
+  };
+}
+
+function mailPassword(secrets: PlatformSecrets): string {
+  const password = secrets.mail?.password;
+  if (!password) throw new SecretsError("platform.yml names a mail account, but mail.password is missing from the secrets file");
+  return password;
+}
+
+/**
  * The networks, Postgres and Pocket ID, each healthy before the next one
  * starts. Caddy comes last, once the apps' routes are known (see pass.ts).
  */
@@ -64,6 +96,7 @@ export async function ensureBase(
   runtime: Runtime,
   secrets: PlatformSecrets,
   domain: string,
+  mail: MailConfig | undefined,
   changes: string[],
 ): Promise<void> {
   const { docker } = runtime;
@@ -118,6 +151,7 @@ export async function ensureBase(
       encryption_key: secrets.pocket_id.encryption_key,
       static_api_key: secrets.pocket_id.static_api_key,
       db_connection_string: connectionString(server, pocketIdDatabase),
+      ...(mail && { smtp_password: mailPassword(secrets) }),
     },
     changes,
   );
@@ -141,6 +175,7 @@ export async function ensureBase(
       DB_CONNECTION_STRING_FILE: `${SECRETS_TARGET}/db_connection_string`,
       ENCRYPTION_KEY_FILE: `${SECRETS_TARGET}/encryption_key`,
       STATIC_API_KEY_FILE: `${SECRETS_TARGET}/static_api_key`,
+      ...pocketIdConfigEnv(mail),
     },
     mounts: [{ type: "bind", source: pocketIdSecrets, target: SECRETS_TARGET, readOnly: true }],
     healthCheck: { test: ["/app/pocket-id", "healthcheck"], intervalSeconds: 30, startPeriodSeconds: 60 },

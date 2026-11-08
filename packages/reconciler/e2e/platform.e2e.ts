@@ -13,6 +13,7 @@ import {
   createPlatform,
   destroyPlatform,
   docker,
+  MAIL_PASSWORD,
   inspect,
   pocketIdApi,
   psql,
@@ -32,7 +33,7 @@ import {
 } from "./platform.ts";
 
 const platformYml = (image: string) =>
-  `domain: ${DOMAIN}\nrepository: git@github.com:example/bivouac-platform.git\nreconciler:\n  image: ${image}\n`;
+  `domain: ${DOMAIN}\nrepository: git@github.com:example/bivouac-platform.git\nreconciler:\n  image: ${image}\nmail:\n  host: smtp.example.invalid\n  from: contact@example.invalid\n  user: contact@example.invalid\n`;
 
 const derive = (master: string, purpose: string) => createHmac("sha256", master).update(purpose).digest("hex");
 
@@ -133,6 +134,21 @@ describe("a. base services", () => {
     const env = inspect<ContainerState>("bivouac-pocket-id").Config.Env;
     expect(env).toContain(`TRUST_PROXY=${CADDY_ADDRESS}`);
     expect(env).toContain("ANALYTICS_DISABLED=true");
+  });
+
+  it("takes Pocket ID's mail settings from Git, the password as a file", () => {
+    const env = inspect<ContainerState>("bivouac-pocket-id").Config.Env;
+    expect(env).toContain("UI_CONFIG_DISABLED=true");
+    expect(env).toContain("SMTP_HOST=smtp.example.invalid");
+    expect(env).toContain("SMTP_TLS=starttls");
+    expect(env.some((line) => line.includes(MAIL_PASSWORD))).toBe(false);
+    const secret = run("docker", ["exec", "bivouac-pocket-id", "cat", "/run/secrets/bivouac/smtp_password"]);
+    expect(secret.stdout).toBe(MAIL_PASSWORD);
+  });
+
+  it("never writes the mail password to Pocket ID's logs", () => {
+    const logs = run("docker", ["logs", "bivouac-pocket-id"]);
+    expect(`${logs.stdout}${logs.stderr}`).not.toContain(MAIL_PASSWORD);
   });
 });
 

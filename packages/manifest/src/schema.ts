@@ -294,6 +294,19 @@ export const platformConfigSchema = z.strictObject({
         .optional(),
     })
     .optional(),
+  /**
+   * The SMTP account the platform sends mail from. Port 587 only: Hetzner
+   * blocks outbound 25 and 465 by default (verified). Always over STARTTLS.
+   * The password is in the secrets file (`mail.password`).
+   */
+  mail: z
+    .strictObject({
+      host: hostnameSchema,
+      port: z.literal(587).default(587),
+      from: z.email(),
+      user: z.string().min(1),
+    })
+    .optional(),
 });
 
 /**

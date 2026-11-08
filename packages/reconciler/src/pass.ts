@@ -85,7 +85,7 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   // keep a key change from reaching the server.
   if (instance.sshKeys && writeSshKeys(runtime.stateDir, instance.sshKeys)) changes.push("SSH keys");
   const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
-  await ensureBase(runtime, secrets, domain, changes);
+  await ensureBase(runtime, secrets, domain, instance.platform.mail, changes);
 
   const context = {
     runtime,

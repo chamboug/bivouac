@@ -21,6 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(here, "..", "..", "..");
 
 export const RECONCILER_IMAGE = "bivouac-reconciler:dev";
+export const MAIL_PASSWORD = "e2e-mail-password-not-a-secret";
 /**
  * The same image under the names platform.yml accepts: the "running"
  * version, a "newer" one, and a "broken" one (the test app, which cannot
@@ -122,6 +123,8 @@ export function createPlatform(): Platform {
     "pocket_id:",
     `  encryption_key: ${randomBytes(32).toString("base64")}`,
     `  static_api_key: ${staticApiKey}`,
+    "mail:",
+    `  password: ${MAIL_PASSWORD}`,
     "",
   ].join("\n");
   mkdirSync(join(repo, "secrets"), { recursive: true });
@@ -139,6 +142,10 @@ export function createPlatform(): Platform {
     "repository: git@github.com:example/bivouac-platform.git",
     "reconciler:",
     `  image: ${RECONCILER_RUNNING}`,
+    "mail:",
+    "  host: smtp.example.invalid",
+    "  from: contact@example.invalid",
+    "  user: contact@example.invalid",
     "",
   ].join("\n"));
   writeFileSync(join(repo, "ssh-keys.yml"), `keys:\n  - name: fixture\n    key: ${sshKey}\n`);

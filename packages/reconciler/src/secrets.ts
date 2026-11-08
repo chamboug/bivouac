@@ -19,6 +19,8 @@ export const platformSecretsSchema = z.looseObject({
     /** Admin API key (verified, Pocket ID docs: at least 16 characters). */
     static_api_key: z.string().min(16, "must be at least 16 characters"),
   }),
+  /** Password of the SMTP account named in `platform.yml`. */
+  mail: z.looseObject({ password: z.string().min(1, "must not be empty") }).optional(),
 });
 
 export type PlatformSecrets = z.infer<typeof platformSecretsSchema>;

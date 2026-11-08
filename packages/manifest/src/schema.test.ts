@@ -219,6 +219,14 @@ describe("platform config", () => {
     expect(parse({ auth: { setupFrom: "2a01:e0a:ff3:56c0::1" } }).success).toBe(true);
   });
 
+  it("describes the mail account without its password, on port 587 only", () => {
+    const mail = { host: "smtp.example.com", from: "contact@example.com", user: "contact@example.com" };
+    expect(parse({ mail }).data?.mail?.port).toBe(587);
+    expect(parse({ mail: { ...mail, port: 465 } }).success).toBe(false);
+    expect(parse({ mail: { ...mail, from: "nobody" } }).success).toBe(false);
+    expect(parse({ mail: { ...mail, password: "secret" } }).success).toBe(false);
+  });
+
   it("needs the repo's address on GitHub over SSH", () => {
     expect(parse({}).success).toBe(true);
     expect(parse({ repository: "git@github.com:Some-Owner/my.instance.git" }).success).toBe(true);

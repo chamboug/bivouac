@@ -1,9 +1,23 @@
 import { describe, expect, it } from "vitest";
 import { appManifestSchema } from "@bivouac/manifest";
 import { appEnvironment } from "./apps.js";
+import { pocketIdConfigEnv } from "./base.js";
 import { createBody, fingerprint, parsePorts } from "./containers.js";
 import { demultiplex } from "./docker.js";
 import { deriveSecret } from "./secrets.js";
+
+describe("Pocket ID settings from Git", () => {
+  it("keeps mail unset when no account is declared", () => {
+    expect(pocketIdConfigEnv(undefined)).toEqual({ UI_CONFIG_DISABLED: "true", ALLOW_USER_SIGNUPS: "withToken" });
+  });
+
+  it("always asks for STARTTLS and passes the password as a file", () => {
+    const env = pocketIdConfigEnv({ host: "smtp.example.com", port: 587, from: "a@example.com", user: "a@example.com" });
+    expect(env).toMatchObject({ SMTP_HOST: "smtp.example.com", SMTP_PORT: "587", SMTP_TLS: "starttls" });
+    expect(env.SMTP_PASSWORD_FILE).toMatch(/smtp_password$/);
+    expect(env).not.toHaveProperty("SMTP_PASSWORD");
+  });
+});
 
 describe("derived secrets (D14)", () => {
   it("are HMAC-SHA256 in hexadecimal, the same every time", () => {
