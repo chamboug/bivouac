@@ -163,7 +163,7 @@ architecture.
    `hc /servers/<id>/actions/change_protection -X POST -d '{"delete": true, "rebuild": true}'`
    and `hc /primary_ips/<ipv4-id>/actions/change_protection -X POST -d '{"delete": true}'`.
    It does not stop a malicious tool, which could lift it first. Lift the
-   server's protection again before a rebuild (section 6).
+   server's protection again before a rebuild (section 7).
 
 5. **Run the tool (consent)**, pinned by digest (the image is not signed, and a
    tag can be pushed again). `--server-type` sets the architecture; pick an
@@ -207,116 +207,204 @@ node packages/bivy/dist/cli.js ignition <instance-dir> -o ignition.json
 ```
 
 `bivy` refuses a result above 32 KiB (Hetzner's `user_data` limit); it is
-about 5.6 KB. It contains no secret: user-data can be read from the server
-(D7). It starts the reconciler at the version and with the repo address of
-`platform.yml` (D60), loads the metadata block before Docker (D62), and
-installs the hook that applies the SSH keys written by the reconciler (D63).
+about 5.8 KB. It contains no secret: user-data can be read from the server
+(D7); check it anyway (`grep -Ei 'PRIVATE KEY|AGE-SECRET-KEY'` must find
+nothing). It starts the reconciler at the version and with the repo address
+of `platform.yml` (D60), loads the metadata block before Docker (D62),
+installs the hook that applies the SSH keys written by the reconciler (D63),
+and configures the server's IPv6 (D66).
 
-Checks after the first boot (over SSH, read-only except the Docker restart
-and the reboot, which are announced first):
+**IPv6**: Flatcar only configures DHCPv4 on Hetzner. The IPv6 is static
+(metadata service, `network-config`: the `/64` with `::1`, gateway
+`fe80::1`), so the instance's Butane writes a drop-in for Flatcar's default
+network file, `/etc/systemd/network/zz-default.network.d/10-bivouac-ipv6.conf`.
+The address is the server's Primary IPv6: create that IP (section 7) before
+generating the Ignition, and change the Butane if the IP ever changes.
 
-```bash
-# The metadata service: refused from a container, answered on the host.
-docker run --rm alpine:3.24 wget -T3 -qO- http://169.254.169.254/hetzner/v1/userdata   # must fail
-curl -s http://169.254.169.254/hetzner/v1/userdata | head -c 40; echo                  # must answer
-sudo nft list table inet bivouac_metadata                                               # counter > 0
-systemctl list-dependencies docker.service | grep bivouac-metadata-block
-# SSH keys: applied, only the `bivouac` fragment left, still able to log in.
-sudo cat /var/lib/bivouac/ssh-status/applied
-ls ~core/.ssh/authorized_keys.d/
-# The reconciler: its version and its last passes.
-systemctl show bivouac-reconciler -p Environment; docker logs --tail 20 bivouac-reconciler
-```
+## 6. Firewall (consent)
 
-Repeat the metadata checks after `sudo systemctl restart docker` and after a
-reboot.
+Applied **before** the server is (re)installed, so Flatcar is never exposed
+on anything else. Inbound 22/tcp, 80/tcp, 443/tcp and 443/udp from
+everywhere, everything else blocked, ICMP included. Hetzner's firewall
+filters before the server, so Docker's iptables rules cannot bypass it; it
+is attached to the server, not its disk, and survives a rebuild (observed).
 
-## 6. Server
+1. Write the current rules to the operations log first (the full JSON of
+   `hc /firewalls/<id>`), so they can be put back.
+2. Apply:
 
-Two cases. Either way, check the Primary IPv4 has `auto_delete=false`
-**before** deleting or rebuilding anything, otherwise the IP is lost with the
-server:
+   ```bash
+   RULES='[{"description":"SSH","direction":"in","protocol":"tcp","port":"22","source_ips":["0.0.0.0/0","::/0"]},{"description":"HTTP","direction":"in","protocol":"tcp","port":"80","source_ips":["0.0.0.0/0","::/0"]},{"description":"HTTPS","direction":"in","protocol":"tcp","port":"443","source_ips":["0.0.0.0/0","::/0"]},{"description":"HTTP/3","direction":"in","protocol":"udp","port":"443","source_ips":["0.0.0.0/0","::/0"]}]'
+   ```
 
-```bash
-hc /primary_ips/<ipv4-id> -X PUT -d '{"auto_delete": false}'
-```
+   - An existing firewall: `hc /firewalls/<id>/actions/set_rules -X POST -d "{\"rules\": $RULES}"`
+     (replaces every rule), then `hc /firewalls/<id> -X PUT -d '{"name":"bivouac"}'`.
+   - A new one: `hc /firewalls -X POST -d "{\"name\": \"bivouac\", \"rules\": $RULES, \"apply_to\": [{\"type\": \"server\", \"server\": {\"id\": <id>}}]}"`.
+3. Wait for the `apply_firewall` action to be `success`, then check from the
+   Mac that only those ports answer (`nc -z -G 4 <ip> <port>`).
 
-**A. Reinstalling an existing server in place (consent)**: keeps the server,
-its type, location, price and IPs, and **erases its disk**. `rebuild` takes
-the snapshot and the Ignition as `user_data`; the server is powered off
-automatically first. If the server is protected (section 4), lift its
-protection first (`{"delete": false, "rebuild": false}`: the API requires
-both to have the same value, verified) and set it again afterwards.
+## 7. Server
 
-```bash
-hc /servers/<id>/actions/rebuild -X POST -d "$(jq -n --arg ud "$(cat ignition.json)" '{image: <snapshot-id>, user_data: $ud}')"
-```
+Check the Primary IPv4 has `auto_delete=false` **before** deleting or
+rebuilding anything, otherwise the IP is lost with the server:
+`hc /primary_ips/<ipv4-id> -X PUT -d '{"auto_delete": false}'`.
+
+**A. Reinstalling an existing server in place (consent)**, as done on
+8 November 2026: keeps the server, its type, location, price, IPs and
+firewall, and **erases its disk**.
+
+1. **Power off and add the IPv6 (consent)** if the server has none: a Primary
+   IP can only be assigned to a server that is off (verified, API spec).
+   `shutdown` (ACPI; `poweroff` only if it is not `off` after two minutes),
+   then:
+
+   ```bash
+   hc /primary_ips -X POST -d '{"name": "bivouac-ipv6", "type": "ipv6", "assignee_type": "server", "assignee_id": <id>, "auto_delete": false}'
+   hc /primary_ips/<ipv6-id>/actions/change_protection -X POST -d '{"delete": true}'
+   hc /servers/<id> -X PUT -d '{"name": "bivouac"}'
+   ```
+
+   A Primary IPv6 is free (absent from `/pricing`). The server stays off.
+2. **Generate the Ignition** (section 5) with this IPv6 in the Butane.
+3. **Rebuild (consent)**. The image is given as a string (the snapshot ID);
+   without `user_data`, the API reuses the server's previous one. The
+   response holds a `root_password`: never print it. Lift the server's
+   protection (`delete` and `rebuild` must have the same value), rebuild,
+   and put the protection back **whatever the outcome**:
+
+   ```bash
+   hc /servers/<id>/actions/change_protection -X POST -d '{"delete": false, "rebuild": false}'
+   AID=$(hc /servers/<id>/actions/rebuild -X POST -d "$(jq -n --arg ud "$(cat ignition.json)" '{image: "<snapshot-id>", user_data: $ud}')" | jq -r '.action.id // empty')
+   # wait for: hc /servers/actions/$AID  ->  status success
+   hc /servers/<id>/actions/change_protection -X POST -d '{"delete": true, "rebuild": true}'
+   ```
+
+   Observed: 25 to 35 s, the server comes back `running` on its own, SSH
+   answers a few seconds later. Check through the API: same type, location
+   and IPs, `image` is the snapshot, firewall applied, protection set.
+   Until the keys of section 8 are placed, rebuilding again is the universal
+   way back (a broken Ignition, no SSH access); each rebuild creates a new
+   SSH host key.
 
 **B. New server with an existing Primary IP (consent if an old server is
 deleted)**: the IP must be unassigned (the old server deleted or the IP
 unassigned while it is off) and in the same location as the new server.
+Create the firewall and the Primary IPv6 first, and pass both:
 
 ```bash
-hc /servers -X POST -d "$(jq -n --arg ud "$(cat ignition.json)" '{name: "bivouac", server_type: "cx23", location: "<location>", image: "<snapshot-id>", user_data: $ud, firewalls: [{firewall: <firewall-id>}], public_net: {enable_ipv4: true, enable_ipv6: true, ipv4: <ipv4-id>}}')"
+hc /servers -X POST -d "$(jq -n --arg ud "$(cat ignition.json)" '{name: "bivouac", server_type: "<type>", location: "<location>", image: "<snapshot-id>", user_data: $ud, firewalls: [{firewall: <firewall-id>}], public_net: {enable_ipv4: true, enable_ipv6: true, ipv4: <ipv4-id>, ipv6: <ipv6-id>}}')"
 ```
 
 (`jq` is included in recent macOS, as `/usr/bin/jq`.)
 
-Then, in both cases:
-
-- Name the server: `hc /servers/<id> -X PUT -d '{"name": "bivouac"}'`.
-- IPv6 (D26), if the server has none: create a Primary IPv6 assigned to it,
-  while it is powered off (`shutdown`, wait for `off`):
-  `hc /primary_ips -X POST -d '{"name": "bivouac-ipv6", "type": "ipv6", "assignee_type": "server", "assignee_id": <id>, "auto_delete": false}'`,
-  then `poweron`.
-
-## 7. Firewall (consent)
-
-Inbound 22/tcp, 80/tcp, 443/tcp and 443/udp from everywhere, everything else
-blocked. Hetzner's firewall filters before the server, so Docker's iptables
-rules cannot bypass it.
-
-```bash
-RULES='[{"description":"SSH","direction":"in","protocol":"tcp","port":"22","source_ips":["0.0.0.0/0","::/0"]},{"description":"HTTP","direction":"in","protocol":"tcp","port":"80","source_ips":["0.0.0.0/0","::/0"]},{"description":"HTTPS","direction":"in","protocol":"tcp","port":"443","source_ips":["0.0.0.0/0","::/0"]},{"description":"HTTP/3","direction":"in","protocol":"udp","port":"443","source_ips":["0.0.0.0/0","::/0"]}]'
-```
-
-- An existing firewall: `hc /firewalls/<id>/actions/set_rules -X POST -d "{\"rules\": $RULES}"`
-  (replaces every rule).
-- A new one: `hc /firewalls -X POST -d "{\"name\": \"bivouac\", \"rules\": $RULES, \"apply_to\": [{\"type\": \"server\", \"server\": {\"id\": <id>}}]}"`.
-
-ICMP (ping) is not allowed: it is not needed, and its absence only makes
-diagnosis from outside a little harder.
-
 ## 8. First login and keys on the server
 
-1. `ssh -i ~/.ssh/bivouac-claude core@<ipv4>`: the host key is new, check it
-   against the server's console output if in doubt.
-2. Check: Flatcar version (`cat /etc/os-release`), Docker version, sshd
-   settings (`sudo sshd -T | grep -Ei 'permitrootlogin|passwordauth|kbdinteractive'`).
-3. Deploy key: generate a key pair on the Mac in a temporary folder, add the
-   public key to the instance repo as a **read-only** deploy key (repo
-   settings), copy the private key to the server, then delete the local copy.
-   `bivy` will do this through the GitHub API (D30).
-4. Copy the age key and the deploy key, never through user-data (D7):
+SSH from the Mac always uses a known_hosts file of the platform's own,
+never `~/.ssh/known_hosts`:
+
+```bash
+O=(-i ~/.ssh/bivouac-claude -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.config/bivouac/known_hosts -o BatchMode=yes)
+ssh "${O[@]}" core@<ipv4> '<command>'
+```
+
+1. **Host key, never accepted blindly.** At boot, Flatcar writes the
+   fingerprints of its host keys to the console's login prompt
+   (`SSH host key: SHA256:… (ED25519)`, verified in Flatcar's `sshd_keygen`
+   and `issuegen`). The owner opens the server's console in Hetzner's web
+   console and reads the ED25519 line. On the Mac:
+   `ssh-keyscan -t ed25519 <ipv4> > scan.txt; ssh-keygen -lf scan.txt`. Only
+   if both fingerprints are identical, write **that same line** (not a second
+   scan) to `~/.config/bivouac/known_hosts` (mode 600), with both addresses:
+   `<ipv4>,<ipv6>::1 ssh-ed25519 AAAA…`.
+2. **First-boot checks (read-only)**: `/etc/os-release`; `docker version`;
+   `sudo sshd -T | grep -Ei '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers) '`
+   (no, no, no, core); `systemctl --failed`; `sudo cat /etc/.ignition-result.json`
+   (`userConfigProvided: true`); `timedatectl show -p NTPSynchronized`;
+   `ip -br addr show eth0` and `ip -6 route show default` (the IPv6 and
+   `fe80::1`); `sudo ss -tulpn` (only sshd on 22 before the base services);
+   `sudo ls -la /etc/bivouac /var/lib/bivouac /opt/bivouac`;
+   `sudo nft list table inet bivouac_metadata`;
+   `systemctl list-dependencies docker.service | grep bivouac-metadata-block`;
+   the metadata service answers on the host and is refused from a container
+   (`docker run --rm alpine:3.24 wget -T3 -qO- http://169.254.169.254/hetzner/v1/userdata`
+   must fail); `ls ~core/.ssh/authorized_keys.d/` (only `ignition` so far);
+   `docker logs --tail 5 bivouac-reconciler` (each pass fails to clone:
+   expected without a deploy key).
+3. **Deploy key (consent), generated on the server** (D66): the private key
+   never leaves it.
 
    ```bash
-   ssh core@<ipv4> 'sudo install -m 600 /dev/stdin /etc/bivouac/age.key' < ~/.config/sops/age/keys.txt
+   ssh "${O[@]}" core@<ipv4> 'sudo ssh-keygen -q -t ed25519 -N "" -C bivouac-server -f /etc/bivouac/deploy_key && sudo cat /etc/bivouac/deploy_key.pub'
    ```
+
+   The owner adds the public key in the instance repo: Settings → Deploy
+   keys → Add deploy key, title `bivouac-server`, **"Allow write access"
+   unchecked**, and confirms GitHub shows it "Read-only". (Through the API
+   it would take a fine-grained PAT with "Administration: write" on the
+   repo, verified.) Checks, from the reconciler's image with the GitHub host
+   keys it pins:
 
    ```bash
-   ssh core@<ipv4> 'sudo install -m 600 /dev/stdin /etc/bivouac/deploy_key' < <temporary-folder>/deploy_key
+   I=<reconciler image>; K=/app/packages/reconciler/github_known_hosts
+   sudo docker run --rm --cap-drop NET_RAW --security-opt no-new-privileges -v /etc/bivouac/deploy_key:/k:ro --entrypoint git \
+     -e GIT_SSH_COMMAND="ssh -i /k -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$K" \
+     $I ls-remote <repository> refs/heads/main            # reads main
+   sudo docker run --rm -i --cap-drop NET_RAW --security-opt no-new-privileges -v /etc/bivouac/deploy_key:/k:ro --entrypoint ssh \
+     $I -i /k -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$K \
+     git@github.com "git-receive-pack '<owner>/<repo>.git'" </dev/null
    ```
 
-5. Check the metadata service is blocked from containers
-   **(not built yet)**: `docker run --rm alpine:3.24 wget -qO- -T 3 http://169.254.169.254/hetzner/v1/metadata`
-   must fail, while `curl -s http://169.254.169.254/hetzner/v1/metadata` on
-   the host works.
+   The second command sends nothing; GitHub answers "The key you are
+   authenticating with has been marked as read only". Reconciler versions
+   before `sha-461e530` only look for the key at startup:
+   `sudo systemctl restart bivouac-reconciler` for those.
+4. **First SSH key sync**, with a second SSH session kept open as a safety
+   net (a master connection: `ssh "${O[@]}" -M -S <short path> -o ControlPersist=2h -fN core@<ipv4>`;
+   macOS limits socket paths to 104 bytes). The next pass writes the list;
+   `bivouac-ssh-keys.path` applies it within a second: the `bivouac` set is
+   added, `ignition` removed. Check `sudo cat /var/lib/bivouac/ssh-status/applied`
+   (`applied <sha256>`), `ls ~core/.ssh/authorized_keys.d/` (only
+   `bivouac`), and a **new** login without the master connection
+   (`-o ControlPath=none`). The pass then stops at "the age key is missing":
+   expected.
+5. **age key (consent)**, through standard input, never on a command line
+   or the screen; then compare hashes without printing them:
+
+   ```bash
+   ssh "${O[@]}" core@<ipv4> 'sudo test -e /etc/bivouac/age.key && exit 1; sudo sh -c "umask 077; cat > /etc/bivouac/age.key.tmp && mv /etc/bivouac/age.key.tmp /etc/bivouac/age.key"' < ~/.config/sops/age/keys.txt
+   L=$(shasum -a 256 < ~/.config/sops/age/keys.txt | cut -d' ' -f1); R=$(ssh "${O[@]}" core@<ipv4> 'sudo sha256sum /etc/bivouac/age.key' | cut -d' ' -f1)
+   [ -n "$L" ] && [ "$L" = "$R" ] && echo identical || echo DIFFERENT; unset L R
+   ```
+
+   If different, delete the file on the server. The next pass starts the
+   networks, Postgres, Pocket ID and Caddy (about 1.5 minutes, three
+   containers `healthy`, about 730 MB of memory).
+6. **Checks with the base running**: from the Mac, over IPv4 and IPv6, only
+   22, 80 and 443 answer (2019, 5432, 1411 closed); `http://<ipv4>/` answers
+   308 to HTTPS; the generated Caddyfile (`/var/lib/bivouac/caddy/Caddyfile`)
+   refuses `/setup` and `/api/signup/setup` before the proxy; Pocket ID is
+   unreachable from the `bivouac` network; the metadata service is refused
+   from the `bivouac` network too. Without DNS, Caddy cannot get a
+   certificate: observed, two failures at Let's Encrypt's production
+   endpoint (limit: 5 per name per hour), then retries against its staging
+   endpoint, 60 s, 120 s and further apart (documented: at most one day
+   apart). Restart Caddy once DNS exists rather than waiting.
+7. **Restarts (consent)**: `sudo systemctl restart docker`, then
+   `sudo systemctl reboot`; after each, the same checks plus the SSH key
+   sync at boot. Observed: SSH back 18 s after a reboot, the base about a
+   minute later; Pocket ID fails for about a minute first (D68).
+8. **Reconciler self-update** (D61), checked on a real version: change
+   `reconciler.image` in `platform.yml`; within a pass, the reconciler logs
+   "moving to a new reconciler version", writes
+   `/var/lib/bivouac/reconciler/image.env`, exits and comes back on the new
+   image.
 
 ## 9. DNS (consent)
 
 Through the OVH API: `POST /domain/zone/<zone>/record` with
 `{"fieldType": "A", "subDomain": "*.<sub>", "target": "<ipv4>", "ttl": 3600}`,
-the same with `AAAA` for the IPv6, then `POST /domain/zone/<zone>/refresh`.
+then `POST /domain/zone/<zone>/refresh`. No `AAAA` record yet (D67): over
+IPv6, Caddy would not see the visitor's address.
 Requests are signed (`X-Ovh-Application`, `X-Ovh-Consumer`, `X-Ovh-Timestamp`,
 `X-Ovh-Signature`). Read the zone first; never add a second SPF record: modify
 the existing one (Brevo, later in this layer).
@@ -325,10 +413,15 @@ Check from the Mac: `dig +short anything.<domain> A`.
 
 ## 10. Base services and first admin
 
-**(not built yet)**: the reconciler starts Caddy, Postgres and Pocket ID.
-Then:
+The reconciler already runs Caddy, Postgres and Pocket ID (section 8).
+Once DNS answers, restart Caddy so it asks for its certificate at once,
+then:
 
-1. Caddy allows `/setup` on `auth.<domain>` only from the owner's IP (D15).
+1. Caddy allows `/setup` on `auth.<domain>` only from the owner's IP (D15):
+   `auth.setupFrom` in `platform.yml`, a **public IPv4** read right before
+   (`curl -4 https://api.ipify.org`); private addresses are refused (D67).
+   The owner opens the page over IPv4 (no `AAAA` record). Some providers
+   share one IPv4 between subscribers (from memory): keep the window short.
 2. The owner opens `https://auth.<domain>/setup`, creates the admin account
    and registers at least two passkeys.
 3. The `/setup` route is removed from the Caddyfile.
@@ -352,7 +445,7 @@ on 8 November 2026 (D63). About 3 minutes of downtime, free.
 3. **Limit SSH to the owner's IP** for the duration: the rescue system's sshd
    accepts passwords (observed: `passwordauthentication yes`), and its
    password is returned by the API. Replace the SSH rule's `source_ips` with
-   the Mac's IPv4 `/32` and IPv6 `/64` (`set_rules`, section 7).
+   the Mac's IPv4 `/32` and IPv6 `/64` (`set_rules`, section 6).
 4. **Boot into rescue**: `enable_rescue` with `{"type":"linux64","ssh_keys":[<key-id>]}`
    (never print the response: it holds `root_password`; filter it with
    `jq`), then `shutdown`, wait for `off`, `poweron`. Delete or rebuild
