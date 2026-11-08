@@ -409,7 +409,31 @@ Requests are signed (`X-Ovh-Application`, `X-Ovh-Consumer`, `X-Ovh-Timestamp`,
 `X-Ovh-Signature`). Read the zone first; never add a second SPF record: modify
 the existing one (Brevo, later in this layer).
 
-Check from the Mac: `dig +short anything.<domain> A`.
+The signature is `$1$` + the SHA-1 of
+`<application secret>+<consumer key>+<METHOD>+<full URL>+<body>+<timestamp>`,
+with the timestamp from `GET /auth/time` (verified, `python-ovh`). Node's
+`fetch` on `eu.api.ovh.com` can fail TLS (D69); `curl` works.
+
+**Before the write**, because a certificate exposes Pocket ID before it has an
+admin (D69): list the zone into the operations log; check there is no CAA
+record on the name or its parents, and no DS record unless DNSSEC is meant to
+be on; have the first-admin paths reviewed (rule 6).
+
+Check from the Mac, on the zone's name servers and on a public resolver:
+`dig +short anything.<domain> A @<server>`, and that `AAAA` is empty. Observed:
+published within 10 seconds of the refresh.
+
+Then **(consent)** `docker restart bivouac-caddy`, and follow
+`docker logs bivouac-caddy` until "certificate obtained successfully"
+(observed: 6 s, Let's Encrypt production). Check, over HTTPS: a valid
+certificate; `/setup` and `/api/signup/setup` in 403, with variants (case,
+`%73`, `//`, dot segments with `curl --path-as-is`); no `signup/setup` line in
+Pocket ID's logs. Pocket ID's logs (`ip=`) show the address it sees for each
+request.
+
+**Emergency stop** until the first admin exists: close 80/tcp, 443/tcp and
+443/udp at the firewall (section 6). Removing the record closes nothing, and
+the reconciler restarts a stopped Caddy.
 
 ## 10. Base services and first admin
 
