@@ -85,6 +85,21 @@ describe("one alert per incident (D45)", () => {
     expect(messages.map((entry) => entry.title)).toEqual(["Bivouac: problem", "Bivouac: resolved"]);
   });
 
+  it("does not read as a problem when it is over", async () => {
+    const { messages, passes } = setup();
+    await passes(appFails, CONFIRMATIONS);
+    await passes(healthy, CONFIRMATIONS);
+    expect(messages[1]).toEqual(expect.objectContaining({ title: "Bivouac: resolved", message: "No longer happening: App recipes failed: unhealthy" }));
+  });
+
+  it("reports the first cause, not what later passes repeat", async () => {
+    const { messages, passes } = setup();
+    const later: PassOutcome = { result: { status: "unchanged", commit: "abc", changes: [], failures: [{ app: "recipes", message: "failed earlier" }] } };
+    await passes(appFails, 1);
+    await passes(later, CONFIRMATIONS - 1);
+    expect(messages).toEqual([expect.objectContaining({ title: "Bivouac: problem", message: "App recipes failed: unhealthy" })]);
+  });
+
   it("does not call an app fixed when the pass could not look at it", async () => {
     const { messages, passes } = setup();
     await passes(appFails, CONFIRMATIONS);

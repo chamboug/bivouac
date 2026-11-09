@@ -211,8 +211,9 @@ export class Watch {
     const current = new Set<string>();
     for (const incident of observation.incidents) {
       current.add(incident.key);
+      // The first message stays: it holds the cause, and later passes may only
+      // repeat that the problem is known ("failed its health check earlier").
       const entry = (state.incidents[incident.key] ??= { message: redact(incident.message), priority: incident.priority ?? 0, seen: 0, missed: 0 });
-      entry.message = redact(incident.message);
       entry.seen += 1;
       entry.missed = 0;
       if (entry.lastSent === undefined) {
@@ -229,7 +230,7 @@ export class Watch {
         continue;
       }
       entry.missed += 1;
-      if (entry.missed >= CONFIRMATIONS && (await send("Bivouac: resolved", entry.message, 0))) delete state.incidents[key];
+      if (entry.missed >= CONFIRMATIONS && (await send("Bivouac: resolved", `No longer happening: ${entry.message}`, 0))) delete state.incidents[key];
     }
   }
 
