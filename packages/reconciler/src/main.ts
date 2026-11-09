@@ -135,7 +135,7 @@ async function alertTest(): Promise<number> {
     log("alert test: no credentials on this server yet");
     return 1;
   }
-  await sendPushover(credentials, "Bivouac: test", "This is a test alert from your server.", 0);
+  await sendPushover(credentials, "Bivouac: test", "This is a test alert from your server.");
   log("alert test sent");
   return 0;
 }

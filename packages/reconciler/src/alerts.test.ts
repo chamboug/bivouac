@@ -22,7 +22,7 @@ function setup(options: { status?: () => number; disk?: () => number; withCreden
   roots.push(stateDir);
   if (options.withCredentials !== false) saveAlertCredentials(stateDir, credentials);
   const clock = { now: 1_000_000 };
-  const messages: { title: string; message: string; priority: string }[] = [];
+  const messages: { title: string; message: string; priority: string | null }[] = [];
   const pings: string[] = [];
   const logs: string[] = [];
   const fetcher = (async (url: string, init: { body?: URLSearchParams }) => {
@@ -31,7 +31,7 @@ function setup(options: { status?: () => number; disk?: () => number; withCreden
       return new Response("OK");
     }
     const status = options.status?.() ?? 200;
-    if (status === 200) messages.push({ title: init.body!.get("title")!, message: init.body!.get("message")!, priority: init.body!.get("priority")! });
+    if (status === 200) messages.push({ title: init.body!.get("title")!, message: init.body!.get("message")!, priority: init.body!.get("priority") });
     return new Response("{}", { status });
   }) as unknown as typeof globalThis.fetch;
   const watch = new Watch({
@@ -53,7 +53,7 @@ describe("one alert per incident (D45)", () => {
     await passes(appFails, CONFIRMATIONS - 1);
     expect(messages).toEqual([]);
     await passes(appFails, 1);
-    expect(messages).toEqual([{ title: "Bivouac: problem", message: "App recipes failed: unhealthy", priority: "0" }]);
+    expect(messages).toEqual([{ title: "Bivouac: problem", message: "App recipes failed: unhealthy", priority: null }]);
   });
 
   it("forgets a problem that went away before being announced", async () => {
@@ -115,14 +115,14 @@ describe("one alert per incident (D45)", () => {
     expect(messages).toHaveLength(1);
   });
 
-  it("alerts at high priority above 80% of disk, not at 80%", async () => {
+  it("alerts above 80% of disk, not at 80%", async () => {
     let percent = 80;
     const { messages, passes } = setup({ disk: () => percent });
     await passes(healthy, CONFIRMATIONS);
     expect(messages).toEqual([]);
     percent = 81;
     await passes(healthy, CONFIRMATIONS);
-    expect(messages).toEqual([expect.objectContaining({ title: "Bivouac: problem", priority: "1" })]);
+    expect(messages).toEqual([expect.objectContaining({ title: "Bivouac: problem", priority: null })]);
   });
 
   it("reminds of the rebuild test every 3 months, once", async () => {

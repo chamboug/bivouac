@@ -81,7 +81,6 @@ export interface Incident {
   /** `<category>:<what>`: the same problem keeps the same key from one pass to the next. */
   key: `${Category}:${string}`;
   message: string;
-  priority?: 0 | 1;
 }
 
 export interface Observation {
@@ -135,7 +134,7 @@ export function diskPercent(path: string): number {
 export function observeDisk(percent: number, alreadyAlerting: boolean): Observation {
   return {
     incidents: percent > (alreadyAlerting ? DISK_CLEAR_PERCENT : DISK_ALERT_PERCENT)
-      ? [{ key: "disk:root", priority: 1, message: `The disk is more than ${DISK_ALERT_PERCENT}% full: a full disk stops Postgres (D42)` }]
+      ? [{ key: "disk:root", message: `The disk is more than ${DISK_ALERT_PERCENT}% full: a full disk stops Postgres (D42)` }]
       : [],
     checked: ["disk"],
   };
@@ -144,7 +143,6 @@ export function observeDisk(percent: number, alreadyAlerting: boolean): Observat
 const stateSchema = z.object({
   incidents: z.record(z.string(), z.object({
     message: z.string(),
-    priority: z.union([z.literal(0), z.literal(1)]),
     seen: z.number(),
     missed: z.number(),
     lastSent: z.number().optional(),
@@ -190,7 +188,7 @@ export class Watch {
       if (!credentials) return;
       const state = (this.state ??= this.load());
       this.unreachable = false;
-      const send = (title: string, message: string, priority: 0 | 1) => this.send(credentials, state, title, message, priority);
+      const send = (title: string, message: string) => this.send(credentials, state, title, message);
       await this.apply(state, observePass(outcome), send);
       await this.apply(state, observeDisk(this.disk(), state.incidents["disk:root"] !== undefined), send);
       for (const observation of others) await this.apply(state, observation, send);
@@ -206,19 +204,19 @@ export class Watch {
     }
   }
 
-  private async apply(state: State, observation: Observation, send: (title: string, message: string, priority: 0 | 1) => Promise<boolean>): Promise<void> {
+  private async apply(state: State, observation: Observation, send: (title: string, message: string) => Promise<boolean>): Promise<void> {
     const now = this.now();
     const current = new Set<string>();
     for (const incident of observation.incidents) {
       current.add(incident.key);
       // The first message stays: it holds the cause, and later passes may only
       // repeat that the problem is known ("failed its health check earlier").
-      const entry = (state.incidents[incident.key] ??= { message: redact(incident.message), priority: incident.priority ?? 0, seen: 0, missed: 0 });
+      const entry = (state.incidents[incident.key] ??= { message: redact(incident.message), seen: 0, missed: 0 });
       entry.seen += 1;
       entry.missed = 0;
       if (entry.lastSent === undefined) {
-        if (entry.seen >= CONFIRMATIONS && (await send("Bivouac: problem", entry.message, entry.priority))) entry.lastSent = now;
-      } else if (now - entry.lastSent >= DAY && (await send("Bivouac: still happening", entry.message, entry.priority))) {
+        if (entry.seen >= CONFIRMATIONS && (await send("Bivouac: problem", entry.message))) entry.lastSent = now;
+      } else if (now - entry.lastSent >= DAY && (await send("Bivouac: still happening", entry.message))) {
         entry.lastSent = now;
       }
     }
@@ -230,22 +228,22 @@ export class Watch {
         continue;
       }
       entry.missed += 1;
-      if (entry.missed >= CONFIRMATIONS && (await send("Bivouac: resolved", `No longer happening: ${entry.message}`, 0))) delete state.incidents[key];
+      if (entry.missed >= CONFIRMATIONS && (await send("Bivouac: resolved", `No longer happening: ${entry.message}`))) delete state.incidents[key];
     }
   }
 
-  private async remindRebuild(state: State, send: (title: string, message: string, priority: 0 | 1) => Promise<boolean>): Promise<void> {
+  private async remindRebuild(state: State, send: (title: string, message: string) => Promise<boolean>): Promise<void> {
     const now = this.now();
     if (state.rebuildReminder === undefined) {
       state.rebuildReminder = now;
     } else if (now - state.rebuildReminder >= REBUILD_REMINDER_DAYS * DAY
-      && (await send("Bivouac: quarterly check", "Time to rehearse a full rebuild: bivy rebuild --test (D44)", 0))) {
+      && (await send("Bivouac: quarterly check", "Time to rehearse a full rebuild: bivy rebuild --test (D44)"))) {
       state.rebuildReminder = now;
     }
   }
 
   /** True once Pushover has taken the message. Anything else is tried again on a later pass. */
-  private async send(credentials: AlertCredentials, state: State, title: string, message: string, priority: 0 | 1): Promise<boolean> {
+  private async send(credentials: AlertCredentials, state: State, title: string, message: string): Promise<boolean> {
     if (this.unreachable || (state.pausedUntil !== undefined && this.now() < state.pausedUntil)) return false;
     const day = Math.floor(this.now() / DAY);
     if (state.budget?.day !== day) state.budget = { day, sent: 0 };
@@ -257,7 +255,6 @@ export class Watch {
         credentials,
         capped ? "Bivouac: too many alerts" : title,
         capped ? `More than ${DAILY_MESSAGE_LIMIT} alerts today: the next ones wait until tomorrow. Look at the server.` : message,
-        capped ? 1 : priority,
         this.fetch,
       );
       budget.sent += 1;
@@ -311,7 +308,6 @@ export async function sendPushover(
   credentials: AlertCredentials,
   title: string,
   message: string,
-  priority: 0 | 1,
   fetcher: typeof globalThis.fetch = globalThis.fetch,
 ): Promise<void> {
   const response = await fetcher(PUSHOVER_URL, {
@@ -321,7 +317,6 @@ export async function sendPushover(
       user: credentials.pushover_user,
       title,
       message: redact(message),
-      priority: String(priority),
     }),
     signal: AbortSignal.timeout(10_000),
   });
