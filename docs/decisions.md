@@ -156,6 +156,7 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 - **Context**: neither `gh`, `hcloud` nor `sops` is installed on the owner's Mac.
 - **Choice**: `bivy` talks directly to the official APIs. It connects to GitHub with a temporary fine-grained PAT (7 days), created through a pre-filled link and never stored.
 - **Rejected**: depending on `gh`; an OAuth App with device flow (one more component).
+- **Note (9 November 2026)**: `gh` is now on the owner's Mac for Claude's own work (D78). `bivy` still does not depend on it.
 
 ### D32 — Claude's access to the platform MCP
 - **Choice**: the reconciler serves a stdio MCP, launched over SSH. Nothing is publicly exposed.
@@ -430,3 +431,10 @@ One short entry per decision: context, choice, rejected alternatives. Entries D1
 ### D77 — Superuser sessions and a database's own settings
 - **Context**: rule 6 review of layer 3. A database's owner can run `ALTER DATABASE … SET search_path`, which also applies to the superuser logging in: an app could have its own functions run as superuser when the reconciler reads its database. The extension check had this flaw before layer 3.
 - **Choice**: superuser sessions connect with `-c search_path=pg_catalog` (startup options win over database settings); extensions are created with `search_path = public`, pg_catalog still being searched first. All database calls have time limits (15 s to connect, 2 minutes per query). An end-to-end test plays the hostile app.
+
+### D78 — `gh` for Claude on the owner's Mac
+- **Context**: Claude followed CI with `curl` on the public API (about 60 requests an hour, no logs, fragile loops) and could not read the private instance repo's CI at all. PRs will matter from the prod phase on.
+- **Choice**: `gh`, installed with Homebrew and logged in with a fine-grained PAT stored in the macOS keychain. It reaches only the monorepo and the instance repo, with contents read, Actions read, commit statuses read and pull requests write, and expires after 366 days. This is a tool for Claude's sessions, not a dependency of the product: D31 stands.
+- **Verified (9 November 2026, on the real token)**: it reads runs, logs and the combined CI state of both repos, and no other private repo. Refused with a 403: creating a branch, rerunning a workflow, changing repo settings, listing secrets. Pushes stay on Git over SSH, as before. Merging a PR needs contents write (from GitHub's docs; not tried, no PR exists yet). `gh pr checks` is not tried either.
+- **Rejected**: plain `gh auth login` (write access to every repo of the account); `GH_TOKEN`, which `gh`'s docs favor for fine-grained tokens, but which would leave the token in plain text in a shell profile; staying with `curl`.
+- **Limit**: the expiry is not announced by an alert; `gh` fails visibly with a 401, and only Claude's work depends on it. Recreating it takes the owner one link and one command.
