@@ -562,3 +562,18 @@ sends one message.
 **Recovering a hidden file** (from memory, not tried yet): deleting a file's
 hide marker with `b2_delete_file_version` and a key holding `deleteFiles`
 makes the previous version visible again, within 30 days. To try before prod.
+
+## 13. App check, at each `bivy rebuild --test` (every 3 months)
+
+Done by Claude in the session of the quarterly reminder (D44, D81). Apps are left alone between two checks: a finished app that stays on its versions is normal. Read only; a fix is proposed to the owner afterwards.
+
+1. List the apps from `apps/*.yml` in the instance repo, and clone each app repo over SSH (the `gh` token only covers the two Bivouac repos).
+2. In each app, compare `layersCommit` in `nuxt.config.ts` with the latest `app-layers-v*` tag. An app behind means Renovate is not reaching it, or its PR is stuck on red tests: find out why.
+3. Run `npm audit --package-lock-only --json` and keep only **high and critical** advisories. An app created from the template starts with low and moderate ones (16 on 9 Nov. 2026): they are not to be chased.
+4. An advisory counts only if all three hold:
+   - the package runs in the image: the image holds `.output` and the migrations only, so look for it in `.output/server/node_modules` of a build, not in the lockfile;
+   - it can be triggered from outside: by anyone on the internet, or only by invited users;
+   - it affects how the app uses the package.
+5. Look harder at apps in `public` or `local` mode: they are open to strangers.
+6. Report to the owner in plain language, one line per app: nothing to do, or what to fix, why, and the risk. Fix only what is left after step 4.
+
