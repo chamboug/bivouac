@@ -64,6 +64,9 @@ jobs:
           --health-retries 20
     env:
       DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+      # The tests use the layers of this commit. Copied inside the template so
+      # that their imports find its node_modules.
+      BIVOUAC_LOCAL_LAYERS: ./.local-layers
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -72,6 +75,7 @@ jobs:
           cache: npm
           cache-dependency-path: app-template/package-lock.json
       - run: npm ci
+      - run: cp -R ../app-layers .local-layers
       - run: bash ../.github/scripts/garage-up.sh 2>/dev/null >> "$GITHUB_ENV"
       - run: npm test
       - run: npm run build

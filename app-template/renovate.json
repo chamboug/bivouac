@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on monday"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "minor updates"
+    },
+    {
+      "matchPackageNames": ["chamboug/bivouac"],
+      "groupName": "Bivouac shared layers",
+      "schedule": ["at any time"]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^nuxt\\.config\\.ts$/"],
+      "matchStrings": ["const layersCommit = \"(?<currentDigest>[0-9a-f]{40})\"; // app-layers-v(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "chamboug/bivouac",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^app-layers-v(?<version>.+)$"
+    }
+  ]
+}

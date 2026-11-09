@@ -10,7 +10,8 @@ A Nuxt app hosted on a Bivouac platform. The platform runs this image and provid
 
 ## Sign-in
 
-- `layers/oidc` protects **everything by default**: pages redirect to sign-in, `/api/*` answers 401. Public paths are listed in `layers/oidc/server/middleware/auth.ts`; add one only on purpose. Files in `public/` and the client bundles are readable by anyone: no private data there.
+- The sign-in and database code is shared by all apps and comes from the versions named in `nuxt.config.ts`: do not copy it into the app. A change to it belongs in the Bivouac monorepo (`app-layers/`). Renovate proposes new versions.
+- The shared code protects **everything by default**: pages redirect to sign-in, `/api/*` answers 401. Only its own list of paths is public (health, sign-in, assets): a public page needs a change in the monorepo, on purpose. Files in `public/` and the client bundles are readable by anyone: no private data there.
 - Requests that change something (POST, PUT, DELETE…) are refused unless they come from the app's own pages. Keep state changes off GET.
 - On the server, the user is `event.context.user` (`sub`, `name`, `email`, `groups`). In a page: `useUser()`.
 - Who can enter is decided by the manifest's `groups`. Roles inside the app are mapped from `user.groups`.
