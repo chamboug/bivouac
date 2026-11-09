@@ -4,7 +4,7 @@ import { join } from "node:path";
 // The platform's shared code, at one exact commit (Renovate proposes new ones):
 // - platform: database, migrations at startup, health endpoint;
 // - oidc: sign-in through the platform's identity provider.
-const layersCommit = "0000000000000000000000000000000000000000"; // app-layers-v1.0.0
+const layersCommit = "679900f7c5e6c0df99c8eb64ab7a5b7d31c68f67"; // app-layers-v1.0.0
 const shared = [
   `github:chamboug/bivouac/app-layers/platform#${layersCommit}`,
   `github:chamboug/bivouac/app-layers/oidc#${layersCommit}`,
