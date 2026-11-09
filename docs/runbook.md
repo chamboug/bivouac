@@ -539,8 +539,9 @@ The restic password also goes in the owner's password manager. In
 `platform.yml`: `backup.repository: s3:<endpoint>/<bucket>`.
 
 **Running a job now** instead of at 02:00 UTC: the state is read when the
-reconciler starts, so change it before a new version is deployed, or restart
-the reconciler after:
+reconciler starts, and the alert state is written back on every pass. So stop
+the reconciler, change the file, then start it again
+(`sudo systemctl stop bivouac-reconciler`, edit, `start`):
 
 ```bash
 sudo sh -c 'umask 077; f=/var/lib/bivouac/backup/state.json; jq -c ".day=0 | del(.restoreWeek)" $f > $f.new && mv $f.new $f'
@@ -558,6 +559,28 @@ a shared directory: it holds the data.
 
 **Testing the channel**: `docker exec bivouac-reconciler node packages/reconciler/dist/main.js alert-test`
 sends one message.
+
+**Rehearsing the alerts** (D82), one at a time, each with its way back. A
+reconciler alert comes after 3 passes, its end after 3 clean ones:
+
+- quarterly reminder: `.rebuildReminder` moved back more than 90 days in
+  `/var/lib/bivouac/alerts/state.json`;
+- disk: `sudo fallocate -l <size> /var/tmp/<file>` to pass 80%, then remove it;
+- secrets: rename `/etc/bivouac/age.key` in its directory, rename it back, and
+  compare its hash without printing it;
+- silent server: stop the reconciler for about 15 minutes, with a
+  `systemd-run --on-active` restart as a safety net;
+- failed backup: a missing bucket in `backup.repository`, `.day=0`, and the good
+  address back within the hour, before the one automatic retry;
+- failed deployment: an app whose image exits at once, with no database; remove
+  the manifest, then the stopped container by hand (until layer 6);
+- failed restore test: force a backup and a restore test (`.day=0`,
+  `del(.restoreWeek)`), and `docker kill bivouac-restore-test` as soon as it
+  appears; force them again for the end of the incident;
+- missed backup ping: from healthchecks.io's side only. Send a success, then set
+  a short schedule whose next time is still ahead. Setting a schedule that is
+  already overdue marks the check down **without any alert**, on purpose. Put
+  `0 2 * * *` and its 3 hours back afterwards.
 
 **Recovering a hidden file** (from memory, not tried yet): deleting a file's
 hide marker with `b2_delete_file_version` and a key holding `deleteFiles`
