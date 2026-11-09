@@ -1,0 +1,91 @@
+name: Test, build and propose deployment
+
+# To set on the app repo:
+# - variable INSTANCE_REPO: the instance repo, as owner/name;
+# - secret BIVOUAC_DEPLOY: the token allowed to open PRs on it.
+# The manifest is apps/<name of this repo>.yml in the instance repo.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgis/postgis:18-3.7
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  deploy:
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Name the image
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.name }}
+      - name: Open the deployment PR on the instance repo
+        env:
+          GH_TOKEN: ${{ secrets.BIVOUAC_DEPLOY }}
+          INSTANCE_REPO: ${{ vars.INSTANCE_REPO }}
+          IMAGE: ${{ steps.image.outputs.name }}
+        run: |
+          set -euo pipefail
+          app="${GITHUB_REPOSITORY##*/}"
+          branch="deploy/$app-${GITHUB_SHA::7}"
+          gh auth setup-git
+          gh repo clone "$INSTANCE_REPO" instance -- --depth 1
+          cd instance
+          # Only the image line changes; a missing manifest stops here.
+          grep -q '^image:' "apps/$app.yml"
+          sed -i "s|^image:.*|image: $IMAGE|" "apps/$app.yml"
+          git config user.name "bivouac-deploy"
+          git config user.email "bivouac-deploy@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Deploy $app: $IMAGE"
+          git push origin "$branch"
+          gh pr create --repo "$INSTANCE_REPO" --head "$branch" \
+            --title "Deploy $app (${GITHUB_SHA::7})" \
+            --body "New version of $app, built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}. Risk: low. To roll back: put the previous image tag back in apps/$app.yml."

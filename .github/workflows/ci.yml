@@ -44,6 +44,41 @@ jobs:
             echo "::group::$name"; docker logs --tail 100 "$name" 2>&1; echo "::endgroup::"
           done
 
+  # The app template, as an app created from it would run, plus the S3 mode
+  # of its storage module against a throwaway Garage (D72).
+  app-template:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app-template
+    services:
+      postgres:
+        image: postgis/postgis:18-3.7
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: app-template/package-lock.json
+      - run: npm ci
+      - run: bash ../.github/scripts/garage-up.sh 2>/dev/null >> "$GITHUB_ENV"
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: docker build --tag app-template-check .
+
   # Publishes the reconciler image after the tests pass on main, tagged with
   # the exact commit (`sha-<7 characters>`): servers name an exact version,
   # never a moving tag, so a rollback is always possible (D21, D48).
