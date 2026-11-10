@@ -19,6 +19,14 @@ export const platformSecretsSchema = z.looseObject({
     /** Admin API key (verified, Pocket ID docs: at least 16 characters). */
     static_api_key: z.string().min(16, "must be at least 16 characters"),
   }),
+  /**
+   * Classic GitHub token with `read:packages` only, and its owner's login:
+   * pulls private app images from GHCR (D17). Without it, only public images.
+   */
+  ghcr: z.looseObject({
+    username: z.string().min(1, "must not be empty"),
+    token: z.string().min(1, "must not be empty"),
+  }).optional(),
   /** Password of the SMTP account named in `platform.yml`. */
   mail: z.looseObject({ password: z.string().min(1, "must not be empty") }).optional(),
   /** The nightly backups (D16, D33). Without them, nothing is backed up. */
@@ -91,4 +99,19 @@ export function decryptSecrets(file: string, ageKeyFile: string): PlatformSecret
  */
 export function deriveSecret(master: string, purpose: string): string {
   return createHmac("sha256", master).update(purpose).digest("hex");
+}
+
+export interface RegistryLogin {
+  username: string;
+  password: string;
+  serveraddress: string;
+}
+
+/**
+ * The login to send with a pull of `image`: the GHCR token, for GHCR images
+ * only. No other registry ever sees it.
+ */
+export function registryLogin(secrets: PlatformSecrets, image: string): RegistryLogin | undefined {
+  if (!secrets.ghcr || !image.startsWith("ghcr.io/")) return undefined;
+  return { username: secrets.ghcr.username, password: secrets.ghcr.token, serveraddress: "ghcr.io" };
 }

@@ -3,7 +3,7 @@ import type { Runtime } from "./base.js";
 import { ensureContainer, waitFor } from "./containers.js";
 import { PocketId } from "./pocket-id.js";
 import { connectionString, databaseName, ensureDatabase, type PostgresServer } from "./postgres.js";
-import { deriveSecret, type PlatformSecrets } from "./secrets.js";
+import { deriveSecret, registryLogin, type PlatformSecrets } from "./secrets.js";
 
 /**
  * Where an `oidc` app receives the user back from Pocket ID, on each of its
@@ -56,7 +56,20 @@ export async function ensureApp(context: AppContext, app: AppManifest): Promise<
         target,
       })),
     },
-    runtime.pull,
+    // App images may be private (D17): pulled with the GHCR token.
+    async (image) => {
+      const login = registryLogin(context.secrets, image);
+      try {
+        await runtime.pull(image, login);
+      } catch (error) {
+        // Say which secret to renew: a rejected token stops every GHCR app.
+        const message = (error as Error).message;
+        if (login && /denied|unauthorized/i.test(message)) {
+          throw new Error(`${message} (GHCR refused the token in the secrets file: expired, revoked, or no access to this image?)`);
+        }
+        throw error;
+      }
+    },
     { restartStopped: false },
   );
 

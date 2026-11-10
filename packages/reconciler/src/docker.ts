@@ -12,6 +12,14 @@ import { request } from "node:http";
  */
 export const DOCKER_API_VERSION = "1.48";
 
+/**
+ * Base64url WITH its `=` padding, as the docker CLI sends it: Node's own
+ * "base64url" drops the padding, which Go's URL decoder may refuse.
+ */
+export function registryAuthHeader(auth: { username: string; password: string; serveraddress: string }): string {
+  return Buffer.from(JSON.stringify(auth)).toString("base64").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
 export class DockerError extends Error {
   constructor(
     message: string,
@@ -113,7 +121,7 @@ export class Docker {
    * status or inside the progress stream, so both are checked.
    */
   async pull(image: string, auth?: { username: string; password: string; serveraddress: string }): Promise<void> {
-    const headers = auth ? { "X-Registry-Auth": Buffer.from(JSON.stringify(auth)).toString("base64url") } : undefined;
+    const headers = auth ? { "X-Registry-Auth": registryAuthHeader(auth) } : undefined;
     const response = await this.expect("POST", `/images/create?fromImage=${encodeURIComponent(image)}`, [200], undefined, headers);
     for (const line of response.body.toString().split("\n")) {
       if (!line.trim()) continue;

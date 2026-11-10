@@ -13,7 +13,7 @@ import {
 import { MANAGED_LABEL, ensureContainer, waitHealthy, type ContainerSpec, type EnsureResult } from "./containers.js";
 import type { Docker } from "./docker.js";
 import { closePlatformDatabases, connectionString, ensureDatabase, type PostgresServer } from "./postgres.js";
-import { SecretsError, deriveSecret, type PlatformSecrets } from "./secrets.js";
+import { SecretsError, deriveSecret, type PlatformSecrets, type RegistryLogin } from "./secrets.js";
 
 type MailConfig = NonNullable<PlatformConfig["mail"]>;
 
@@ -33,8 +33,8 @@ export interface Runtime {
   self?: string;
   /** Ports Caddy publishes on the host, e.g. `{ "443/tcp": ["443"] }`. */
   caddyPorts: Record<string, string[]>;
-  /** Pulls an image, with registry credentials when needed. */
-  pull: (image: string) => Promise<void>;
+  /** Pulls an image, with the registry login when one is given. */
+  pull: (image: string, login?: RegistryLogin) => Promise<void>;
   /** Seconds to wait for a base service or an app to become healthy. */
   healthTimeout: number;
   /** Apps stopped on purpose by a running backup: a pass must leave them alone (D20). */

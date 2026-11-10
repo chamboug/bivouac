@@ -88,8 +88,7 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
       stateDir,
       self,
       caddyPorts: parsePorts(env.BIVOUAC_CADDY_PORTS ?? "80/tcp=80,443/tcp=443,443/udp=443"),
-      // Public images only for now; private app images need the GHCR token (D17).
-      pull: (image) => docker.pull(image),
+      pull: (image, login) => docker.pull(image, login),
       healthTimeout,
       ...(metadataCheck === "off" ? {} : { metadataCheck }),
       pausedApps: new Set(),
