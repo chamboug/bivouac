@@ -21,7 +21,12 @@ A Nuxt app hosted on a Bivouac platform. The platform runs this image and provid
 ## User files
 
 - Never use `fs` directly: only `useStorageFiles()` from `server/utils/storage.ts`.
-- The database stores keys (`photos/123.jpg`), never paths or full URLs.
+- The database stores keys (`photos/123.jpg`), never paths or full URLs. Keys have no hidden segments (`.x`).
+- `put` and `get` hold the whole file in memory: small files only (a few MB). The server's memory is small and shared by every app. Larger files arrive in parts of about 8 MB (`createUpload`, `uploadPart`, `completeUpload`; every part but the last at least `MIN_PART_SIZE`, none above `MAX_PART_SIZE`) and are read with `open`, as a Node stream sent with `pipeline` (see `server/api/files/`).
+- **The module keeps files inside the app's directory; it does not know who owns what.** The app makes keys itself, on the server. When an upload starts, it stores (upload ID, key, owner) in the database, and every later call takes them from there, never from the request: otherwise one user could overwrite another's file.
+- A route receiving a part refuses the request **before** reading its body when `content-length` is missing or above `MAX_PART_SIZE` (answer 411 or 413): otherwise a client could send gigabytes into memory.
+- A failed `completeUpload` is not retried: start a new upload.
+- Call `cleanupUploads(24 * 60 * 60 * 1000)` now and then (when an upload starts, for example), and limit how much each user may store: a full disk stops the database of every app.
 - Files are served through an app route (`server/api/files/`). If files are not meant for every signed-in user, check access there.
 - The directory must be declared as a volume in the manifest: `volumes: { uploads: /app/uploads }`. Anything written elsewhere is lost at the next deployment and is not backed up.
 

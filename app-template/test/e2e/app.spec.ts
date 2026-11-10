@@ -1,6 +1,8 @@
+import { mkdir, writeFile } from "node:fs/promises";
 import { get } from "node:http";
 import { expect, test } from "@playwright/test";
 import postgres from "postgres";
+import { storageDir } from "../../playwright.config";
 
 test("the health endpoint is public and sees the database", async ({ request }) => {
   const reply = await request.get("/api/health");
@@ -80,4 +82,50 @@ test("signing out removes the session and ends the one at the identity provider"
 test("a return address on another site is ignored", async ({ page }) => {
   await page.goto("/auth/login?returnTo=//evil.example/");
   await expect(page).toHaveURL("/");
+});
+
+test("a signed-in user downloads a stored file, streamed and never rendered", async ({ page }) => {
+  await mkdir(`${storageDir}/docs`, { recursive: true });
+  await writeFile(`${storageDir}/docs/page.html`, "<script>alert(1)</script>");
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Hello Test User" })).toBeVisible();
+  const reply = await page.request.get("/api/files/docs/page.html");
+  expect(reply.status()).toBe(200);
+  expect(reply.headers()).toMatchObject({
+    "content-type": "application/octet-stream",
+    "content-disposition": "attachment",
+    "content-length": "25",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "sandbox",
+    "cache-control": "private, no-store",
+  });
+  expect(await reply.text()).toBe("<script>alert(1)</script>");
+  expect((await page.request.get("/api/files/docs/none.html")).status()).toBe(404);
+});
+
+test("a large download can be abandoned mid-way, and the app carries on", async ({ page }) => {
+  await mkdir(`${storageDir}/big`, { recursive: true });
+  await writeFile(`${storageDir}/big/file.bin`, new Uint8Array(64 * 1024 * 1024).fill(1));
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Hello Test User" })).toBeVisible();
+  const cookie = (await page.context().cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+  // Read a little, then hang up.
+  const received = await new Promise<number>((resolve, reject) => {
+    get({ host: "localhost", port: 3100, path: "/api/files/big/file.bin", headers: { cookie } }, (reply) => {
+      expect(reply.statusCode).toBe(200);
+      expect(reply.headers["content-length"]).toBe(String(64 * 1024 * 1024));
+      let total = 0;
+      reply.on("data", (chunk: Buffer) => {
+        total += chunk.length;
+        if (total > 1024 * 1024) {
+          reply.destroy();
+          resolve(total);
+        }
+      });
+    }).on("error", reject);
+  });
+  expect(received).toBeLessThan(64 * 1024 * 1024);
+  expect((await page.request.get("/api/health")).status()).toBe(200);
+  const whole = await page.request.get("/api/files/big/file.bin");
+  expect((await whole.body()).length).toBe(64 * 1024 * 1024);
 });
