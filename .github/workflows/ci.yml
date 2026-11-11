@@ -44,26 +44,16 @@ jobs:
             echo "::group::$name"; docker logs --tail 100 "$name" 2>&1; echo "::endgroup::"
           done
 
-  # The app template, as an app created from it would run, plus the S3 mode
-  # of its storage module against a throwaway Garage (D72).
+  # The app template's unit tests, including the S3 mode of its storage
+  # module against a throwaway Garage (D72), its build and its image. Docker
+  # is needed here, so this job stays on the runner, without a browser.
   app-template:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
         working-directory: app-template
-    services:
-      postgres:
-        image: postgis/postgis:18-3.7
-        env:
-          POSTGRES_PASSWORD: test
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-retries 20
     env:
-      DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
       # The tests use the layers of this commit. Copied inside the template so
       # that their imports find its node_modules.
       BIVOUAC_LOCAL_LAYERS: ./.local-layers
@@ -79,9 +69,44 @@ jobs:
       - run: bash ../.github/scripts/garage-up.sh 2>/dev/null >> "$GITHUB_ENV"
       - run: npm test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
       - run: docker build --tag app-template-check .
+
+  # The app template's end-to-end tests, as an app created from it runs them:
+  # in Playwright's image, so Chromium never depends on Ubuntu's package
+  # mirrors (D87). Its version must be the one in app-template/package.json.
+  app-template-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.0-noble
+      options: --user 1001
+    defaults:
+      run:
+        working-directory: app-template
+    services:
+      postgres:
+        image: postgis/postgis:18-3.7
+        env:
+          POSTGRES_PASSWORD: test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-retries 20
+    env:
+      # From a job container, a service is reached by its name.
+      DATABASE_URL: postgres://postgres:test@postgres:5432/postgres
+      BIVOUAC_LOCAL_LAYERS: ./.local-layers
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: app-template/package-lock.json
+      - run: npm ci
+      - run: cp -R ../app-layers .local-layers
+      - run: npm run build
+      - run: npm run test:e2e
 
   # Publishes the reconciler image after the tests pass on main, tagged with
   # the exact commit (`sha-<7 characters>`): servers name an exact version,
