@@ -21,6 +21,7 @@ export default defineConfig({
         OIDC_CLIENT_ID: "test-client",
         OIDC_CLIENT_SECRET: "test-secret-test-secret-test-secret",
         STORAGE_DIR: storageDir,
+        MCP_RESOURCE: `http://localhost:${appPort}/mcp`,
       },
     },
   ],

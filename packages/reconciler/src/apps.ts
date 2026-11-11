@@ -122,6 +122,17 @@ async function appValues(context: AppContext, app: AppManifest, changes: string[
     values["oidc.clientId"] = app.name;
     values["oidc.clientSecret"] = secret;
   }
+
+  // Claude's client for the app's MCP (D85), or none. Only oidc apps can
+  // have one: other apps never call the identity provider.
+  const mcpClient = `${app.name}-mcp`;
+  if (app.auth === "oidc" && app.mcp) {
+    const resource = `https://${hosts[0]}/mcp`;
+    changes.push(...(await pocketId.ensureMcpClient({ id: mcpClient, app: app.name, resource, groups: app.groups })));
+    values["mcp.resource"] = resource;
+  } else if (app.auth === "oidc") {
+    changes.push(...(await pocketId.removeMcpClient(mcpClient)));
+  }
   return values;
 }
 
@@ -138,6 +149,7 @@ export function appEnvironment(app: AppManifest, values: Record<string, string>)
     env.OIDC_CLIENT_ID = values["oidc.clientId"] ?? "";
     env.OIDC_CLIENT_SECRET = values["oidc.clientSecret"] ?? "";
   }
+  if (values["mcp.resource"]) env.MCP_RESOURCE = values["mcp.resource"];
   for (const [key, template] of Object.entries(app.env)) {
     for (const reference of envReferences(template)) {
       if (values[reference] === undefined) {

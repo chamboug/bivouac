@@ -46,6 +46,7 @@ auth: oidc
 groups: [famille]
 database: { extensions: [postgis] }
 volumes: { uploads: /data/uploads }
+mcp: true
 env:
   TEST_APP_URL: \${app.url}
   TEST_CLIENT_ID: \${oidc.clientId}
@@ -237,6 +238,31 @@ describe("d. an OIDC client per app", () => {
 
   it("creates no client for a public app", () => {
     expect(pocketIdApi(platform, "GET", "/api/oidc/clients/biblio").status).toBe(404);
+    expect(pocketIdApi(platform, "GET", "/api/oidc/clients/biblio-mcp").status).toBe(404);
+  });
+
+  it("gives Claude a public client restricted to the app's groups, for the app's MCP address only (D85)", () => {
+    const client = pocketIdApi(platform, "GET", "/api/oidc/clients/recettes-mcp");
+    expect(client.status).toBe(200);
+    expect(client.body).toMatchObject({
+      name: "Claude → recettes",
+      isPublic: true,
+      pkceEnabled: true,
+      isGroupRestricted: true,
+      requiresReauthentication: true,
+      allowedUserGroups: [expect.objectContaining({ name: "famille" })],
+    });
+    expect([...(client.body as { callbackURLs: string[] }).callbackURLs].sort()).toEqual([
+      "http://localhost/callback",
+      "https://claude.ai/api/mcp/auth_callback",
+    ]);
+    const apis = (pocketIdApi(platform, "GET", "/api/apis").body as { data: { id: string; name: string; resource: string }[] }).data;
+    const api = apis.find((candidate) => candidate.name === "recettes-mcp");
+    expect(api?.resource).toBe(`https://recettes.${DOMAIN}/mcp`);
+    const grants = (pocketIdApi(platform, "GET", `/api/apis/${api!.id}/clients`).body as {
+      data: { client: { id: string }; userDelegatedAccess: boolean; clientAccess: boolean }[];
+    }).data;
+    expect(grants).toEqual([expect.objectContaining({ client: expect.objectContaining({ id: "recettes-mcp" }), userDelegatedAccess: true, clientAccess: false })]);
   });
 });
 
@@ -248,12 +274,13 @@ describe("e. app containers", () => {
 
   it("injects the standard variables and the env block (D19)", () => {
     expect(JSON.parse(throughCaddy(`recettes.${DOMAIN}`, "/env").body)).toEqual([
-      "DATABASE_URL", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_ISSUER", "PORT", "TEST_APP_URL", "TEST_CLIENT_ID",
+      "DATABASE_URL", "MCP_RESOURCE", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "OIDC_ISSUER", "PORT", "TEST_APP_URL", "TEST_CLIENT_ID",
     ]);
     const env = inspect<ContainerState>("bivouac-app-recettes").Config.Env;
     expect(env).toContain(`OIDC_ISSUER=https://auth.${DOMAIN}`);
     expect(env).toContain(`TEST_APP_URL=https://recettes.${DOMAIN}`);
     expect(env).toContain("TEST_CLIENT_ID=recettes");
+    expect(env).toContain(`MCP_RESOURCE=https://recettes.${DOMAIN}/mcp`);
     expect(JSON.parse(throughCaddy(`biblio.${DOMAIN}`, "/env").body)).toEqual(["PORT"]);
   });
 
@@ -528,5 +555,17 @@ describe("j. an app cannot use its database against the superuser", () => {
     platform.commit({ "apps/recettes.yml": RECETTES }, "keep the app with extensions");
     runOnce(platform);
     expect(owner("SELECT count(*) FROM evil.pwned").stdout.trim()).toBe("0");
+  });
+});
+
+describe("z. turning an app's MCP off (D85)", () => {
+  it("removes Claude's client and its API, and the app's MCP_RESOURCE", () => {
+    platform.commit({ "apps/recettes.yml": RECETTES.replace("mcp: true\n", "") }, "recettes without MCP");
+    const pass = runOnce(platform);
+    expect(pass.status).toBe(0);
+    expect(changesOf(pass)).toEqual(expect.arrayContaining(["OIDC client recettes-mcp removed", `API https://recettes.${DOMAIN}/mcp removed`]));
+    expect(pocketIdApi(platform, "GET", "/api/oidc/clients/recettes-mcp").status).toBe(404);
+    expect(inspect<ContainerState>("bivouac-app-recettes").Config.Env.some((line) => line.startsWith("MCP_RESOURCE="))).toBe(false);
+    expect(pocketIdApi(platform, "GET", "/api/oidc/clients/recettes").status).toBe(200);
   });
 });

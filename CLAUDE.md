@@ -169,6 +169,7 @@ The owner regularly codes small applications with Claude. Some live happily as a
   backup: { stop: false }   # true for SQLite, Node-RED, etc.
   env:                      # renaming of values provided by the platform
     GF_AUTH_GENERIC_OAUTH_CLIENT_ID: ${oidc.clientId}
+  mcp: false                # true: Claude may connect to the app's /mcp (D85)
   ```
   The platform injects standard variables according to the manifest: `DATABASE_URL`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `SMTP_*`. The `env` block is for third-party apps that expect other names. *Revised: the first draft wrote `volumes: [uploads]`, without a mount path.*
 - **Static sites** (HTML artifacts, the `example.org` home page): files in `bivouac-platform/sites/<name>/`, with a `sites/<name>.yml` manifest (`auth`, `groups`, optional domain). Caddy serves them directly (`file_server`) from the repo checkout, read-only. No container (D22).
@@ -228,6 +229,7 @@ The owner regularly codes small applications with Claude. Some live happily as a
 - Managing users, invitations and groups: **Pocket ID's interface**.
 - **A status page**: a small Nuxt app on the platform (`status.apps.example.org`), behind Pocket ID, restricted to the admin group. It shows the apps, their versions, their health, the latest logs, the latest backup and pending Renovate PRs, by querying the reconciler's internal API; it never has the Docker socket (D8). Its only action is a "Sync now" button. A good first project to break in the conventions.
 - **Resource usage** (D42): the status page shows CPU, RAM and disk for the host and for each container, current values and **30 days of history**. The reconciler takes one sample per minute and stores it in a small table in the shared Postgres. No Prometheus or Grafana.
+- **App MCP servers** (D85): an `oidc` app with `mcp: true` serves its own tools at `/mcp`. Claude (claude.ai, phone, Claude Code) signs in through Pocket ID with a public client `<app>-mcp` the reconciler creates, restricted to the app's groups; the shared layer accepts only access tokens issued for that address, never the cookie. Each person reaches only their own data, as in the app's pages.
 - **Platform MCP server**, served by the reconciler **over stdio through SSH**: in `.mcp.json`, a command like `ssh core@<server> docker exec bivouac-reconciler mcp`. No public exposure, and the SSH key serves as authentication. Claude can read state and logs, and trigger a sync (D32). *Revised: the first draft exposed the MCP through the status page via `@nuxtjs/mcp-toolkit`, which would have required OAuth authentication of MCP clients against Pocket ID.*
 
 ### Tests
@@ -283,7 +285,7 @@ Until the prod phase, the server itself is the platform's dev environment; apps 
 - **age key in GitHub (repo or CI)**: a single leak would expose every secret (D35, D36).
 - **IPv6-only server**: GitHub is not reachable over IPv6 (D26).
 - **Renovate for app versions**: up to 4 hours of delay, tags it cannot order (D5).
-- **Publicly exposed MCP**: would require OAuth authentication of MCP clients; stdio over SSH exposes nothing (D32).
+- **Publicly exposed platform MCP**: it holds the Docker socket's power; stdio over SSH exposes nothing (D32). App MCPs are public, behind Pocket ID (D85).
 - **Depending on `gh`, `hcloud` or `sops` in the CLI**: extra intermediaries between the CLI and the official APIs (D31).
 - **Arm (CAX)**: every image would have to be built for multiple architectures (D25).
 - **Prometheus + Grafana**: two more components and several hundred MB of RAM on a 4 GB server; a lightweight history in the status page is enough (D42).

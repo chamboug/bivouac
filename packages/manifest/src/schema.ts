@@ -18,6 +18,7 @@ export const INJECTED_ENV = [
   "OIDC_ISSUER",
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
+  "MCP_RESOURCE",
   "SMTP_HOST",
   "SMTP_PORT",
   "SMTP_USER",
@@ -72,6 +73,8 @@ export const nameSchema = z
     `is reserved by the platform (${RESERVED_NAMES.join(", ")})`,
   )
   .refine((name) => !name.startsWith("archived"), "must not start with 'archived' (used for archived apps)")
+  // "<app>-mcp" is the identity provider client Claude uses for an app's MCP.
+  .refine((name) => !name.endsWith("-mcp"), "must not end with '-mcp' (used for the MCP clients of apps)")
   .refine(
     (name) => !name.startsWith("bivouac") && !name.startsWith("pg-") && !(POSTGRES_NAMES as readonly string[]).includes(name),
     `would clash with the platform's own containers or with names Postgres keeps ('bivouac…', 'pg-…', ${POSTGRES_NAMES.join(", ")})`,
@@ -166,9 +169,18 @@ export const appManifestSchema = z
       .record(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "is not a valid variable name"), envValueSchema)
       .default({}),
     domains: z.array(hostnameSchema).default([]),
+    /**
+     * Claude may connect to the app's `/mcp` endpoint (D85): the platform
+     * registers a client for it at the identity provider, restricted to the
+     * app's groups, and gives the app MCP_RESOURCE.
+     */
+    mcp: z.boolean().default(false),
   })
   .superRefine((app, ctx) => {
     checkGroups(app.auth, app.groups, ctx);
+    if (app.mcp && app.auth !== "oidc") {
+      ctx.addIssue({ code: "custom", path: ["mcp"], message: "needs auth 'oidc': Claude signs in through the identity provider" });
+    }
 
     const paths = Object.values(app.volumes);
     for (const [index, path] of paths.entries()) {

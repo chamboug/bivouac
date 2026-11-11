@@ -23,6 +23,7 @@ describe("app manifest", () => {
       backup: { stop: false },
       env: {},
       domains: [],
+      mcp: false,
     });
   });
 
@@ -127,6 +128,12 @@ describe("app manifest", () => {
     expect(
       appErrors({ name: "app", image: IMAGE, auth: "public", database: {}, env: { URL: "x${db.url}", N: 3 } }),
     ).toEqual([]);
+  });
+
+  it("lets an oidc app open an MCP endpoint for Claude, and no other kind (D85)", () => {
+    expect(appErrors({ name: "biblio", image: IMAGE, groups: ["famille"], mcp: true })).toEqual([]);
+    expect(appErrors({ name: "biblio", image: IMAGE, auth: "public", mcp: true })).toEqual([expect.stringContaining("needs auth 'oidc'")]);
+    expect(appErrors({ name: "biblio-mcp", image: IMAGE, auth: "public" })).toEqual([expect.stringContaining("'-mcp'")]);
   });
 
   it("refuses to redefine variables injected by the platform", () => {

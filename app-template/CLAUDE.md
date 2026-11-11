@@ -18,6 +18,14 @@ A Nuxt app hosted on a Bivouac platform. The platform runs this image and provid
 - Who can enter is decided by the manifest's `groups`. Roles inside the app are mapped from `user.groups`.
 - Identify users by `sub`, never by email.
 
+## MCP for Claude (optional)
+
+- With `mcp: true` in the app's manifest, the platform sets `MCP_RESOURCE` and Claude can connect to `/mcp`, signing in through the identity provider (D85). Without it, `/mcp` answers 404.
+- The shared code checks the access token before the app sees the request: a route at `server/routes/mcp.ts` finds the person in `event.context.user`, and `event.context.mcp` is true. Refuse the request when it is not (the cookie never opens `/mcp`). The session cookie's origin check does not apply there: tokens are never sent by browsers on their own.
+- Use `@modelcontextprotocol/sdk`, stateless (`sessionIdGenerator: undefined`, JSON answers), one small server per request. Every tool acts as that person, with the same rules as the pages: name the person's `sub` in every query. Mark tools that change or delete things (`destructiveHint`), and tell Claude in the server's instructions to ask before deleting.
+- Read the body with a size limit before handing it to the transport.
+- Tests: the fake identity provider hands out tokens at `/test/access-token?aud=<MCP_RESOURCE>&client_id=<OIDC_CLIENT_ID>-mcp` (see `test/e2e/mcp.spec.ts`).
+
 ## User files
 
 - Never use `fs` directly: only `useStorageFiles()` from `server/utils/storage.ts`.

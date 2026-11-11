@@ -17,9 +17,45 @@
  * - The token endpoint answers `invalid_client` (401) to a wrong secret and
  *   `invalid_grant` (400) to a right secret with a bogus code: that is how
  *   the reconciler checks its secret is in place.
+ *
+ * For MCP clients (D85), checked against a real v2.19.2 container on
+ * 11 November 2026:
+ * - A public client (`isPublic: true`) has no secret and PKCE is enforced.
+ *   An `http://localhost/...` callback is accepted for any port, even with
+ *   ALLOW_INSECURE_CALLBACK_URLS=false (loopback rule).
+ * - `POST /api/apis` with `{ name, resource }` declares an API; `PUT
+ *   /api/apis/{id}/clients/{clientId}` with `userDelegatedAccess: true` lets
+ *   that client ask for it. An authorize request naming the API as
+ *   `resource` from any other client is refused (`invalid_request`).
+ * - The access token is then a JWT (`typ: at+jwt`, RS256) whose `aud` holds
+ *   the API's resource (and the issuer), with `client_id` and `sub`.
  */
 
 export class PocketIdError extends Error {}
+
+/** Where Claude's apps and Claude Code come back to after signing in (D85). */
+export const MCP_CALLBACK_URLS = [
+  // claude.ai on the web, the desktop app and the phone app.
+  "https://claude.ai/api/mcp/auth_callback",
+  // Claude Code on a computer: Pocket ID accepts any port for a loopback address.
+  "http://localhost/callback",
+];
+
+export interface McpClientSpec {
+  /** The client ID: `<app>-mcp`. */
+  id: string;
+  /** The app's name, shown to the person. */
+  app: string;
+  /** The app's MCP address, which tokens are issued for. */
+  resource: string;
+  groups: string[];
+}
+
+interface Api {
+  id: string;
+  name: string;
+  resource: string;
+}
 
 export interface OidcClientSpec {
   /** The app's name, used as the client ID. */
@@ -39,6 +75,7 @@ interface Client {
   isPublic: boolean;
   pkceEnabled: boolean;
   isGroupRestricted: boolean;
+  requiresReauthentication?: boolean;
   allowedUserGroups: { id: string; name: string }[];
 }
 
@@ -92,6 +129,104 @@ export class PocketId {
       ids.push(created.id);
     }
     return ids;
+  }
+
+  /**
+   * The public client Claude signs in with, and the API (the app's MCP
+   * address) only that client may ask tokens for.
+   */
+  async ensureMcpClient(spec: McpClientSpec): Promise<string[]> {
+    const changes: string[] = [];
+    const groupIds = await this.ensureGroups(spec.groups, changes);
+    const wanted = {
+      // Shown on the consent screen: who is asking, for which app.
+      name: `Claude → ${spec.app}`,
+      callbackURLs: MCP_CALLBACK_URLS,
+      logoutCallbackURLs: [],
+      isPublic: true,
+      pkceEnabled: true,
+      isGroupRestricted: true,
+      // A passkey every time Claude is connected, never a silent sign-in:
+      // otherwise a link prepared in someone else's Claude account, opened
+      // by a member already signed in, could connect that account to the
+      // member's data (the callback is the same for every claude.ai user).
+      requiresReauthentication: true,
+    };
+    const path = `/api/oidc/clients/${encodeURIComponent(spec.id)}`;
+    const { status, data } = await this.call("GET", path);
+    if (status === 404) {
+      await this.expect("POST", "/api/oidc/clients", [201], { id: spec.id, ...wanted });
+      changes.push(`OIDC client ${spec.id}`);
+    } else if (status !== 200) {
+      throw new PocketIdError(`Pocket ID GET client ${spec.id}: HTTP ${status}`);
+    } else if (!sameClient(data as Client, wanted)) {
+      await this.expect("PUT", path, [200], wanted);
+      changes.push(`OIDC client ${spec.id} settings`);
+    }
+    const current = (await this.expect<Client>("GET", path, [200])).allowedUserGroups.map((group) => group.id);
+    if (!sameSet(current, groupIds)) {
+      await this.expect("PUT", `${path}/allowed-user-groups`, [200], { userGroupIds: groupIds });
+      changes.push(`OIDC client ${spec.id} groups`);
+    }
+
+    // One API per MCP client, named after it; its resource follows the app's address.
+    let api = (await this.apis()).find((candidate) => candidate.name === spec.id);
+    if (!api) {
+      api = await this.expect<Api>("POST", "/api/apis", [201], { name: spec.id, resource: spec.resource });
+      changes.push(`API ${spec.resource}`);
+    } else if (api.resource !== spec.resource) {
+      await this.expect("PUT", `/api/apis/${api.id}`, [200], { name: spec.id, resource: spec.resource });
+      changes.push(`API ${spec.resource}`);
+    }
+    const grants = await this.expect<{ data: { client: { id: string }; userDelegatedAccess: boolean; clientAccess: boolean }[] }>(
+      "GET",
+      `/api/apis/${api.id}/clients?pagination[limit]=100`,
+      [200],
+    );
+    const granted = grants.data.filter((grant) => grant.userDelegatedAccess || grant.clientAccess);
+    const ours = granted.find((grant) => grant.client.id === spec.id);
+    if (!ours || ours.clientAccess || granted.length !== 1) {
+      // Only Claude's client, and only on behalf of a signed-in person.
+      for (const grant of granted) {
+        if (grant.client.id !== spec.id) {
+          await this.expect("DELETE", `/api/apis/${api.id}/clients/${encodeURIComponent(grant.client.id)}`, [200, 204]);
+        }
+      }
+      await this.expect("PUT", `/api/apis/${api.id}/clients/${encodeURIComponent(spec.id)}`, [200], {
+        userDelegatedAccess: true,
+        clientAccess: false,
+        userDelegatedPermissionIds: [],
+        clientPermissionIds: [],
+      });
+      changes.push(`API ${spec.resource} access`);
+    }
+    return changes;
+  }
+
+  /**
+   * Removes an MCP client and its API when the manifest no longer asks for
+   * them: Claude's tokens stop being renewed. Nothing else is lost.
+   */
+  async removeMcpClient(id: string): Promise<string[]> {
+    const changes: string[] = [];
+    const api = (await this.apis()).find((candidate) => candidate.name === id);
+    if (api) {
+      await this.expect("DELETE", `/api/apis/${api.id}`, [200, 204]);
+      changes.push(`API ${api.resource} removed`);
+    }
+    const path = `/api/oidc/clients/${encodeURIComponent(id)}`;
+    const { status } = await this.call("GET", path);
+    if (status === 200) {
+      await this.expect("DELETE", path, [200, 204]);
+      changes.push(`OIDC client ${id} removed`);
+    } else if (status !== 404) {
+      throw new PocketIdError(`Pocket ID GET client ${id}: HTTP ${status}`);
+    }
+    return changes;
+  }
+
+  private async apis(): Promise<Api[]> {
+    return (await this.expect<{ data: Api[] }>("GET", "/api/apis?pagination[limit]=100", [200])).data;
   }
 
   /** Brings one OIDC client to its spec and returns what it changed. */
@@ -168,17 +303,21 @@ export class PocketId {
   }
 }
 
-function sameClient(current: Client, wanted: Omit<Client, "id" | "allowedUserGroups">): boolean {
+function sameClient(
+  current: Client,
+  wanted: Omit<Client, "id" | "allowedUserGroups" | "callbackURLs" | "logoutCallbackURLs"> & { callbackURLs: readonly string[]; logoutCallbackURLs: readonly string[] },
+): boolean {
   return (
     current.name === wanted.name &&
     current.isPublic === wanted.isPublic &&
     current.pkceEnabled === wanted.pkceEnabled &&
     current.isGroupRestricted === wanted.isGroupRestricted &&
+    (current.requiresReauthentication ?? false) === (wanted.requiresReauthentication ?? false) &&
     sameSet(current.callbackURLs, wanted.callbackURLs) &&
     sameSet(current.logoutCallbackURLs ?? [], wanted.logoutCallbackURLs)
   );
 }
 
-function sameSet(a: string[], b: string[]): boolean {
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 }

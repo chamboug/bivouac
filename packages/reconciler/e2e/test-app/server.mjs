@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 // failed deployment). GET /env: the names of the variables the platform
 // injected, never their values.
 const injected = Object.keys(process.env).filter((name) =>
-  /^(PORT|DATABASE_URL|OIDC_|SMTP_|TEST_)/.test(name),
+  /^(PORT|DATABASE_URL|OIDC_|MCP_|SMTP_|TEST_)/.test(name),
 );
 
 createServer((request, response) => {

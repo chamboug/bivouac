@@ -1,4 +1,5 @@
 import { createError, defineEventHandler, getHeader, getRequestURL, getSession, sendRedirect } from "h3";
+import { MCP_PATH, mcpResource, mcpUser, protectedResourceMetadata } from "../utils/mcp";
 import { sessionConfig, type SessionUser } from "../utils/oidc";
 
 // Everything requires a signed-in user, unless listed here. A new page or
@@ -38,12 +39,33 @@ function isSameOrigin(fetchSite: string | undefined, origin: string | undefined,
 declare module "h3" {
   interface H3EventContext {
     user?: SessionUser;
+    /** True when the user comes from an MCP access token, not the session cookie. */
+    mcp?: boolean;
   }
 }
 
+const WELL_KNOWN = "/.well-known/oauth-protected-resource";
+
 export default defineEventHandler(async (event) => {
-  if (DOT_SEGMENT.test((event.node.req.url ?? "").split("?")[0]!)) {
+  const rawPath = (event.node.req.url ?? "").split("?")[0]!;
+  if (DOT_SEGMENT.test(rawPath)) {
     throw createError({ statusCode: 400, statusMessage: "Invalid path" });
+  }
+
+  // Claude's way in (D85): an access token, never the cookie, so a page on
+  // another site cannot act through it, and no origin check is needed.
+  const path = rawPath.replace(/\/+$/, "") || "/";
+  if (path.toLowerCase() === MCP_PATH || path.toLowerCase() === `${WELL_KNOWN}${MCP_PATH}` || path.toLowerCase() === WELL_KNOWN) {
+    const resource = mcpResource();
+    if (!resource) throw createError({ statusCode: 404, statusMessage: "Not found" });
+    if (path.toLowerCase() !== MCP_PATH) {
+      if (event.method !== "GET" && event.method !== "HEAD") throw createError({ statusCode: 405, statusMessage: "Method not allowed" });
+      return protectedResourceMetadata(resource);
+    }
+    if (path !== MCP_PATH) throw createError({ statusCode: 404, statusMessage: "Not found" });
+    event.context.user = await mcpUser(event, resource);
+    event.context.mcp = true;
+    return;
   }
   if (
     event.method !== "GET" &&
