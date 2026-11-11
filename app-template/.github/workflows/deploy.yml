@@ -17,18 +17,24 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Playwright's own image: Chromium and the libraries it needs are already
+    # there, so the tests never depend on Ubuntu's package mirrors being
+    # reachable. Its version must be the one in package.json.
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.0-noble
+      options: --user 1001
     services:
       postgres:
         image: postgis/postgis:18-3.7
         env:
           POSTGRES_PASSWORD: test
-        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-retries 20
     env:
-      DATABASE_URL: postgres://postgres:test@localhost:5432/postgres
+      # From a job container, a service is reached by its name.
+      DATABASE_URL: postgres://postgres:test@postgres:5432/postgres
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -38,7 +44,6 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
 
   deploy:
