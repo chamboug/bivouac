@@ -248,11 +248,11 @@ The owner regularly codes small applications with Claude. Some live happily as a
 
 No permanent dev or staging instance: it would be a second server to pay for and maintain, with its own Pocket ID accounts (D43). Instead, three levels, none of them permanent:
 
-1. **Developing an app**: locally on the Mac, against the miniature platform used by the end-to-end tests (Postgres, Pocket ID, Caddy), started with one command.
+1. **Developing an app**: locally on the Mac with `npm run dev:local` (in the app template): a Postgres in Docker, the tests' fake identity provider and hot reload. Every interface change is checked there (light, dark, phone width) before pushing, never on the real server (D83). The miniature platform (`npm run platform:up`) is for the platform itself.
 2. **Trying an app on the real server before users see it**: declare a second app, for example `recettes-preview`, with its own database and another image. To the platform it is just one more app; remove it afterwards.
 3. **Testing a platform change**: the end-to-end tests in CI, plus `bivy rebuild --test` on a temporary server billed by the hour.
 
-Until the prod phase, the server itself is the dev environment.
+Until the prod phase, the server itself is the platform's dev environment; apps are still checked on the Mac first.
 
 ### Conventions for Claude
 

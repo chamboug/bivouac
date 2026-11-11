@@ -42,8 +42,12 @@ Pushing to `main` runs the tests, builds the image and opens a PR on the instanc
 
 ```bash
 npm ci
-npm run dev
+npm run dev:local   # the app on http://localhost:3000, signed in as "Dev"
 npm test
 ```
+
+Check changes here, never on the real server. `dev:local` needs Docker: it starts a Postgres (`<folder>-dev-pg`, kept between runs, reachable from this machine only), applies the migrations, signs in through the tests' fake identity provider and reloads on every change. The fake person's groups come from `DEV_GROUPS` (`famille` by default; set it to the groups the app maps to roles). Check every interface change there, in light and dark and at phone width, before pushing. Claude Code's preview starts it from `.claude/launch.json`.
+
+Do not run `npm run build` while `dev:local` runs: it downloads the shared layers again and breaks the dev server. Stop it first, or restart it afterwards. Another app's `dev:local` at the same time needs other ports (`DEV_APP_PORT`, `DEV_PG_PORT`, `DEV_ISSUER_PORT`).
 
 `npm run test:e2e` needs `npm run build` first and a Postgres in `DATABASE_URL`.
