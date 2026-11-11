@@ -1,0 +1,79 @@
+name: Merge deployments
+
+# Merges a deployment PR by itself once Validate is green, when it changes
+# nothing but the image tag of one app and the app says its shared layers (the
+# sign-in code) did not change (D86, D81). Anything else waits for the owner.
+# workflow_run always runs this file as it is on main, never a PR's copy, so a
+# PR cannot change the rules that merge it. The script lives here, not in the
+# monorepo, so no code from elsewhere holds write access to this repo.
+# This is no barrier: whoever can push to main still can (D64).
+
+on:
+  workflow_run:
+    workflows: [Validate]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      startsWith(github.event.workflow_run.head_branch, 'deploy/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check the PR, then merge it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          leave() { echo "::notice::Left for the owner: $1"; exit 0; }
+
+          # The one open PR into main whose head is exactly the commit Validate passed.
+          prs=$(gh api "repos/$REPO/pulls?state=open&base=main&per_page=100" |
+            jq --arg sha "$HEAD_SHA" --arg repo "$REPO" \
+              '[.[] | select(.head.sha == $sha and .head.repo.full_name == $repo)]')
+          [ "$(jq length <<<"$prs")" = 1 ] || leave "no single open PR into main at $HEAD_SHA"
+          number=$(jq -r '.[0].number' <<<"$prs")
+          branch=$(jq -r '.[0].head.ref' <<<"$prs")
+          [ "$(jq -r '.[0].draft' <<<"$prs")" = false ] || leave "#$number is a draft"
+
+          # The app says whether its shared layers (sign-in code) changed since the
+          # deployed version; anything but "unchanged" goes to the owner (D81).
+          jq -r '.[0].body // ""' <<<"$prs" | tr -d '\r' | grep -qxF 'Shared layers: unchanged' ||
+            leave "#$number: shared layers changed, or the app could not tell"
+
+          # Exactly one manifest changed, by exactly one line: the top-level image.
+          files=$(gh api "repos/$REPO/pulls/$number/files?per_page=100")
+          [ "$(jq length <<<"$files")" = 1 ] || leave "#$number changes more than one file"
+          file=$(jq -r '.[0].filename' <<<"$files")
+          [[ "$file" =~ ^apps/([a-z0-9-]+)\.yml$ ]] || leave "#$number changes $file, not a manifest"
+          app="${BASH_REMATCH[1]}"
+          [ "$(jq -r '.[0] | "\(.status) \(.additions) \(.deletions)"' <<<"$files")" = "modified 1 1" ] ||
+            leave "#$number changes more than one line of $file"
+          patch=$(jq -r '.[0].patch // ""' <<<"$files")
+          old=$(sed -n 's/^-//p' <<<"$patch")
+          new=$(sed -n 's/^+//p' <<<"$patch")
+          image='^image: (ghcr\.io/[a-z0-9._/-]+):sha-([0-9a-f]{7,40})$'
+          [[ "$old" =~ $image ]] || leave "#$number: the removed line is not an image line"
+          old_repo="${BASH_REMATCH[1]}"
+          [[ "$new" =~ $image ]] || leave "#$number: the added line is not an image line"
+          new_repo="${BASH_REMATCH[1]}"
+          new_sha="${BASH_REMATCH[2]}"
+          [ "$old_repo" = "$new_repo" ] || leave "#$number moves $app to another image ($new_repo)"
+          [ "$branch" = "deploy/$app-${new_sha::7}" ] || leave "#$number: branch $branch does not match $app and its image"
+
+          # Merge only the commit Validate passed, as a merge commit like the owner's.
+          gh pr merge "$number" --repo "$REPO" --merge --match-head-commit "$HEAD_SHA" ||
+            leave "#$number could not be merged (conflict, or changed since Validate)"
+          gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null ||
+            echo "::warning::#$number merged, but its branch $branch was not deleted"
+          echo "Merged #$number: $app now at $new_repo:sha-$new_sha"
