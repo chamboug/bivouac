@@ -15,7 +15,8 @@ export interface JobLock {
 }
 
 export const lockFile = (stateDir: string) => join(stateDir, "backup", "lock.json");
-export const interruptedFile = (stateDir: string) => join(stateDir, "backup", "restore-interrupted.json");
+/** One per app: restoring one app must never clear another's. */
+export const interruptedFile = (stateDir: string, app: string) => join(stateDir, "backup", `restore-interrupted-${app}.json`);
 
 /** Takes the lock, or returns the job holding it. */
 export function acquireLock(stateDir: string, lock: JobLock): JobLock | undefined {
@@ -38,8 +39,19 @@ export function readLock(stateDir: string): JobLock | undefined {
   }
 }
 
-export function releaseLock(stateDir: string): void {
-  rmSync(lockFile(stateDir), { force: true });
+/** Removes the lock only if it is still the one taken: never another job's. */
+export function releaseLock(stateDir: string, mine: JobLock): void {
+  const current = readLock(stateDir);
+  if (current && current.job === mine.job && current.startedAt === mine.startedAt && current.app === mine.app) {
+    rmSync(lockFile(stateDir), { force: true });
+  }
+}
+
+export function markInterrupted(stateDir: string, app: string, startedAt: number): void {
+  const path = interruptedFile(stateDir, app);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(`${path}.new`, JSON.stringify({ job: "restore", app, startedAt }), { mode: 0o600 });
+  renameSync(`${path}.new`, path);
 }
 
 /** The app a running restore has stopped, which a pass must not touch. */
@@ -57,19 +69,10 @@ export function appBeingRestored(stateDir: string): string | undefined {
 export function clearStaleLock(stateDir: string): JobLock | undefined {
   const lock = readLock(stateDir);
   if (!lock && !existsSync(lockFile(stateDir))) return undefined;
-  if (lock?.job === "restore" && lock.app) {
-    writeFileSync(interruptedFile(stateDir) + ".new", JSON.stringify(lock), { mode: 0o600 });
-    renameSync(interruptedFile(stateDir) + ".new", interruptedFile(stateDir));
-  }
-  releaseLock(stateDir);
+  if (lock?.job === "restore" && lock.app) markInterrupted(stateDir, lock.app, lock.startedAt);
+  rmSync(lockFile(stateDir), { force: true });
   return lock;
 }
 
-/** The app whose restore was interrupted, if any. */
-export function interruptedRestore(stateDir: string): string | undefined {
-  try {
-    return (JSON.parse(readFileSync(interruptedFile(stateDir), "utf8")) as JobLock).app;
-  } catch {
-    return undefined;
-  }
-}
+/** Whether a restore of this app was interrupted, leaving its data half restored. */
+export const interruptedRestore = (stateDir: string, app: string) => existsSync(interruptedFile(stateDir, app));

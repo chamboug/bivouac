@@ -637,7 +637,7 @@ describe("k. restoring one app's data (runbook section 14)", () => {
 
   it("keeps what was there: the replaced database, and a safety copy", () => {
     const previous = superuser("postgres", "SELECT datname FROM pg_database WHERE datname LIKE 'bivouac_r%_recettes'").stdout.trim();
-    expect(previous).toMatch(/^bivouac_r\d{10}_recettes$/);
+    expect(previous).toMatch(/^bivouac_r\d{12}_recettes$/);
     expect(superuser(previous, "SELECT title FROM public.books").stdout.trim()).toBe("written since");
     const copies = JSON.parse(restic("snapshots", "--tag", "pre-restore", "--json")) as { short_id: string; tags: string[] }[];
     expect(copies.map((copy) => copy.short_id)).toContain(safety);
@@ -688,13 +688,19 @@ describe("k. restoring one app's data (runbook section 14)", () => {
     docker("start", "bivouac-app-recettes");
   });
 
-  it("keeps an app whose restore was interrupted stopped and reported, until a restore completes", () => {
-    writeStateFile(platform, "backup/restore-interrupted.json", JSON.stringify({ job: "restore", app: "recettes", startedAt: Date.now() }));
+  it("keeps an app whose restore was interrupted stopped and reported, then starts it once a restore completes", () => {
+    // As a restore stopped halfway leaves it: the app stopped, and marked.
+    docker("stop", "bivouac-app-recettes");
+    writeStateFile(platform, "backup/restore-interrupted-recettes.json", JSON.stringify({ job: "restore", app: "recettes", startedAt: Date.now() }));
     const pass = runOnce(platform);
     expect(pass.status).toBe(1);
     expect(JSON.stringify(pass.logs)).toContain("a restore of its data was interrupted");
-    expect(restore("recettes", "--yes").status).toBe(0);
-    expect(readStateFile(platform, "backup/restore-interrupted.json")).toBeUndefined();
+    expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(false);
+    const restored = restore("recettes", "--yes");
+    expect(JSON.stringify(restored.logs)).toContain("restore done");
+    expect(restored.status).toBe(0);
+    expect(readStateFile(platform, "backup/restore-interrupted-recettes.json")).toBeUndefined();
+    expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
     expect(runOnce(platform).status).toBe(0);
   });
 });

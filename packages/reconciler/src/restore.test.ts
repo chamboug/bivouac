@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquireLock, appBeingRestored, clearStaleLock, interruptedRestore, readLock, releaseLock } from "./lock.js";
+import { acquireLock, appBeingRestored, clearStaleLock, interruptedRestore, markInterrupted, readLock, releaseLock } from "./lock.js";
 import { chooseSnapshot, parseRestoreArgs, previousName, restoringName, type Snapshot } from "./restore.js";
 
 describe("restore-app arguments", () => {
@@ -61,7 +61,7 @@ describe("database names during a restore", () => {
   });
 
   it("can never be an app's: apps cannot be named bivouac…", () => {
-    expect(previousName("biblio", new Date("2026-11-12T19:12:35Z"))).toBe("bivouac_r2611121912_biblio");
+    expect(previousName("biblio", new Date("2026-11-12T19:12:35Z"))).toBe("bivouac_r261112191235_biblio");
     expect(restoringName("biblio")).toBe("bivouac_restoring_biblio");
   });
 });
@@ -73,10 +73,14 @@ describe("the lock shared by backups and restores", () => {
 
   it("lets one job in at a time", () => {
     fresh();
-    expect(acquireLock(stateDir, { job: "restore", app: "biblio", startedAt: 1 })).toBeUndefined();
+    const restore = { job: "restore" as const, app: "biblio", startedAt: 1 };
+    expect(acquireLock(stateDir, restore)).toBeUndefined();
     expect(acquireLock(stateDir, { job: "backup", startedAt: 2 })).toMatchObject({ job: "restore", app: "biblio" });
     expect(appBeingRestored(stateDir)).toBe("biblio");
-    releaseLock(stateDir);
+    // Only its owner releases it.
+    releaseLock(stateDir, { job: "backup", startedAt: 2 });
+    expect(appBeingRestored(stateDir)).toBe("biblio");
+    releaseLock(stateDir, restore);
     expect(acquireLock(stateDir, { job: "backup", startedAt: 3 })).toBeUndefined();
     expect(appBeingRestored(stateDir)).toBeUndefined();
   });
@@ -86,7 +90,16 @@ describe("the lock shared by backups and restores", () => {
     acquireLock(stateDir, { job: "restore", app: "biblio", startedAt: 1 });
     expect(clearStaleLock(stateDir)).toMatchObject({ app: "biblio" });
     expect(readLock(stateDir)).toBeUndefined();
-    expect(interruptedRestore(stateDir)).toBe("biblio");
+    expect(interruptedRestore(stateDir, "biblio")).toBe(true);
+    expect(interruptedRestore(stateDir, "antigaspi")).toBe(false);
+  });
+
+  it("keeps one interrupted mark per app", () => {
+    fresh();
+    markInterrupted(stateDir, "biblio", 1);
+    markInterrupted(stateDir, "antigaspi", 2);
+    expect(interruptedRestore(stateDir, "biblio")).toBe(true);
+    expect(interruptedRestore(stateDir, "antigaspi")).toBe(true);
   });
 
   it("simply removes a backup left behind", () => {
@@ -94,6 +107,6 @@ describe("the lock shared by backups and restores", () => {
     acquireLock(stateDir, { job: "backup", startedAt: 1 });
     clearStaleLock(stateDir);
     expect(readLock(stateDir)).toBeUndefined();
-    expect(interruptedRestore(stateDir)).toBeUndefined();
+    expect(interruptedRestore(stateDir, "biblio")).toBe(false);
   });
 });

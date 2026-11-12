@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PLATFORM_CONTAINERS, PLATFORM_IMAGES, PLATFORM_NETWORKS, appContainerName, type AppManifest } from "@bivouac/manifest";
 import { checkHealth } from "./apps.js";
 import { BACKUP_CONTAINER, RESTIC_HOST, checked, dumpDatabase, lastLine, runOneOff, runRestic, type BackupPlan } from "./backup.js";
 import { joinPlatformNetworks, postgresServer, type Runtime } from "./base.js";
 import { waitFor } from "./containers.js";
-import { acquireLock, interruptedFile, releaseLock } from "./lock.js";
+import { acquireLock, interruptedFile, interruptedRestore, markInterrupted, releaseLock } from "./lock.js";
 import { createRestoreTarget, databaseExists, databaseName, swapDatabases } from "./postgres.js";
 import { deriveSecret, type PlatformSecrets } from "./secrets.js";
 
@@ -33,7 +33,9 @@ import { deriveSecret, type PlatformSecrets } from "./secrets.js";
 
 const MINUTE = 60_000;
 const TIMEOUT = 90 * MINUTE;
-const [RESTIC_CONTAINER, DUMP_CONTAINER, LOAD_CONTAINER, FILES_CONTAINER] = [
+const [READ_CONTAINER, RESTIC_CONTAINER, DUMP_CONTAINER, LOAD_CONTAINER, FILES_CONTAINER] = [
+  // Its own name: a dry run beside a real restore must not remove that restore's container.
+  "bivouac-restore-app-read",
   "bivouac-restore-app",
   "bivouac-restore-app-dump",
   "bivouac-restore-app-load",
@@ -115,7 +117,7 @@ export function chooseSnapshot(snapshots: Snapshot[], options: Pick<RestoreOptio
 /** Postgres names are at most 63 bytes; app names at most 40 (manifest schema). */
 export const restoringName = (database: string) => `bivouac_restoring_${database}`;
 export function previousName(database: string, now: Date): string {
-  const stamp = now.toISOString().replace(/[-:T]/g, "").slice(2, 12);
+  const stamp = now.toISOString().replace(/[-:T]/g, "").slice(2, 14);
   return `bivouac_r${stamp}_${database}`;
 }
 
@@ -130,14 +132,14 @@ function parseJsonLine<T>(output: string): T {
 }
 
 async function listSnapshots(runtime: Runtime, plan: BackupPlan): Promise<Snapshot[]> {
-  const result = await runRestic(runtime, plan, 10 * MINUTE, ["snapshots", "--no-lock", "--host", RESTIC_HOST, "--json"], [], RESTIC_CONTAINER);
+  const result = await runRestic(runtime, plan, 10 * MINUTE, ["snapshots", "--no-lock", "--host", RESTIC_HOST, "--json"], [], READ_CONTAINER);
   if (result.exitCode !== 0) throw new Error(`restic snapshots failed (exit ${result.exitCode}): ${lastLine(result.logs)}`);
   return parseJsonLine<Snapshot[]>(result.logs);
 }
 
 /** Which of the app's volumes the copy holds (only their directories are listed). */
 async function volumesIn(runtime: Runtime, plan: BackupPlan, snapshot: string): Promise<Set<string>> {
-  const result = await runRestic(runtime, plan, 10 * MINUTE, ["ls", "--no-lock", "--json", snapshot, "/source/volumes"], [], RESTIC_CONTAINER);
+  const result = await runRestic(runtime, plan, 10 * MINUTE, ["ls", "--no-lock", "--json", snapshot, "/source/volumes"], [], READ_CONTAINER);
   if (result.exitCode !== 0) throw new Error(`restic ls failed (exit ${result.exitCode}): ${lastLine(result.logs)}`);
   const present = new Set<string>();
   for (const line of result.logs.split("\n")) {
@@ -197,17 +199,30 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
   }
 
   const stateDir = runtime.stateDir;
-  const holder = acquireLock(stateDir, { job: "restore", app: app.name, startedAt: now.getTime() });
+  const lock = { job: "restore" as const, app: app.name, startedAt: now.getTime() };
+  const holder = acquireLock(stateDir, lock);
   if (holder) throw new Error(`a ${holder.job}${holder.app ? ` of ${holder.app}` : ""} is running: try again once it is over`);
   for (const name of [BACKUP_CONTAINER, `${BACKUP_CONTAINER}-dump`, "bivouac-restore-test"]) {
     if (await runtime.docker.inspectContainer(name)) {
-      releaseLock(stateDir);
+      releaseLock(stateDir, lock);
       throw new Error(`${name} is running: try again once the backup is over`);
     }
   }
   const work = join(stateDir, "backup", "restore-app");
   const container = appContainerName(app.name);
-  let wasRunning = false;
+  // An earlier restore of it stopped halfway: it was left stopped on purpose, and runs again once this one completes.
+  const resuming = interruptedRestore(stateDir, app.name);
+  /** Whether to start the app at the end: it was running, or a restore of it is being completed. */
+  let start = false;
+  /**
+   * A pass that read no lock just before it was taken may still be deploying
+   * the app: checked again right before live data changes.
+   */
+  const ensureStopped = async () => {
+    if ((await runtime.docker.inspectContainer(container))?.State.Running) {
+      throw new Error(`${container} was started by someone else meanwhile: run the restore again`);
+    }
+  };
   let safety: string | undefined;
   /** Set once live data starts changing: a failure past it leaves the app stopped. */
   let changing = false;
@@ -216,7 +231,8 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
     rmSync(work, { recursive: true, force: true });
     mkdirSync(join(work, "dumps"), { recursive: true, mode: 0o700 });
     mkdirSync(join(stateDir, "backup", "cache"), { recursive: true, mode: 0o700 });
-    wasRunning = await stopApp(runtime, container);
+    const wasRunning = await stopApp(runtime, container);
+    start = wasRunning || resuming;
     log("app stopped", { app: app.name, wasRunning });
 
     // 1. The safety copy: nothing is changed unless it was sent.
@@ -261,6 +277,7 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
       const incoming = restoringName(database);
       await createRestoreTarget(server, incoming, database, app.database?.extensions ?? []);
       await loadDump(runtime, database, incoming, dumps, deriveSecret(secrets.master_secret, `db:${database}`));
+      await ensureStopped();
       changing = true;
       await swapDatabases(server, database, incoming, previous);
       log("database restored", { database, kept: previous });
@@ -269,6 +286,7 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
     // 3. The volumes, in place.
     if (wantFiles) {
       for (const volume of volumes) {
+        await ensureStopped();
         changing = true;
         await checked(`restic restore of ${volume}`, runRestic(
           runtime,
@@ -282,22 +300,19 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
         log("volume restored", { volume });
       }
     }
-    rmSync(interruptedFile(stateDir), { force: true });
+    rmSync(interruptedFile(stateDir, app.name), { force: true });
   } catch (error) {
-    if (changing) {
+    if (changing || resuming) {
       // Half restored: the app must not run on it. Passes report it until a restore completes.
-      writeFileSync(interruptedFile(stateDir), JSON.stringify({ job: "restore", app: app.name, startedAt: now.getTime() }), { mode: 0o600 });
-      wasRunning = false;
+      markInterrupted(stateDir, app.name, now.getTime());
+      start = false;
     }
     const undo = safety ? ` Safety copy of the data before this restore: ${safety}.` : "";
-    throw new Error(`${(error as Error).message}.${changing ? " The app stays stopped: run the restore again, or restore the safety copy." : " Nothing was changed."}${undo}`);
+    throw new Error(`${(error as Error).message}.${changing || resuming ? " The app stays stopped: run the restore again, or restore the safety copy." : " Nothing was changed."}${undo}`);
   } finally {
     rmSync(work, { recursive: true, force: true });
-    releaseLock(stateDir);
-    if (wasRunning) await runtime.docker.startContainer(container).catch((error: Error) => log("app not started again", { error: error.message }));
-  }
-  if (wasRunning) {
-    await waitFor(() => checkHealth(container, app), runtime.healthTimeout, `${app.name}'s health check`);
+    releaseLock(stateDir, lock);
+    if (start) await runtime.docker.startContainer(container).catch((error: Error) => log("app not started again", { error: error.message }));
   }
   log("restore done", {
     app: app.name,
@@ -305,6 +320,13 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
     undo: safety ? `restore-app ${app.name} --snapshot ${safety} --yes` : undefined,
     ...(wantDatabase ? { previousDatabase: previous } : {}),
   });
+  if (start) {
+    try {
+      await waitFor(() => checkHealth(container, app), runtime.healthTimeout, `${app.name}'s health check`);
+    } catch (error) {
+      throw new Error(`the data is restored, but the app is not healthy: ${(error as Error).message}`);
+    }
+  }
 }
 
 /**
@@ -325,6 +347,7 @@ async function loadDump(runtime: Runtime, role: string, target: string, dumps: s
       "sh", role, target,
     ],
     mounts: [{ type: "bind", source: dumps, target: "/dumps", readOnly: true }],
-    networks: { [PLATFORM_NETWORKS.internal.name]: null },
+    // Postgres is on both networks; this one does not reach Pocket ID.
+    networks: { [PLATFORM_NETWORKS.apps.name]: null },
   }, TIMEOUT));
 }

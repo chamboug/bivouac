@@ -41,7 +41,7 @@ export async function ensureApp(context: AppContext, app: AppManifest): Promise<
   if (runtime.pausedApps.has(app.name)) return { name: app.name, routed: true, changes };
   // Stopped on purpose by a restore of its data (restore.ts): left alone meanwhile.
   if (appBeingRestored(runtime.stateDir) === app.name) return { name: app.name, routed: true, changes };
-  if (interruptedRestore(runtime.stateDir) === app.name) {
+  if (interruptedRestore(runtime.stateDir, app.name)) {
     return { name: app.name, routed: false, changes, failure: "a restore of its data was interrupted: it stays stopped until it is restored again (runbook section 14)" };
   }
   const values = await appValues(context, app, changes);

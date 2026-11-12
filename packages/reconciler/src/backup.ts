@@ -320,7 +320,7 @@ export async function runMaintenance(runtime: Runtime, plan: BackupPlan, log: (m
 
 const RESTORE_CONTAINER = "bivouac-restore-test";
 /** The one-off containers of a restore of one app (restore.ts). */
-export const RESTORE_APP_CONTAINERS = ["bivouac-restore-app", "bivouac-restore-app-dump", "bivouac-restore-app-load", "bivouac-restore-app-files"];
+export const RESTORE_APP_CONTAINERS = ["bivouac-restore-app-read", "bivouac-restore-app", "bivouac-restore-app-dump", "bivouac-restore-app-load", "bivouac-restore-app-files"];
 const RESTORE_STUCK_AFTER = 3 * HOUR;
 const USER_TABLES = "SELECT count(*) AS count FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
 const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
@@ -506,10 +506,11 @@ export class BackupScheduler {
     if (this.running || !this.plan || !isDue(this.state, this.now())) return;
     const { stateDir } = this.options.runtime;
     // A restore in progress: the backup waits for a later pass.
-    if (acquireLock(stateDir, { job: "backup", startedAt: this.now() })) return;
+    const lock = { job: "backup" as const, startedAt: this.now() };
+    if (acquireLock(stateDir, lock)) return;
     const plan = this.plan;
     this.running = this.attempt(plan).finally(() => {
-      releaseLock(stateDir);
+      releaseLock(stateDir, lock);
       this.running = undefined;
     });
   }

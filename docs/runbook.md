@@ -618,7 +618,12 @@ r=(docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-
 ```
 
 Without `--yes`, nothing is changed. It is a data operation: the owner's
-consent first, saying which copy and what will be lost.
+consent first, saying which copy and what will be lost. Run it without `--yes`
+first, then with `--yes` **and `--snapshot <id>`** of the copy it named: a
+nightly copy finishing in between would otherwise change the choice. Do not
+interrupt it (no `-t`, no Ctrl-C): if it is cut short anyway, restart the
+reconciler (`sudo systemctl restart bivouac-reconciler`), which releases its
+lock and marks the app as interrupted (below).
 
 **What it does, in order** (each step only if the previous one worked):
 
@@ -629,7 +634,9 @@ consent first, saying which copy and what will be lost.
    tagged `pre-restore` and `app:<app>`. If it fails, nothing was changed.
 4. Database: the dump is loaded into `bivouac_restoring_<db>` **as the app's
    own role** (never as superuser: D75), then swapped with the live one in one
-   transaction. The replaced one is kept as `bivouac_r<YYMMDDhhmm>_<db>` (UTC).
+   transaction. The replaced one is kept as `bivouac_r<YYMMDDhhmmss>_<db>` (UTC).
+   Right before the swap, and before each volume, it checks the app is still
+   stopped (a deployment landing in the same minute could have started it).
 5. Volumes: brought back in place (`restic restore --delete`, limited to that
    volume): files the copy does not have are removed, others rewritten only
    where they differ, owners kept.
@@ -657,8 +664,9 @@ files back by hand, read them from there. To undo the whole restore:
 
 **If it stops halfway** (error past step 3, or the reconciler restarted
 during it): the app stays stopped and is reported as failed, with "a restore
-of its data was interrupted", until a restore of it completes. Run the same
-command again, or restore the safety copy named in the error.
+of its data was interrupted", until a restore of it completes, which then
+starts it. Run the same command again, or restore the safety copy named in
+the error. Each app has its own mark (`backup/restore-interrupted-<app>.json`).
 
 **Afterwards**: the kept database (`bivouac_r…`) is not backed up and stays
 until the owner asks to drop it (`DROP DATABASE`, consent). `pre-restore`
