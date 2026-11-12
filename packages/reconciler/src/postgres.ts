@@ -86,6 +86,55 @@ export async function closePlatformDatabases(server: PostgresServer): Promise<vo
   });
 }
 
+/**
+ * An empty database for a restore, beside the live one: owned by the app's
+ * role, closed to every other role, with the app's declared extensions.
+ * The name must be one no app can have (`bivouac_…`, D56). A leftover of an
+ * earlier restore under that name is replaced: it was never in use.
+ */
+export async function createRestoreTarget(server: PostgresServer, target: string, owner: string, extensions: string[]): Promise<void> {
+  await withClient(server, "postgres", "postgres", server.superuserPassword, async (admin) => {
+    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(target)} WITH (FORCE)`);
+    await admin.query(`CREATE DATABASE ${pg.escapeIdentifier(target)} OWNER ${pg.escapeIdentifier(owner)}`);
+    await admin.query(`REVOKE CONNECT, TEMPORARY ON DATABASE ${pg.escapeIdentifier(target)} FROM PUBLIC`);
+  });
+  if (extensions.length === 0) return;
+  await withClient(server, target, "postgres", server.superuserPassword, async (admin) => {
+    await admin.query("SET search_path = public");
+    for (const extension of extensions) await admin.query(`CREATE EXTENSION IF NOT EXISTS ${pg.escapeIdentifier(extension)}`);
+    await admin.query("SET search_path = pg_catalog");
+  });
+}
+
+export async function databaseExists(server: PostgresServer, name: string): Promise<boolean> {
+  return withClient(server, "postgres", "postgres", server.superuserPassword, async (admin) => {
+    return ((await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [name])).rowCount ?? 0) > 0;
+  });
+}
+
+/**
+ * Puts the restored database in the live one's place, in one transaction:
+ * either both renames happen or neither does, so the app's name always
+ * points to a whole database. The live one is kept under `previous`,
+ * never dropped (D18). Sessions still open on either are closed first; the
+ * app itself is already stopped.
+ */
+export async function swapDatabases(server: PostgresServer, live: string, restored: string, previous: string): Promise<void> {
+  await withClient(server, "postgres", "postgres", server.superuserPassword, async (admin) => {
+    await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ANY($1) AND pid <> pg_backend_pid()", [[live, restored]]);
+    const exists = ((await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [live])).rowCount ?? 0) > 0;
+    await admin.query("BEGIN");
+    try {
+      if (exists) await admin.query(`ALTER DATABASE ${pg.escapeIdentifier(live)} RENAME TO ${pg.escapeIdentifier(previous)}`);
+      await admin.query(`ALTER DATABASE ${pg.escapeIdentifier(restored)} RENAME TO ${pg.escapeIdentifier(live)}`);
+      await admin.query("COMMIT");
+    } catch (error) {
+      await admin.query("ROLLBACK");
+      throw error;
+    }
+  });
+}
+
 /** Total size of these databases, an upper bound for their uncompressed dumps. */
 export async function databasesBytes(server: PostgresServer, names: string[]): Promise<number> {
   return withClient(server, "postgres", "postgres", server.superuserPassword, async (admin) => {

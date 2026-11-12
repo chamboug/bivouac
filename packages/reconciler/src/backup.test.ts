@@ -277,7 +277,10 @@ describe("after a restart in the middle of a run", () => {
     const scheduler = new BackupScheduler({ runtime, log: () => {} });
     await scheduler.recover();
     await scheduler.recover();
-    expect(removed).toEqual(["bivouac-backup:true", "bivouac-backup-dump:true", "bivouac-restore-test:true"]);
+    expect(removed).toEqual([
+      "bivouac-backup:true", "bivouac-backup-dump:true", "bivouac-restore-test:true",
+      "bivouac-restore-app:true", "bivouac-restore-app-dump:true", "bivouac-restore-app-load:true", "bivouac-restore-app-files:true",
+    ]);
     expect(existsSync(join(stateDir, "backup", "dumps"))).toBe(false);
     expect(existsSync(join(stateDir, "backup", "restore-test"))).toBe(false);
   });

@@ -4,6 +4,7 @@ import { PLATFORM_CONTAINERS, PLATFORM_IMAGES, PLATFORM_NETWORKS, appContainerNa
 import { redact, type Observation } from "./alerts.js";
 import { POCKET_ID_DATABASE, postgresServer, writeIfChanged, type Runtime } from "./base.js";
 import { createBody, waitFor, type ContainerSpec } from "./containers.js";
+import { acquireLock, clearStaleLock, readLock, releaseLock } from "./lock.js";
 import { countIn, databaseName, databasesBytes, type PostgresServer } from "./postgres.js";
 import type { PlatformSecrets } from "./secrets.js";
 
@@ -29,14 +30,15 @@ const DUMP_MAX_SHARE_OF_FREE_SPACE = 0.8;
 /** Restic and pg_dump must never push the base services out of a small server. */
 const ONE_OFF_MEMORY_BYTES = 1536 * 1024 * 1024;
 /** restic groups snapshots by host, and a container's name changes on every run. */
-const RESTIC_HOST = "bivouac";
+export const RESTIC_HOST = "bivouac";
 /** restic's documented exit code for "the repository does not exist". */
 const RESTIC_NO_REPOSITORY = 10;
 /** restic's documented exit code for "snapshot saved, but some files could not be read". */
 const RESTIC_PARTIAL = 3;
 
-const CONTAINER = "bivouac-backup";
-const SECRETS_TARGET = "/run/secrets/bivouac";
+export const BACKUP_CONTAINER = "bivouac-backup";
+const CONTAINER = BACKUP_CONTAINER;
+export const SECRETS_TARGET = "/run/secrets/bivouac";
 
 export interface BackupPlan {
   repository: string;
@@ -109,14 +111,21 @@ export async function runOneOff(runtime: Runtime, spec: ContainerSpec, timeout: 
   }
 }
 
-const lastLine = (text: string) => text.trim().split("\n").pop() ?? "";
+export const lastLine = (text: string) => text.trim().split("\n").pop() ?? "";
 
 /** One restic command. Its credentials only exist in a container that is removed right after. */
-export function runRestic(runtime: Runtime, plan: BackupPlan, timeout: number, args: string[], mounts: ContainerSpec["mounts"] = []): Promise<OneOffResult> {
+export function runRestic(
+  runtime: Runtime,
+  plan: BackupPlan,
+  timeout: number,
+  args: string[],
+  mounts: ContainerSpec["mounts"] = [],
+  name = CONTAINER,
+): Promise<OneOffResult> {
   const local = plan.repository.startsWith("/");
   if (local) mkdirSync(plan.repository, { recursive: true });
   return runOneOff(runtime, {
-    name: CONTAINER,
+    name,
     image: PLATFORM_IMAGES.restic,
     env: {
       RESTIC_REPOSITORY: plan.repository,
@@ -136,7 +145,7 @@ export function runRestic(runtime: Runtime, plan: BackupPlan, timeout: number, a
   }, timeout);
 }
 
-async function checked(step: string, run: Promise<OneOffResult>): Promise<void> {
+export async function checked(step: string, run: Promise<OneOffResult>): Promise<void> {
   const { exitCode, logs } = await run;
   if (exitCode !== 0) throw new Error(`${step} failed (exit ${exitCode}): ${lastLine(logs)}`);
 }
@@ -157,9 +166,9 @@ async function ensureRepository(runtime: Runtime, plan: BackupPlan, timeout: num
 }
 
 /** pg_dump without compression: restic compresses, and deduplicates only what it can compare. */
-async function dumpDatabase(runtime: Runtime, database: string, directory: string, timeout: number): Promise<void> {
+export async function dumpDatabase(runtime: Runtime, database: string, directory: string, timeout: number, name = `${CONTAINER}-dump`): Promise<void> {
   await checked(`pg_dump of ${database}`, runOneOff(runtime, {
-    name: `${CONTAINER}-dump`,
+    name,
     image: PLATFORM_IMAGES.postgres,
     cmd: [
       "sh", "-c",
@@ -310,6 +319,9 @@ export async function runMaintenance(runtime: Runtime, plan: BackupPlan, log: (m
 }
 
 const RESTORE_CONTAINER = "bivouac-restore-test";
+/** The one-off containers of a restore of one app (restore.ts). */
+export const RESTORE_APP_CONTAINERS = ["bivouac-restore-app", "bivouac-restore-app-dump", "bivouac-restore-app-load", "bivouac-restore-app-files"];
+const RESTORE_STUCK_AFTER = 3 * HOUR;
 const USER_TABLES = "SELECT count(*) AS count FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
 const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
 /** A restore needs room for the dumps and for the database rebuilt from them. */
@@ -492,8 +504,12 @@ export class BackupScheduler {
 
   tick(): void {
     if (this.running || !this.plan || !isDue(this.state, this.now())) return;
+    const { stateDir } = this.options.runtime;
+    // A restore in progress: the backup waits for a later pass.
+    if (acquireLock(stateDir, { job: "backup", startedAt: this.now() })) return;
     const plan = this.plan;
     this.running = this.attempt(plan).finally(() => {
+      releaseLock(stateDir);
       this.running = undefined;
     });
   }
@@ -505,8 +521,12 @@ export class BackupScheduler {
   /** While it runs, a backup is neither good nor bad. */
   observation(): Observation {
     if (this.running) return { incidents: [], checked: [] };
+    const lock = readLock(this.options.runtime.stateDir);
+    const stuck = lock?.job === "restore" && this.now() - lock.startedAt > RESTORE_STUCK_AFTER;
     return {
       incidents: [
+        // While it holds the lock, no backup can run: it must not go unnoticed.
+        ...(stuck ? [{ key: "backup:restore-app" as const, message: `The restore of ${lock.app ?? "an app"} has been running for over 3 hours, and no backup runs meanwhile` }] : []),
         ...(this.state.lastError ? [{ key: "backup:nightly" as const, message: `The backup failed: ${this.state.lastError}` }] : []),
         ...(this.state.maintenanceError ? [{ key: "backup:retention" as const, message: `Cleaning up old backups failed: ${this.state.maintenanceError}` }] : []),
         ...(this.state.restoreError ? [{ key: "backup:restore" as const, message: `The restore test failed: ${this.state.restoreError}` }] : []),
@@ -521,10 +541,12 @@ export class BackupScheduler {
    */
   private async removeLeftovers(): Promise<void> {
     const { runtime } = this.options;
-    for (const name of [CONTAINER, `${CONTAINER}-dump`, RESTORE_CONTAINER]) {
+    const stale = clearStaleLock(runtime.stateDir);
+    if (stale?.job === "restore") this.options.log("a restore was interrupted: its app stays stopped until it is restored again", { app: stale.app });
+    for (const name of [CONTAINER, `${CONTAINER}-dump`, RESTORE_CONTAINER, ...RESTORE_APP_CONTAINERS]) {
       await runtime.docker.removeContainer(name, { anonymousVolumes: true });
     }
-    for (const leftover of ["dumps", "restore-test"]) rmSync(join(runtime.stateDir, "backup", leftover), { recursive: true, force: true });
+    for (const leftover of ["dumps", "restore-test", "restore-app"]) rmSync(join(runtime.stateDir, "backup", leftover), { recursive: true, force: true });
   }
 
   private async attempt(plan: BackupPlan): Promise<void> {

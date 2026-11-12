@@ -600,3 +600,69 @@ Done by Claude in the session of the quarterly reminder (D44, D81). Apps are lef
 5. Look harder at apps in `public` or `local` mode: they are open to strangers.
 6. Report to the owner in plain language, one line per app: nothing to do, or what to fix, why, and the risk. Fix only what is left after step 4.
 
+
+## 14. Restoring one app's data (consent)
+
+Built with D90. Brings **one** app's database and volumes back to a nightly
+copy, without touching the other apps, Pocket ID or the reconciler's passes.
+Run on the server by the reconciler itself, through `docker exec` (the
+`restore-app` command of `main.js`):
+
+```bash
+r=(docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-app)
+"${r[@]}" <app> --list                                # the copies (UTC times)
+"${r[@]}" <app>                                       # what it would do; changes nothing
+"${r[@]}" <app> --before 2026-11-11 --yes             # latest nightly copy at or before that day (UTC)
+"${r[@]}" <app> --snapshot <id> --yes                 # a copy named by --list
+"${r[@]}" <app> --only database --yes                 # or --only files
+```
+
+Without `--yes`, nothing is changed. It is a data operation: the owner's
+consent first, saying which copy and what will be lost.
+
+**What it does, in order** (each step only if the previous one worked):
+
+1. Takes the lock shared with the nightly backup: one of them at a time. It
+   refuses while a backup runs, and the backup waits for it.
+2. Stops the app. Passes leave it alone while the lock names it.
+3. **Safety copy**: the app's current dump and volumes are sent to restic,
+   tagged `pre-restore` and `app:<app>`. If it fails, nothing was changed.
+4. Database: the dump is loaded into `bivouac_restoring_<db>` **as the app's
+   own role** (never as superuser: D75), then swapped with the live one in one
+   transaction. The replaced one is kept as `bivouac_r<YYMMDDhhmm>_<db>` (UTC).
+5. Volumes: brought back in place (`restic restore --delete`, limited to that
+   volume): files the copy does not have are removed, others rewritten only
+   where they differ, owners kept.
+6. Starts the app again and waits for its health check. The log ends with
+   `restore done` and the command that undoes it.
+
+**Data written since the copy** is no longer in the app, but is not lost: it
+is in the safety copy and in the kept database. To put a few of those rows or
+files back by hand, read them from there. To undo the whole restore:
+`restore-app <app> --snapshot <safety copy> --yes`.
+
+**Real cases:**
+
+- **Things deleted by mistake yesterday**: `--before` the day before, or the
+  copy from `--list` taken before the mistake. What was added since is no
+  longer in the app (see above).
+- **An update damaged the database**: first put the previous image back in
+  `apps/<app>.yml` and wait for its deployment, otherwise the damaging
+  version starts again on the restored data. Then `--only database`, with the
+  last copy taken before the update. Migrations being additive (D21), the old
+  image runs on the old database.
+- **The volume disappeared**: the reconciler recreates it empty on its next
+  pass. Then `--only files` with the latest copy, or both parts from the same
+  copy if the database must match the files exactly.
+
+**If it stops halfway** (error past step 3, or the reconciler restarted
+during it): the app stays stopped and is reported as failed, with "a restore
+of its data was interrupted", until a restore of it completes. Run the same
+command again, or restore the safety copy named in the error.
+
+**Afterwards**: the kept database (`bivouac_r…`) is not backed up and stays
+until the owner asks to drop it (`DROP DATABASE`, consent). `pre-restore`
+copies are never removed by the weekly clean-up (only `nightly` and
+`incomplete` ones are); remove them by hand when no longer wanted, with
+consent. The restore uses up to the dump's size again on disk; check `df`
+first for a large database.

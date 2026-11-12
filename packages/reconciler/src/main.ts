@@ -3,7 +3,11 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Watch, loadAlertCredentials, sendPushover } from "./alerts.js";
-import { BackupScheduler, runBackup, runMaintenance, runRestoreTest } from "./backup.js";
+import { loadInstance } from "@bivouac/manifest";
+import { BackupScheduler, backupPlan, runBackup, runMaintenance, runRestoreTest } from "./backup.js";
+import { appBeingRestored } from "./lock.js";
+import { parseRestoreArgs, restoreApp } from "./restore.js";
+import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
 import { checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
 import { Docker } from "./docker.js";
@@ -45,6 +49,10 @@ import { SelfUpdater } from "./self-update.js";
  *
  * `main.js once [--backup] [--maintenance] [--restore]` also runs these jobs
  * after the pass (tests).
+ *
+ * `main.js restore-app <app> [options]` restores one app's data from a
+ * backup (restore.ts, runbook section 14), beside the running reconciler:
+ * `docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-app …`.
  *
  * `main.js selftest` only checks that the image runs and finds its tools
  * (git, ssh, sops): a new version passes it before the reconciler moves to
@@ -156,6 +164,24 @@ async function main(argv: string[]): Promise<number> {
       })
     : undefined;
 
+  if (argv[0] === "restore-app") {
+    try {
+      const options = parseRestoreArgs(argv.slice(1));
+      // The checkout as the running reconciler last applied it: syncing it
+      // here would race with its passes.
+      const instance = loadInstance(config.checkout);
+      if (!instance.platform) throw new Error("the instance repo checkout cannot be read");
+      const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
+      const plan = backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
+      if (!plan) throw new Error("backups are not configured on this platform");
+      await restoreApp({ runtime: config.runtime, plan, secrets, apps: instance.apps, log }, options);
+      return 0;
+    } catch (error) {
+      log("restore failed", { error: (error as Error).message });
+      return 1;
+    }
+  }
+
   if (argv[0] === "once") {
     try {
       const result = await runPass(config, config.runtime, selfUpdater);
@@ -193,10 +219,11 @@ async function main(argv: string[]): Promise<number> {
       await backups.recover();
       const result = await runPass(config, config.runtime, selfUpdater);
       report(result);
-      if (result.status === "restart" && !backups.busy) {
+      if (result.status === "restart" && !backups.busy && !appBeingRestored(config.runtime.stateDir)) {
         // systemd starts the reconciler again, on the image now named in
         // image.env (Restart=always). During a backup, this waits for a
-        // later pass, so alerts and the heartbeat carry on meanwhile.
+        // later pass, so alerts and the heartbeat carry on meanwhile. So
+        // does a restore of one app, which runs inside this container.
         process.exit(0);
       }
       if (result.status === "applied" || result.status === "unchanged") backups.update(result.backup);

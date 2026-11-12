@@ -558,6 +558,147 @@ describe("j. an app cannot use its database against the superuser", () => {
   });
 });
 
+describe("k. restoring one app's data (runbook section 14)", () => {
+  const RESTIC = PLATFORM_IMAGES.restic;
+  const repository = () => `${platform.state}/restic-repo`;
+  const env = () => ({ BIVOUAC_BACKUP_REPOSITORY: repository() });
+  const restore = (...args: string[]) => runOnce(platform, { command: "restore-app", args, env: env() });
+  const restic = (...args: string[]) =>
+    docker("run", "--rm", "--env", `RESTIC_PASSWORD=${RESTIC_PASSWORD}`, "--env", "RESTIC_REPOSITORY=/repo", "--volume", `${repository()}:/repo`, RESTIC, ...args);
+  const owner = (sql: string) => psql("recettes", derive(platform.masterSecret, "db:recettes"), "recettes", sql);
+  const superuser = (database: string, sql: string) => psql("postgres", derive(platform.masterSecret, "postgres:superuser"), database, sql);
+  // Qualified: section j left this database with a hostile search_path.
+  const titles = () => {
+    const result = owner("SELECT title FROM public.books ORDER BY title");
+    return result.stdout.trim() || result.stderr.trim();
+  };
+  const inVolume = (volume: string, script: string) =>
+    run("docker", ["run", "--rm", "--volume", `${volume}:/v`, "alpine:3.24", "sh", "-c", script]).stdout.trim();
+  const uploads = (script: string) => inVolume("bivouac-app-recettes_uploads", script);
+  const biblioData = (script: string) => inVolume("bivouac-app-biblio_data", script);
+  const startedAt = (name: string) => inspect<{ State: { StartedAt: string } }>(name).State.StartedAt;
+  const messages = (pass: PassOutput) => pass.logs.map((line) => line.message);
+  const pocketIdUsers = () => superuser("bivouac_pocket_id", "SELECT count(*) FROM public.users").stdout.trim();
+  let biblioStarted = "";
+  let users = "";
+  let safety = "";
+
+  beforeAll(() => {
+    expect(owner("CREATE TABLE public.books(title text); INSERT INTO public.books VALUES ('kept')").stderr).toBe("");
+    uploads("echo v1 > /v/book.epub && chown 1000:1000 /v/book.epub");
+    expect(runOnce(platform, { args: ["--backup"], env: env() }).status).toBe(0);
+    // The accident, after the copy: a row and a file lost, others written since.
+    owner("DELETE FROM public.books; INSERT INTO public.books VALUES ('written since')");
+    uploads("rm /v/book.epub && echo since > /v/new.txt");
+    biblioData("echo changed-after-the-copy > /v/other.txt");
+    biblioStarted = startedAt("bivouac-app-biblio");
+    users = pocketIdUsers();
+  });
+
+  it("without --yes, says what it would do and changes nothing", () => {
+    const pass = restore("recettes");
+    expect(pass.status).toBe(0);
+    expect(messages(pass)).toEqual(expect.arrayContaining(["restore plan", "nothing changed: add --yes to restore"]));
+    expect(titles()).toBe("written since");
+    expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
+  });
+
+  it("lists the copies", () => {
+    const pass = restore("recettes", "--list");
+    expect(pass.status).toBe(0);
+    expect(pass.logs.filter((line) => line.message === "copy").length).toBeGreaterThan(0);
+  });
+
+  it("refuses while a backup holds the lock, and changes nothing", () => {
+    writeStateFile(platform, "backup/lock.json", JSON.stringify({ job: "backup", startedAt: Date.now() }));
+    const pass = restore("recettes", "--yes");
+    removeStateFile(platform, "backup/lock.json");
+    expect(pass.status).toBe(1);
+    expect(JSON.stringify(pass.logs)).toContain("a backup is running");
+    expect(titles()).toBe("written since");
+  });
+
+  it("brings the database and the volume back to the latest copy", () => {
+    const pass = restore("recettes", "--yes");
+    // The whole log on purpose: when this fails, it is the only trace of why.
+    expect(JSON.stringify(pass.logs)).toContain("restore done");
+    expect(pass.status).toBe(0);
+    expect(titles()).toBe("kept");
+    expect(uploads("cat /v/book.epub; stat -c %u:%g /v/book.epub; ls /v")).toBe("v1\n1000:1000\nbook.epub\nkept.txt");
+    expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
+    safety = String((pass.logs.find((line) => line.message === "safety copy sent") as { copy?: string } | undefined)?.copy ?? "");
+    expect(safety).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("restores it owned by the app's role, closed to others, with its extensions", () => {
+    expect(superuser("postgres", "SELECT pg_get_userbyid(datdba), has_database_privilege('public', 'recettes', 'CONNECT') FROM pg_database WHERE datname = 'recettes'").stdout.trim()).toBe("recettes|f");
+    expect(owner("SELECT extname FROM pg_extension WHERE extname = 'postgis'").stdout.trim()).toBe("postgis");
+  });
+
+  it("keeps what was there: the replaced database, and a safety copy", () => {
+    const previous = superuser("postgres", "SELECT datname FROM pg_database WHERE datname LIKE 'bivouac_r%_recettes'").stdout.trim();
+    expect(previous).toMatch(/^bivouac_r\d{10}_recettes$/);
+    expect(superuser(previous, "SELECT title FROM public.books").stdout.trim()).toBe("written since");
+    const copies = JSON.parse(restic("snapshots", "--tag", "pre-restore", "--json")) as { short_id: string; tags: string[] }[];
+    expect(copies.map((copy) => copy.short_id)).toContain(safety);
+    expect(copies.find((copy) => copy.short_id === safety)?.tags).toContain("app:recettes");
+    const listing = restic("ls", safety);
+    expect(listing).toContain("/source/volumes/bivouac-app-recettes_uploads/new.txt");
+    expect(listing).toContain("/source/dumps/recettes.dump");
+    expect(listing).not.toContain("biblio");
+  });
+
+  it("leaves the other apps and Pocket ID alone", () => {
+    expect(biblioData("cat /v/other.txt")).toBe("changed-after-the-copy");
+    expect(startedAt("bivouac-app-biblio")).toBe(biblioStarted);
+    expect(pocketIdUsers()).toBe(users);
+  });
+
+  it("leaves no container, file or lock behind", () => {
+    expect(docker("ps", "--all", "--quiet", "--filter", "name=^bivouac-restore-app")).toBe("");
+    expect(readStateFile(platform, "backup/lock.json")).toBeUndefined();
+    expect(readStateFile(platform, "backup/restore-app/source/dumps/recettes.dump")).toBeUndefined();
+  });
+
+  it("can be undone with its safety copy", () => {
+    const pass = restore("recettes", "--snapshot", safety, "--yes");
+    expect(JSON.stringify(pass.logs)).toContain("restore done");
+    expect(titles()).toBe("written since");
+    expect(uploads("ls /v")).toBe("kept.txt\nnew.txt");
+  });
+
+  it("brings back a volume that disappeared, without touching the database", () => {
+    docker("rm", "--force", "bivouac-app-recettes");
+    docker("volume", "rm", "bivouac-app-recettes_uploads");
+    expect(runOnce(platform).status).toBe(0);
+    expect(uploads("ls /v")).toBe("");
+    const pass = restore("recettes", "--only", "files", "--yes");
+    expect(JSON.stringify(pass.logs)).toContain("restore done");
+    expect(uploads("ls /v")).toBe("book.epub\nkept.txt");
+    expect(titles()).toBe("written since");
+  });
+
+  it("a pass leaves an app being restored alone", () => {
+    writeStateFile(platform, "backup/lock.json", JSON.stringify({ job: "restore", app: "recettes", startedAt: Date.now() }));
+    docker("stop", "bivouac-app-recettes");
+    const pass = runOnce(platform);
+    removeStateFile(platform, "backup/lock.json");
+    expect(pass.status).toBe(0);
+    expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(false);
+    docker("start", "bivouac-app-recettes");
+  });
+
+  it("keeps an app whose restore was interrupted stopped and reported, until a restore completes", () => {
+    writeStateFile(platform, "backup/restore-interrupted.json", JSON.stringify({ job: "restore", app: "recettes", startedAt: Date.now() }));
+    const pass = runOnce(platform);
+    expect(pass.status).toBe(1);
+    expect(JSON.stringify(pass.logs)).toContain("a restore of its data was interrupted");
+    expect(restore("recettes", "--yes").status).toBe(0);
+    expect(readStateFile(platform, "backup/restore-interrupted.json")).toBeUndefined();
+    expect(runOnce(platform).status).toBe(0);
+  });
+});
+
 describe("z. turning an app's MCP off (D85)", () => {
   it("removes Claude's client and its API, and the app's MCP_RESOURCE", () => {
     platform.commit({ "apps/recettes.yml": RECETTES.replace("mcp: true\n", "") }, "recettes without MCP");

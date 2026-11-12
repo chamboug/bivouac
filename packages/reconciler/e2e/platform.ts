@@ -209,16 +209,19 @@ export interface PassOutput {
   logs: { message: string; [key: string]: unknown }[];
 }
 
-/** Runs one reconciler pass (`main.js once`) and returns its exit code and logs. */
+/**
+ * Runs one reconciler pass (`main.js once`), or another command of
+ * main.js, and returns its exit code and logs.
+ */
 export function runOnce(
   platform: Platform,
-  options: { ageKey?: string; ports?: string; env?: Record<string, string>; args?: string[] } = {},
+  options: { ageKey?: string; ports?: string; env?: Record<string, string>; args?: string[]; command?: string } = {},
 ): PassOutput {
   const result = run("docker", [
     "run", "--rm",
     ...reconcilerOptions(platform, options.ageKey ?? platform.ageKey, options.ports ?? ""),
     ...Object.entries(options.env ?? {}).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
-    RECONCILER_IMAGE, "node", "packages/reconciler/dist/main.js", "once", ...(options.args ?? []),
+    RECONCILER_IMAGE, "node", "packages/reconciler/dist/main.js", options.command ?? "once", ...(options.args ?? []),
   ]);
   const logs = result.stdout
     .split("\n")

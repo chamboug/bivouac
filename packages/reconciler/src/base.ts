@@ -94,6 +94,16 @@ function mailPassword(secrets: PlatformSecrets): string {
  * The networks, Postgres and Pocket ID, each healthy before the next one
  * starts. Caddy comes last, once the apps' routes are known (see pass.ts).
  */
+/** The reconciler reaches Postgres, Pocket ID and the apps by name, on both platform networks. */
+export async function joinPlatformNetworks(runtime: Runtime): Promise<void> {
+  if (!runtime.self) return;
+  const self = await runtime.docker.inspectContainer(runtime.self);
+  if (!self) throw new Error(`the reconciler's own container '${runtime.self}' does not exist`);
+  for (const network of Object.values(PLATFORM_NETWORKS)) {
+    if (!self.NetworkSettings.Networks[network.name]) await runtime.docker.connectNetwork(network.name, runtime.self);
+  }
+}
+
 export async function ensureBase(
   runtime: Runtime,
   secrets: PlatformSecrets,
@@ -108,14 +118,8 @@ export async function ensureBase(
       await docker.createNetwork(network.name, network, { [MANAGED_LABEL]: "true" });
       changes.push(`network ${network.name}`);
     }
-    if (runtime.self) {
-      const self = await docker.inspectContainer(runtime.self);
-      if (!self) throw new Error(`the reconciler's own container '${runtime.self}' does not exist`);
-      if (!self.NetworkSettings.Networks[network.name]) {
-        await docker.connectNetwork(network.name, runtime.self);
-      }
-    }
   }
+  await joinPlatformNetworks(runtime);
 
   const server = postgresServer(secrets);
   const postgresSecrets = join(runtime.stateDir, "secrets", "postgres");

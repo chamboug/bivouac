@@ -1,6 +1,7 @@
 import { AUTH_SUBDOMAIN, PLATFORM_NETWORKS, appContainerName, envReferences, type AppManifest } from "@bivouac/manifest";
 import type { Runtime } from "./base.js";
 import { ensureContainer, waitFor } from "./containers.js";
+import { appBeingRestored, interruptedRestore } from "./lock.js";
 import { PocketId } from "./pocket-id.js";
 import { connectionString, databaseName, ensureDatabase, type PostgresServer } from "./postgres.js";
 import { deriveSecret, registryLogin, type PlatformSecrets } from "./secrets.js";
@@ -38,6 +39,11 @@ export async function ensureApp(context: AppContext, app: AppManifest): Promise<
   const changes: string[] = [];
   const { runtime } = context;
   if (runtime.pausedApps.has(app.name)) return { name: app.name, routed: true, changes };
+  // Stopped on purpose by a restore of its data (restore.ts): left alone meanwhile.
+  if (appBeingRestored(runtime.stateDir) === app.name) return { name: app.name, routed: true, changes };
+  if (interruptedRestore(runtime.stateDir) === app.name) {
+    return { name: app.name, routed: false, changes, failure: "a restore of its data was interrupted: it stays stopped until it is restored again (runbook section 14)" };
+  }
   const values = await appValues(context, app, changes);
   const container = appContainerName(app.name);
 
@@ -166,7 +172,7 @@ export function appEnvironment(app: AppManifest, values: Record<string, string>)
  * image needs no `curl` inside. Any 2xx answer is healthy. An app with
  * `health: false` only has to stay running.
  */
-async function checkHealth(container: string, app: AppManifest): Promise<true | string> {
+export async function checkHealth(container: string, app: AppManifest): Promise<true | string> {
   if (app.health === false) return true;
   try {
     // No redirects: an app must not send the reconciler elsewhere.
