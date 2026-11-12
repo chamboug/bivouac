@@ -296,7 +296,7 @@ Until the prod phase, the server itself is the platform's dev environment; apps 
 
 Moving to the prod phase (rule 2) requires having:
 
-**Urgent since real data arrived (D89)**: the full `bivy rebuild --test`, a written procedure to restore one app's database and volume without touching the others, and the backup region (D73).
+**Urgent since real data arrived (D89)**: the full `bivy rebuild --test`, and the backup region (D73). Restoring one app's database and volume without touching the others: built and written (D90, runbook section 14), tested end to end on the miniature platform; still to deploy and try on the server with a test app.
 
 - completed a full **`bivy rebuild --test`** (D39);
 - decided on the **email login code** (D37);
@@ -353,4 +353,5 @@ Built in layers (D44): each layer is useful on its own, so if the project stalls
 - **Layer 3 (safety net)**, as of 8 November 2026 (D73-D77). A, secrets and bucket: done. B, alerts and heartbeat: built. C, nightly backup: built, real copies at B2. D, weekly retention: built, ran on B2. E, weekly restore test: built, ran from B2. F, rule 6 review of code and real server: done, its fixes deployed. G, each case of D45 received on the owner's phone: done 9 November (D82). **Layer 3 is done.**
 - **Layer 4 (first real app)**, as of 9 November 2026 (D79). Nuxt template: built in `app-template/`, shared layers in `app-layers/` (D80), rule 6 reviews done and their fixes applied. **To remind the owner when the first real app starts**: first a tag ruleset on `app-layers-v*` (Restrict updates and deletions, not creations), then install https://github.com/apps/renovate with "Only select repositories" and only the app's repo, never "All repositories" (other repos could get onboarding PRs); one click per new app afterwards (D81). Deployment PRs merge by themselves when they only change an app's image and its shared layers did not change (D86, 11 Nov. 2026).
 - **Real data since 11 November 2026** (D89): two apps hold data the owner keeps. Interim phase (rule 2): the server is no longer disposable.
+- **Restoring one app** (D90, 12 November 2026): `restore-app` in the reconciler, runbook section 14, 12 end-to-end tests, rule 6 review done and its fixes applied. Not yet deployed: next, deploy it, rehearse it on the server with a test app, then settle the backup region.
 - **Before the prod phase, from step 6's security reviews** (D64): anyone who can push to the instance repo's `main` is root on the server (the `bivouac-deploy` PAT sits in every app repo): restrict it (branch protection or rulesets if available on the plan, otherwise another deployment path); pin the reconciler image by digest; ~~a rescue procedure for a lockout~~ (done 8 Nov. 2026); an automatic fallback when a new reconciler version crashes after its self-test (D61).
