@@ -8,7 +8,8 @@ import { CaddyError, validateCaddyfile } from "./caddy.js";
 import { EXAMPLE_IPV6, IPV6_PLACEHOLDER, IgnitionError, buildButane, compileButane } from "./ignition.js";
 import { GitHub, repositoryPath } from "./github.js";
 import { Hetzner } from "./hetzner.js";
-import { RebuildError, WaitingForOwner, cleanup, curlProbe, ignitionFor, instanceIdentity, rebuildTest } from "./rebuild.js";
+import { newHostKey } from "./hostkey.js";
+import { RebuildError, cleanup, curlProbe, ignitionFor, instanceIdentity, rebuildTest } from "./rebuild.js";
 import { SshRemote, scanHostKey } from "./remote.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
@@ -20,7 +21,6 @@ Commands:
 
   rebuild --test [dir]        rebuild a temporary copy of the platform from the
                               latest nightly copy, check it, then delete it (D91)
-      --host-key SHA256:…     the fingerprint read in the server's console
       --keep                  leave the test server running after the checks
       --cleanup               delete what a test created (only that)
       --location, --server-type   where the test server goes (default: cx23
@@ -41,7 +41,6 @@ async function main(argv: string[]): Promise<number> {
       ipv6: { type: "string" },
       help: { type: "boolean", short: "h" },
       test: { type: "boolean" },
-      "host-key": { type: "string" },
       keep: { type: "boolean" },
       cleanup: { type: "boolean" },
       location: { type: "string" },
@@ -177,6 +176,7 @@ the test's deploy key goes with it.`);
     },
     remote: (host: string) => new SshRemote(host, identity, knownHosts),
     scanHostKey,
+    newHostKey: () => newHostKey(),
     publicIpv4: async () => {
       const response = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(10_000) });
       if (!response.ok) throw new RebuildError(`api.ipify.org answered HTTP ${response.status}: cannot tell this Mac's IPv4`);
@@ -194,7 +194,7 @@ the test's deploy key goes with it.`);
   };
   try {
     if (!values.cleanup) {
-      const state = await rebuildTest(deps, { root, keep: values.keep === true, hostKey: text("host-key"), location: text("location"), serverType: text("server-type") });
+      const state = await rebuildTest(deps, { root, keep: values.keep === true, location: text("location"), serverType: text("server-type") });
       const minutes = Math.round((Date.now() - Date.parse(state.startedAt)) / 60_000);
       console.log(`\n✓ The platform came back on the test server, ${minutes} minutes after the start. Steps (seconds): ${JSON.stringify(state.timings)}`);
       if (values.keep) {
@@ -211,10 +211,6 @@ the test's deploy key goes with it.`);
   (Settings → Developer settings → Fine-grained tokens), then: rm ${githubTokenPath}`);
     return 0;
   } catch (error) {
-    if (error instanceof WaitingForOwner) {
-      console.log(error.message);
-      return 2;
-    }
     console.error(`✗ ${(error as Error).message}`);
     if (!values.cleanup && existsSync(config("rebuild-test.json"))) {
       // The test server may hold the age key and a full copy of the data.

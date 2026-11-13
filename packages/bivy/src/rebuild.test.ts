@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { appManifestSchema } from "@bivouac/manifest";
 import { GitHub } from "./github.js";
 import { Hetzner } from "./hetzner.js";
-import { RebuildError, TEST_LABEL, WaitingForOwner, cleanup, instanceIdentity, newestFlatcar, rebuildTest, testFirewallRules, type RebuildDependencies } from "./rebuild.js";
+import { HOST_KEY_PATH, secretsIn } from "./hostkey.js";
+import { RebuildError, TEST_LABEL, cleanup, instanceIdentity, newestFlatcar, rebuildTest, testFirewallRules, type RebuildDependencies } from "./rebuild.js";
 import type { CommandOutput, Remote } from "./remote.js";
 
 type Json = Record<string, unknown>;
@@ -120,10 +122,21 @@ class FakeServer implements Remote {
   commands: string[] = [];
   inputs: string[] = [];
   restored = false;
+  /** The host key sshd presents: the provisional one until the swap. */
+  presented = PROVISIONAL.publicKey;
+  /** The key the client's known_hosts file holds at each command. */
+  knownHosts = () => "";
   run(command: string, options: { input?: string | Buffer } = {}): CommandOutput {
+    // ssh refuses a server whose key is not the one known: nothing runs.
+    if (!this.knownHosts().includes(this.presented.split(" ").slice(0, 2).join(" "))) return { status: 255, stdout: "", stderr: "Host key verification failed." };
     this.commands.push(command);
     if (options.input) this.inputs.push(String(options.input));
     const ok = (stdout: string) => ({ status: 0, stdout, stderr: "" });
+    if (command.includes(`ssh-keygen -q -t ed25519 -N '' -C bivouac-server -f ${HOST_KEY_PATH}.new`)) return ok(`${OWN_KEY}\n`);
+    if (command.includes(`mv -f ${HOST_KEY_PATH}.new ${HOST_KEY_PATH}`)) {
+      this.presented = OWN_KEY;
+      return ok("");
+    }
     if (command === "sudo test -e /etc/bivouac/age.key") return { status: 1, stdout: "", stderr: "" };
     if (command.startsWith("grep -E")) return ok("ID=flatcar\nVERSION=4757.2.3\nbivouac-dir\nactive\nmetadata-block\n");
     if (command === "sudo cat /etc/bivouac/rebuild.json") return ok('{"mode":"test"}\n');
@@ -145,6 +158,8 @@ class FakeServer implements Remote {
 }
 
 const AGE_KEY = Buffer.from("AGE-SECRET-KEY-1TESTONLY\n");
+const PROVISIONAL = { privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nprovisional\n-----END OPENSSH PRIVATE KEY-----\n", publicKey: "ssh-ed25519 AAAAprovisional bivouac-provisional" };
+const OWN_KEY = "ssh-ed25519 AAAAown bivouac-server";
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
@@ -154,6 +169,8 @@ function setup(overrides: Partial<RebuildDependencies> = {}) {
   const hetzner = new FakeHetzner();
   const github = new FakeGitHub();
   const server = new FakeServer();
+  const knownHosts = join(dir, "known_hosts-rebuild-test");
+  server.knownHosts = () => { try { return readFileSync(knownHosts, "utf8"); } catch { return ""; } };
   const logs: string[] = [];
   let userData = "";
   const jwks = JSON.stringify({ keys: [{ kid: "k1", n: "abc" }] });
@@ -166,7 +183,8 @@ function setup(overrides: Partial<RebuildDependencies> = {}) {
     hetzner: new Hetzner("token", hetzner.fetch, async () => {}),
     github: () => new GitHub("token", "example/bivouac-platform", github.fetch),
     remote: () => server,
-    scanHostKey: () => ({ line: "198.51.100.7 ssh-ed25519 AAAAhost", fingerprint: "SHA256:right" }),
+    scanHostKey: () => ({ line: `198.51.100.7 ${server.presented.split(" ").slice(0, 2).join(" ")}`, fingerprint: "SHA256:any" }),
+    newHostKey: () => PROVISIONAL,
     publicIpv4: async () => "192.0.2.44",
     ignition: (ipv6) => {
       userData = `{"ignition":{},"ipv6":"${ipv6}"}`;
@@ -176,7 +194,7 @@ function setup(overrides: Partial<RebuildDependencies> = {}) {
     probe: (_host, _address, path) => ({ status: 200, body: path.includes("jwks") ? jwks : "ok" }),
     probeReal: () => ({ status: 200, body: jwks }),
     stateFile: join(dir, "rebuild-test.json"),
-    knownHosts: join(dir, "known_hosts-rebuild-test"),
+    knownHosts,
     log: (message) => logs.push(message),
     sleep: async () => {},
     now: () => Date.parse("2026-11-14T09:00:00Z"),
@@ -187,39 +205,113 @@ function setup(overrides: Partial<RebuildDependencies> = {}) {
 
 const options = { root: "/unused", keep: false };
 
+/** The fake server reports the hash of the age key it was sent. */
+function ageKeyArrives(server: FakeServer): void {
+  const hash = createHash("sha256").update(AGE_KEY).digest("hex");
+  const original = server.run.bind(server);
+  server.run = (command, runOptions) => {
+    const result = original(command, runOptions);
+    return result.status === 0 && command.includes("sha256sum") ? { status: 0, stdout: `${hash}  /etc/bivouac/age.key\n`, stderr: "" } : result;
+  };
+}
+
 describe("bivy rebuild --test (D91)", () => {
-  it("creates a labelled server, open to this Mac only, then waits for the owner to check its host key", async () => {
-    const { deps, hetzner, server, userData } = setup();
-    await expect(rebuildTest(deps, options)).rejects.toThrow(WaitingForOwner);
+  it("creates a labelled server, open to this Mac only, with a provisional host key as the only secret of its user-data", async () => {
+    const { deps, hetzner } = setup();
+    // The fake server reports another age key: the run stops there.
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/differs/);
     const firewall = hetzner.firewalls.find((entry) => (entry.labels as Json)[TEST_LABEL]);
     expect(firewall?.rules).toEqual(testFirewallRules("192.0.2.44"));
     expect(JSON.stringify(firewall?.rules)).not.toContain("0.0.0.0/0");
     const created = hetzner.servers.find((entry) => (entry.labels as Json)[TEST_LABEL]);
     expect(created).toMatchObject({ server_type: { name: "cx23" } });
+    const userData = String(created?.user_data);
     // The test server's own IPv6, never the real server's.
-    expect(userData()).toContain("2001:db8:99::1/64");
+    expect(userData).toContain("2001:db8:99::1/64");
+    expect(secretsIn(userData)).toEqual([HOST_KEY_PATH]);
+    expect(userData).not.toContain("AGE-SECRET-KEY");
     expect(hetzner.ips.filter((ip) => (ip.labels as Json)[TEST_LABEL])).toHaveLength(2);
-    // Nothing secret went anywhere, and no protection was ever touched.
-    expect(server.commands).toEqual([]);
+    // No protection was ever touched; the state file holds no private key.
     expect(hetzner.calls.some((call) => call.includes("change_protection") || call.includes("/actions/rebuild"))).toBe(false);
-    expect(readFileSync(deps.stateFile, "utf8")).not.toContain("not-for-anyone");
+    const state = readFileSync(deps.stateFile, "utf8");
+    expect(state).not.toContain("not-for-anyone");
+    expect(state).not.toContain("PRIVATE KEY");
   });
 
-  it("sends nothing when the host key given is not the one seen", async () => {
+  it("replaces the provisional host key before anything else is sent", async () => {
     const { deps, server } = setup();
-    await expect(rebuildTest(deps, options)).rejects.toThrow(WaitingForOwner);
-    await expect(rebuildTest(deps, { ...options, hostKey: "SHA256:wrong" })).rejects.toThrow(/does not match/);
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/differs/);
+    const swap = server.commands.findIndex((command) => command.includes(`mv -f ${HOST_KEY_PATH}.new ${HOST_KEY_PATH}`));
+    expect(swap).toBe(1);
+    expect(server.commands[0]).toContain("ssh-keygen");
+    // From then on, only the server's own key is known.
+    expect(readFileSync(deps.knownHosts, "utf8")).toBe("198.51.100.7,2001:db8:99::1 ssh-ed25519 AAAAown\n");
+    expect(server.inputs.slice(0, 1)).toEqual(['{"mode":"test"}\n']);
+  });
+
+  it("sends nothing to a server that does not present the provisional host key", async () => {
+    const { deps, server } = setup();
+    server.presented = "ssh-ed25519 AAAAsomeoneelse x";
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/does not present the host key/);
+    expect(server.commands).toEqual([]);
+    expect(server.inputs).toEqual([]);
+  });
+
+  it("sends nothing when the verified connection fails, even if the scan saw the right key", async () => {
+    const { deps, server } = setup({ scanHostKey: () => ({ line: "198.51.100.7 ssh-ed25519 AAAAprovisional", fingerprint: "SHA256:any" }) });
+    server.presented = "ssh-ed25519 AAAAimpostor x";
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/making the server's own host key failed/);
     expect(server.commands).toEqual([]);
   });
 
-  it("places the marker before the deploy key and the age key, then restores and checks", async () => {
+  it("carries on after an interruption right after the swap", async () => {
+    const { deps, server } = setup();
+    ageKeyArrives(server);
+    const original = server.run.bind(server);
+    let interrupted = false;
+    server.run = (command, runOptions) => {
+      const result = original(command, runOptions);
+      if (!interrupted && command.includes(`mv -f ${HOST_KEY_PATH}.new`)) {
+        interrupted = true;
+        throw new Error("connection lost");
+      }
+      return result;
+    };
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/connection lost/);
+    const state = await rebuildTest(deps, options);
+    expect(state.hostKey).toBe("ssh-ed25519 AAAAown");
+    expect(server.commands.filter((command) => command.includes("ssh-keygen -q -t ed25519 -N '' -C bivouac-server"))).toHaveLength(1);
+    expect(state.done).toContain("checks against the real platform");
+  });
+
+  it("never falls back to the provisional key once the server's own key is recorded", async () => {
+    const { deps, server } = setup();
+    const original = server.run.bind(server);
+    let interrupted = false;
+    server.run = (command, runOptions) => {
+      // Cut off between recording the new key and the swap; then someone
+      // holding the user-data answers with the provisional key.
+      if (!interrupted && command.includes(`mv -f ${HOST_KEY_PATH}.new`)) {
+        interrupted = true;
+        throw new Error("connection lost");
+      }
+      return original(command, runOptions);
+    };
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/connection lost/);
+    const sent = server.commands.length;
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/does not answer with the host key recorded/);
+    expect(server.commands.length).toBe(sent);
+    expect(readFileSync(deps.knownHosts, "utf8")).not.toContain("AAAAprovisional");
+    expect(server.inputs).toEqual([]);
+  });
+
+  it("places the marker before the deploy key and the age key", async () => {
     const { deps, server, github } = setup();
-    await expect(rebuildTest(deps, options)).rejects.toThrow(WaitingForOwner);
     // The age key's hash as the fake server reports it does not match: removed, and stopped.
-    await expect(rebuildTest(deps, { ...options, hostKey: "SHA256:right" })).rejects.toThrow(/differs/);
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/differs/);
     expect(server.commands.at(-1)).toBe("sudo rm -f /etc/bivouac/age.key");
     const marker = server.commands.findIndex((command) => command.includes("rebuild.json.tmp"));
-    const deployKey = server.commands.findIndex((command) => command.includes("ssh-keygen"));
+    const deployKey = server.commands.findIndex((command) => command.includes("deploy_key"));
     const ageKey = server.commands.findIndex((command) => command.includes("age.key.tmp"));
     expect(marker).toBeGreaterThanOrEqual(0);
     expect(marker).toBeLessThan(deployKey);
@@ -229,32 +321,23 @@ describe("bivy rebuild --test (D91)", () => {
   });
 
   it("goes through to the checks when the age key arrives intact", async () => {
-    const { createHash } = await import("node:crypto");
     const { deps, server, logs } = setup();
-    const hash = createHash("sha256").update(AGE_KEY).digest("hex");
-    const original = server.run.bind(server);
-    server.run = (command, runOptions) => command.includes("sha256sum") ? { status: 0, stdout: `${hash}  /etc/bivouac/age.key\n`, stderr: "" } : original(command, runOptions);
-    await expect(rebuildTest(deps, options)).rejects.toThrow(WaitingForOwner);
-    const state = await rebuildTest(deps, { ...options, hostKey: "SHA256:right" });
+    ageKeyArrives(server);
+    const state = await rebuildTest(deps, options);
     expect(state.done).toContain("checks against the real platform");
+    expect(logs).toContain("  the server replaced its provisional host key");
     expect(logs).toContain("  Pocket ID publishes the same signing keys as the real server");
-    expect(readFileSync(deps.knownHosts, "utf8")).toBe("198.51.100.7,2001:db8:99::1 ssh-ed25519 AAAAhost\n");
   });
 
   it("refuses a Pocket ID that does not publish the real signing keys", async () => {
-    const { createHash } = await import("node:crypto");
     const { deps, server } = setup({ probeReal: () => ({ status: 200, body: JSON.stringify({ keys: [{ kid: "other", n: "xyz" }] }) }) });
-    const hash = createHash("sha256").update(AGE_KEY).digest("hex");
-    const original = server.run.bind(server);
-    server.run = (command, runOptions) => command.includes("sha256sum") ? { status: 0, stdout: `${hash}  /etc/bivouac/age.key\n`, stderr: "" } : original(command, runOptions);
-    await expect(rebuildTest(deps, options)).rejects.toThrow(WaitingForOwner);
-    await expect(rebuildTest(deps, { ...options, hostKey: "SHA256:right" })).rejects.toThrow(/signing keys/);
+    ageKeyArrives(server);
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/signing keys/);
   });
 
   it("cleans up only what carries the test label, and never the real platform", async () => {
     const { deps, hetzner, github } = setup();
-    await expect(rebuildTest(deps, options)).rejects.toThrow(WaitingForOwner);
-    await expect(rebuildTest(deps, { ...options, hostKey: "SHA256:right" })).rejects.toThrow(RebuildError);
+    await expect(rebuildTest(deps, options)).rejects.toThrow(RebuildError);
     // A protected server wrongly labelled is still left alone.
     (hetzner.servers[0]?.labels as Json)[TEST_LABEL] = "intruder";
     const problems = await cleanup(deps, true);
@@ -268,9 +351,10 @@ describe("bivy rebuild --test (D91)", () => {
 
   it("forgets the run once everything is gone", async () => {
     const { deps } = setup();
-    await expect(rebuildTest(deps, options)).rejects.toThrow(WaitingForOwner);
+    await expect(rebuildTest(deps, options)).rejects.toThrow(RebuildError);
     expect(await cleanup(deps, true)).toEqual([]);
     expect(() => readFileSync(deps.stateFile)).toThrow();
+    expect(() => readFileSync(deps.knownHosts)).toThrow();
   });
 });
 

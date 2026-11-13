@@ -21,10 +21,20 @@ export interface Remote {
 
 export function sshOptions(identity: string, knownHosts: string): string[] {
   return [
+    // Nothing from ~/.ssh/config or the system's files (an agent forwarded,
+    // a proxy, other known hosts): only what is written here.
+    "-F", "/dev/null",
+    "-o", "ForwardAgent=no",
+    "-o", "GlobalKnownHostsFile=/dev/null",
+    "-o", "KnownHostsCommand=none",
+    "-o", "ProxyCommand=none",
     "-i", identity,
     "-o", "IdentitiesOnly=yes",
     "-o", "StrictHostKeyChecking=yes",
     "-o", `UserKnownHostsFile=${knownHosts}`,
+    // Only the key type the known_hosts file holds: the server also has RSA,
+    // ECDSA and ML-DSA host keys, which are never checked by anyone.
+    "-o", "HostKeyAlgorithms=ssh-ed25519",
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=15",
     "-o", "ServerAliveInterval=30",

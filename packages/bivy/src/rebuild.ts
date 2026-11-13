@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { AUTH_SUBDOMAIN, loadInstance, type AppManifest, type PlatformConfig, type SshKeys } from "@bivouac/manifest";
 import { GitHub, repositoryPath } from "./github.js";
 import { Hetzner, orderableTypes, type FirewallRule, type Image, type Labels } from "./hetzner.js";
+import { HOST_KEY_PATH, keyPart, withHostKey, type HostKeyPair } from "./hostkey.js";
 import { buildButane, compileButane, firstAddress } from "./ignition.js";
 import type { Remote } from "./remote.js";
 
@@ -14,11 +15,11 @@ import type { Remote } from "./remote.js";
  * destroyed. It never touches the real server, its IPs, the DNS, or the
  * backup repository other than to read.
  *
- * It runs in steps recorded in a state file, so it can stop and carry on:
- * it stops once on purpose, for the owner to compare the new server's SSH
- * host key with the one its console shows (the age key travels over that
- * connection), and an interruption is resumed, or cleaned up with
- * `--cleanup`.
+ * It runs in steps recorded in a state file, so an interruption is resumed,
+ * or cleaned up with `--cleanup`. The server's SSH host key is known in
+ * advance: `bivy` places a provisional one with the Ignition config, and the
+ * server replaces it with its own over the first, verified, connection,
+ * before anything else is sent (hostkey.ts).
  */
 
 /** Every resource a test creates carries it; only resources carrying it are ever deleted. */
@@ -42,10 +43,10 @@ export interface TestState {
   serverId?: number;
   ipv4Id?: number;
   ipv4?: string;
-  /** What ssh-keyscan saw, waiting for the owner's comparison with the console. */
-  scanned?: { line: string; fingerprint: string };
-  /** Set once the owner gave the same fingerprint. */
-  hostKeyConfirmed?: boolean;
+  /** The provisional host key placed with the Ignition config (public part only). */
+  provisionalKey?: string;
+  /** The host key the server made itself, recorded over a verified connection. */
+  hostKey?: string;
   deployKeyId?: number;
   done: string[];
   timings: Record<string, number>;
@@ -59,6 +60,8 @@ export interface RebuildDependencies {
   github: () => GitHub;
   remote: (host: string) => Remote;
   scanHostKey: (host: string) => { line: string; fingerprint: string } | undefined;
+  /** A provisional host key for the server; its private part is only ever sent as user-data. */
+  newHostKey: () => HostKeyPair;
   /** The Mac's public IPv4, the only address the test server lets in. */
   publicIpv4: () => Promise<string>;
   /** The Ignition config, for a server whose IPv6 is this address. */
@@ -80,14 +83,10 @@ export interface TestOptions {
   root: string;
   location?: string | undefined;
   serverType?: string | undefined;
-  hostKey?: string | undefined;
   keep: boolean;
 }
 
 export class RebuildError extends Error {}
-
-/** What the owner must do before the command can go on. */
-export class WaitingForOwner extends Error {}
 
 function readState(path: string): TestState | undefined {
   if (!existsSync(path)) return undefined;
@@ -254,8 +253,10 @@ async function create(deps: RebuildDependencies, state: TestState): Promise<void
       if (state.ipv4Id !== undefined) await hetzner.labelPrimaryIp(state.ipv4Id, labels);
       return;
     }
-    const userData = deps.ignition(firstAddress(state.ipv6Network));
-    if (/PRIVATE KEY|AGE-SECRET-KEY/i.test(userData)) throw new RebuildError("the Ignition config holds a private key: refusing to send it as user-data (D7)");
+    // The only secret ever sent as user-data: a host key replaced at the first connection (D91).
+    const hostKey = deps.newHostKey();
+    const userData = withHostKey(deps.ignition(firstAddress(state.ipv6Network)), hostKey);
+    state.provisionalKey = keyPart(hostKey.publicKey);
     const { server, action } = await hetzner.createServer({
       name,
       server_type: state.serverType,
@@ -278,23 +279,27 @@ async function create(deps: RebuildDependencies, state: TestState): Promise<void
   await step(deps, state, "SSH answers", async () => {
     const ipv4 = state.ipv4;
     if (!ipv4) throw new RebuildError("the server has no IPv4");
+    let seen: string | undefined;
     await waitUntil(deps, "the server's SSH", 5 * 60_000, () => {
       const scanned = deps.scanHostKey(ipv4);
-      if (scanned) state.scanned = scanned;
+      if (scanned) seen = scannedKey(scanned.line);
       return scanned !== undefined;
     });
+    // Not a proof (anyone on the path could answer), only an early, clear
+    // failure: the proof is the verified connection that follows.
+    if (seen !== state.provisionalKey) throw new RebuildError("the server does not present the host key placed with its Ignition config: nothing was sent");
   });
 }
 
-function askForHostKey(state: TestState): never {
-  throw new WaitingForOwner([
-    `The test server is up at ${state.ipv4}. Before anything secret is sent to it, compare its SSH host key:`,
-    `  seen from this Mac:  ${state.scanned?.fingerprint}`,
-    "Open the server's console in Hetzner's web console (Servers → " + `${TEST_LABEL}-${state.run}` + " → Console):",
-    "the login prompt shows `SSH host key: SHA256:… (ED25519)`. Only if both are identical, run again with",
-    `  --host-key ${state.scanned?.fingerprint}`,
-    "Otherwise run --cleanup.",
-  ].join("\n"));
+/** `<host> ssh-ed25519 AAAA…` as ssh-keyscan prints it → `ssh-ed25519 AAAA…`. */
+function scannedKey(line: string): string {
+  return keyPart(line.slice(line.indexOf(" ") + 1));
+}
+
+function writeKnownHosts(deps: RebuildDependencies, state: TestState, key: string): void {
+  const address = firstAddress(state.ipv6Network as string).replace(/\/64$/, "");
+  mkdirSync(dirname(deps.knownHosts), { recursive: true, mode: 0o700 });
+  writeFileSync(deps.knownHosts, `${state.ipv4},${address} ${key}\n`, { mode: 0o600 });
 }
 
 /** From the confirmed host key to a restored, running copy of the platform. */
@@ -305,12 +310,36 @@ async function restore(deps: RebuildDependencies, state: TestState, options: Tes
   if (!RUN_PATTERN.test(state.run)) throw new RebuildError(`the state file names an odd run '${state.run}': run --cleanup`);
   const remote = deps.remote(ipv4);
 
-  await step(deps, state, "known host", async () => {
-    const line = state.scanned?.line;
-    if (!line) throw new RebuildError("no host key was recorded: run --cleanup");
-    const address = firstAddress(state.ipv6Network as string).replace(/\/64$/, "");
-    mkdirSync(dirname(deps.knownHosts), { recursive: true, mode: 0o700 });
-    writeFileSync(deps.knownHosts, `${ipv4},${address} ${line.slice(line.indexOf(" ") + 1)}\n`, { mode: 0o600 });
+  await step(deps, state, "host key replaced", async () => {
+    const provisional = state.provisionalKey;
+    if (!provisional) throw new RebuildError("no provisional host key was recorded: run --cleanup");
+    // Interrupted once the new key was recorded: only that key is trusted
+    // from then on. Never fall back to the provisional key, which the
+    // user-data still holds: whoever reads it could make the new key's
+    // connection fail on purpose and pose as the server (rule 6 review).
+    if (state.hostKey) {
+      writeKnownHosts(deps, state, state.hostKey);
+      if (remote.run("true").status !== 0) {
+        throw new RebuildError("the server does not answer with the host key recorded for it: nothing was sent. Run --cleanup, then start again");
+      }
+      return;
+    }
+    // Every connection below is checked against the provisional key, which
+    // only this Mac and the user-data know, until the swap.
+    writeKnownHosts(deps, state, provisional);
+    const key = HOST_KEY_PATH;
+    const fresh = keyPart(must(remote, "making the server's own host key", `sudo rm -f ${key}.new ${key}.new.pub && sudo ssh-keygen -q -t ed25519 -N '' -C bivouac-server -f ${key}.new && sudo cat ${key}.new.pub`));
+    if (fresh === provisional) throw new RebuildError("the server's new host key is the provisional one");
+    state.hostKey = fresh;
+    saveState(deps.stateFile, state);
+    // sshd is started per connection on Flatcar (sshd.socket, Accept=yes):
+    // the next connection reads the new key, no restart needed.
+    must(remote, "putting the server's own host key in place", `sudo mv -f ${key}.new.pub ${key}.pub && sudo mv -f ${key}.new ${key}`);
+    writeKnownHosts(deps, state, fresh);
+    must(remote, "connecting with the server's own host key", "true");
+    const seen = deps.scanHostKey(ipv4);
+    if (!seen || scannedKey(seen.line) !== fresh) throw new RebuildError("the server still presents another host key");
+    deps.log("  the server replaced its provisional host key");
   });
   await step(deps, state, "first-boot checks", async () => {
     const out = must(remote, "first-boot checks", "grep -E '^(ID|VERSION)=' /etc/os-release; sudo test -d /etc/bivouac && echo bivouac-dir; systemctl is-active bivouac-reconciler; sudo nft list table inet bivouac_metadata >/dev/null && echo metadata-block");
@@ -465,16 +494,6 @@ export async function rebuildTest(deps: RebuildDependencies, options: TestOption
     await create(deps, state);
   } catch (error) {
     throw new RebuildError(`${(error as Error).message}\nRun again to carry on, or --cleanup to delete what was created.`);
-  }
-  if (!state.hostKeyConfirmed) {
-    if (!options.hostKey) askForHostKey(state);
-    // Scanned again: what is confirmed is what the server presents now.
-    const now = deps.scanHostKey(state.ipv4 as string);
-    if (!now || now.fingerprint !== state.scanned?.fingerprint || options.hostKey !== now.fingerprint) {
-      throw new RebuildError(`the host key does not match (${options.hostKey} given, ${now?.fingerprint ?? "nothing"} seen): nothing was sent. Run --cleanup.`);
-    }
-    state.hostKeyConfirmed = true;
-    saveState(deps.stateFile, state);
   }
   await restore(deps, state, options);
   return state;

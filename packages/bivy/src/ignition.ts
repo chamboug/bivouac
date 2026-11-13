@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseDocument, stringify } from "yaml";
 import type { PlatformConfig, SshKeys } from "@bivouac/manifest";
+import { MAX_USER_DATA_BYTES, secretsIn } from "./hostkey.js";
 
 /**
  * Butane runs in its official container: the CLI depends on Docker, not on a
@@ -12,10 +13,8 @@ export const BUTANE_IMAGE = "quay.io/coreos/butane:v0.29.0";
 
 export class IgnitionError extends Error {}
 
-/**
- * Hetzner refuses user-data above 32 KiB (verified, Hetzner API docs).
- */
-export const MAX_IGNITION_BYTES = 32 * 1024;
+/** Hetzner refuses user-data above 32 KiB (verified, Hetzner API docs). */
+export const MAX_IGNITION_BYTES = MAX_USER_DATA_BYTES;
 
 /**
  * Values of platform.yml written into the Butane, so each lives in one
@@ -119,6 +118,12 @@ export function compileButane(butane: string): string {
     throw new IgnitionError(
       `the Ignition config is ${size} bytes, above Hetzner's user-data limit of ${MAX_IGNITION_BYTES}`,
     );
+  }
+  // It ends up in the user-data, readable from the server (D7). Read after
+  // decoding: Butane compresses and encodes file contents.
+  const secrets = secretsIn(result.stdout);
+  if (secrets.length > 0) {
+    throw new IgnitionError(`butane/server.bu writes a private key (${secrets.join(", ")}): the user-data must hold no secret (D7)`);
   }
   return result.stdout;
 }
