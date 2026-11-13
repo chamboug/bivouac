@@ -77,5 +77,5 @@ const hasDocker = spawnSync("docker", ["info"], { stdio: "ignore" }).status === 
     const lines = PRIVATE.trim().split("\n").concat(Array.from({ length: 6 }, () => "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUxOQ"));
     const butane = `variant: flatcar\nversion: 1.1.0\nstorage:\n  files:\n    - path: /etc/x\n      contents:\n        inline: |\n${lines.map((line) => `          ${line}`).join("\n")}\n`;
     expect(() => compileButane(butane)).toThrow(/writes a private key \(\/etc\/x\)/);
-  });
+    }, 120_000); // the first run may pull the Butane image
 });
