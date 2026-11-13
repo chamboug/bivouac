@@ -531,6 +531,21 @@ typed in a real terminal: `b2_authorize_account` gives the S3 endpoint;
 `readBuckets`, `listFiles`, `readFiles`, `writeFiles`. Then the owner generates
 a new master key, which voids the one typed.
 
+In API v4 the key's bucket restriction is `bucketIds`, a list; check the
+capabilities and the bucket in the response. A new account may answer
+`Account ineligible for bucket creation` until its email address is verified:
+the interface asks for it when a bucket is created there.
+
+**Moving the backups to another account or region** (done once, D73): new
+bucket and key as above; `restic init` from the Mac on the new repository with
+the **same** restic password (the reconciler never creates a repository once a
+backup has succeeded, D74); force a last backup to the old one; replace
+`backup.b2_key_id` and `backup.b2_application_key` with
+`sops set --value-stdin` (compare by hash, never print) and
+`backup.repository` in one commit; force a backup and a restore test
+(`.day=0 | del(.restoreWeek)`) and check the copy with `restore-app <app> --list`.
+Keep the old account readable 30 days. Way back: revert that commit.
+
 **Secrets**, added to `secrets/platform.sops.yaml` in one pipe (decrypt, add,
 encrypt), compared after decryption without printing them, plain files deleted:
 `backup.{restic_password, b2_key_id, b2_application_key}` and
@@ -674,3 +689,15 @@ copies are never removed by the weekly clean-up (only `nightly` and
 `incomplete` ones are); remove them by hand when no longer wanted, with
 consent. The restore uses up to the dump's size again on disk; check `df`
 first for a large database.
+
+**Rehearsing it** (done 13 November 2026, D90): with a throwaway app
+`<app>-preview` (a real app's image, one group, its own volume), never with a
+real app. Its user uploads a few files, force a backup (section 12), they
+delete one, then restore without `--yes`, with `--yes --snapshot`, and undo
+with the safety copy. Removing it afterwards, until layer 6: remove the
+manifest (only its route goes), then by hand and with consent
+`docker rm -f`, `docker volume rm`, `DROP DATABASE` of its database and of
+its kept `bivouac_r…` ones, `DROP ROLE`, its OIDC client
+(`DELETE /api/oidc/clients/<app>` with the static API key, decrypted in
+memory), and `restic forget` of its `pre-restore` copies (from the Mac, with
+the secrets in environment variables).
