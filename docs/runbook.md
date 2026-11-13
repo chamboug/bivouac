@@ -544,7 +544,7 @@ backup has succeeded, D74); force a last backup to the old one; replace
 `sops set --value-stdin` (compare by hash, never print) and
 `backup.repository` in one commit; force a backup and a restore test
 (`.day=0 | del(.restoreWeek)`) and check the copy with `restore-app <app> --list`.
-Keep the old account readable 30 days. Way back: revert that commit.
+Keeping the old account readable for a while is the owner's call: it holds the only history from before the move. Way back, while it exists: revert that commit.
 
 **Secrets**, added to `secrets/platform.sops.yaml` in one pipe (decrypt, add,
 encrypt), compared after decryption without printing them, plain files deleted:
