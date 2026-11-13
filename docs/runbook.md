@@ -721,17 +721,18 @@ is over. The test's deploy key is deleted with it (GitHub docs).
 bivy rebuild --test <instance-dir> --ssh-key ~/.ssh/<key>
 ```
 
+`bivy`'s SSH reads neither `~/.ssh/config` nor the system's files, and never
+asks for anything (`BatchMode`): a key with a passphrase must already be in
+the agent (`ssh-add --apple-use-keychain <key>` on macOS).
+
 1. It creates, all labelled `bivouac-rebuild-test=<run>`: a firewall open to
    the Mac's IPv4 only, a Primary IPv6, and a server from the Flatcar snapshot
-   (CX23 where one can be ordered), whose Ignition carries that IPv6. Then it
-   stops and prints the SSH host key it sees.
-2. **The owner** opens the server's console in Hetzner's web console and reads
-   the `SSH host key: SHA256:… (ED25519)` line. Only if it is identical:
-
-   ```bash
-   bivy rebuild --test <instance-dir> --ssh-key ~/.ssh/<key> --host-key SHA256:…
-   ```
-
+   (CX23 where one can be ordered), whose Ignition carries that IPv6 and a
+   **provisional SSH host key** made on the Mac (D91).
+2. It checks the server presents that key, then, over the first connection
+   (verified against it): the server makes its own host key, the Mac records
+   it, the server puts it in place, and the Mac connects again with only that
+   key known. Nothing else is sent before. No console to read.
 3. It goes on, each step once (an interruption is resumed by running the same
    command): first-boot checks; the rebuild marker `{"mode":"test"}` in
    `/etc/bivouac/rebuild.json`; the deploy key generated on the server and
