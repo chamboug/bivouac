@@ -31,7 +31,30 @@ const PLACEHOLDERS = {
  * placeholders get their values from `platform.yml`, and the authorized
  * keys from `ssh-keys.yml` are appended, so each list lives in one place.
  */
-export function buildButane(root: string, platform: PlatformConfig, sshKeys: SshKeys): string {
+/**
+ * The server's IPv6 (D67), when the Butane configures it: it belongs to the
+ * Primary IPv6 the server is created with, so `bivy` fills it at that moment
+ * (D91). Hetzner gives a /64; the server takes its first address.
+ */
+export const IPV6_PLACEHOLDER = "@@IPV6_ADDRESS@@";
+/** A documentation address (RFC 3849), for checks that create no server. */
+export const EXAMPLE_IPV6 = "2001:db8::1/64";
+
+export function checkIpv6(address: string): string {
+  if (!/^[0-9a-f]{1,4}(:[0-9a-f]{0,4}){1,7}\/64$/.test(address) || !address.includes("::")) {
+    throw new IgnitionError(`'${address}' is not an IPv6 address with its /64 (like 2a01:db8:1:2::1/64)`);
+  }
+  return address;
+}
+
+/** The address of a Hetzner IPv6 network (`2a01:…::/64`): its first host, `::1`. */
+export function firstAddress(network: string): string {
+  const match = /^([0-9a-f:]+)::\/64$/.exec(network);
+  if (!match) throw new IgnitionError(`'${network}' is not an IPv6 /64 network as Hetzner gives it`);
+  return checkIpv6(`${match[1]}::1/64`);
+}
+
+export function buildButane(root: string, platform: PlatformConfig, sshKeys: SshKeys, ipv6?: string): string {
   const path = join(root, "butane", "server.bu");
   if (!existsSync(path)) {
     throw new IgnitionError("butane/server.bu is missing");
@@ -57,6 +80,15 @@ export function buildButane(root: string, platform: PlatformConfig, sshKeys: Ssh
       throw new IgnitionError(`butane/server.bu must contain ${placeholder}: it is filled from platform.yml`);
     }
     filled = filled.split(placeholder).join(value(platform));
+  }
+  if (ipv6 !== undefined && !filled.includes(IPV6_PLACEHOLDER)) {
+    // A server created by `bivy` has its own IPv6: an address written in the
+    // file would be another server's (D91).
+    throw new IgnitionError(`butane/server.bu must configure the IPv6 with ${IPV6_PLACEHOLDER}, not a fixed address`);
+  }
+  if (filled.includes(IPV6_PLACEHOLDER)) {
+    if (!ipv6) throw new IgnitionError(`butane/server.bu configures the server's IPv6 (${IPV6_PLACEHOLDER}): give its address`);
+    filled = filled.split(IPV6_PLACEHOLDER).join(checkIpv6(ipv6));
   }
   const leftover = /@@[A-Z_]+@@/.exec(filled);
   if (leftover) {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { IgnitionError, MAX_IGNITION_BYTES, buildButane, compileButane } from "./ignition.js";
+import { IgnitionError, MAX_IGNITION_BYTES, buildButane, compileButane, firstAddress } from "./ignition.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const template = join(here, "..", "..", "..", "template");
@@ -42,6 +42,18 @@ describe("butane", () => {
     expect(butane.startsWith(filled)).toBe(true);
     expect(butane).not.toContain("@@");
     expect(butane).toContain(key);
+  });
+
+  it("fills the server's IPv6 from the Primary IPv6 it is created with (D91)", () => {
+    const base = readFileSync(join(template, "butane", "server.bu"), "utf8");
+    const root = withButane(`${base}# Address=@@IPV6_ADDRESS@@\n`);
+    expect(buildButane(root, platform, sshKeys, firstAddress("2a01:4f8:c0:1::/64"))).toContain("# Address=2a01:4f8:c0:1::1/64\n");
+    expect(() => buildButane(root, platform, sshKeys)).toThrow(/give its address/);
+    expect(() => buildButane(root, platform, sshKeys, "2a01:4f8:c0:1::1")).toThrow(/not an IPv6 address/);
+    expect(() => buildButane(root, platform, sshKeys, "2a01::1/64\nX=1")).toThrow(/not an IPv6 address/);
+    expect(() => firstAddress("203.0.113.10")).toThrow(/not an IPv6/);
+    // A server created by bivy never takes an address written in the file.
+    expect(() => buildButane(withButane(`${base}# Address=2a01:4f8:c0:1::1/64\n`), platform, sshKeys, "2a01:4f8:c0:2::1/64")).toThrow(/not a fixed address/);
   });
 
   it("refuses a Butane file without a placeholder, or with an unknown one", () => {

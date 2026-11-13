@@ -1,0 +1,502 @@
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { spawnSync } from "node:child_process";
+import { AUTH_SUBDOMAIN, loadInstance, type AppManifest, type PlatformConfig, type SshKeys } from "@bivouac/manifest";
+import { GitHub, repositoryPath } from "./github.js";
+import { Hetzner, orderableTypes, type FirewallRule, type Image, type Labels } from "./hetzner.js";
+import { buildButane, compileButane, firstAddress } from "./ignition.js";
+import type { Remote } from "./remote.js";
+
+/**
+ * `bivy rebuild --test` (D91): a temporary copy of the platform, rebuilt
+ * from the latest nightly copy on a server billed by the hour, checked, then
+ * destroyed. It never touches the real server, its IPs, the DNS, or the
+ * backup repository other than to read.
+ *
+ * It runs in steps recorded in a state file, so it can stop and carry on:
+ * it stops once on purpose, for the owner to compare the new server's SSH
+ * host key with the one its console shows (the age key travels over that
+ * connection), and an interruption is resumed, or cleaned up with
+ * `--cleanup`.
+ */
+
+/** Every resource a test creates carries it; only resources carrying it are ever deleted. */
+export const TEST_LABEL = "bivouac-rebuild-test";
+/** Tried in this order when no location is given: the server type decides. */
+export const LOCATIONS = ["fsn1", "nbg1", "hel1"];
+export const DEFAULT_SERVER_TYPE = "cx23";
+const MINIMUM = { memory: 4, disk: 40 };
+const RECONCILER = "docker exec bivouac-reconciler node packages/reconciler/dist/main.js";
+
+export interface TestState {
+  run: string;
+  startedAt: string;
+  location: string;
+  serverType: string;
+  hourly: number;
+  image: number;
+  firewallId?: number;
+  ipv6Id?: number;
+  ipv6Network?: string;
+  serverId?: number;
+  ipv4Id?: number;
+  ipv4?: string;
+  /** What ssh-keyscan saw, waiting for the owner's comparison with the console. */
+  scanned?: { line: string; fingerprint: string };
+  /** Set once the owner gave the same fingerprint. */
+  hostKeyConfirmed?: boolean;
+  deployKeyId?: number;
+  done: string[];
+  timings: Record<string, number>;
+}
+
+export interface RebuildDependencies {
+  /** The instance repo, read and validated (by default from the directory given). */
+  instance?: () => { platform: PlatformConfig; sshKeys: SshKeys; apps: AppManifest[] };
+  hetzner: Hetzner;
+  /** Created when first needed: the token is only asked for then. */
+  github: () => GitHub;
+  remote: (host: string) => Remote;
+  scanHostKey: (host: string) => { line: string; fingerprint: string } | undefined;
+  /** The Mac's public IPv4, the only address the test server lets in. */
+  publicIpv4: () => Promise<string>;
+  /** The Ignition config, for a server whose IPv6 is this address. */
+  ignition: (ipv6: string) => string;
+  /** The age key's content, read only when it is placed. */
+  ageKey: () => Buffer;
+  /** An HTTPS request to the test server, under a name of the platform. */
+  probe: (host: string, address: string, path: string) => { status: number; body: string };
+  /** The same request to the real platform, read only. */
+  probeReal: (host: string, path: string) => { status: number; body: string };
+  stateFile: string;
+  knownHosts: string;
+  log: (message: string) => void;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+}
+
+export interface TestOptions {
+  root: string;
+  location?: string | undefined;
+  serverType?: string | undefined;
+  hostKey?: string | undefined;
+  keep: boolean;
+}
+
+export class RebuildError extends Error {}
+
+/** What the owner must do before the command can go on. */
+export class WaitingForOwner extends Error {}
+
+function readState(path: string): TestState | undefined {
+  if (!existsSync(path)) return undefined;
+  return JSON.parse(readFileSync(path, "utf8")) as TestState;
+}
+
+function saveState(path: string, state: TestState): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(`${path}.new`, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  renameSync(`${path}.new`, path);
+}
+
+export function instanceOf(root: string): { platform: PlatformConfig; sshKeys: SshKeys; apps: AppManifest[] } {
+  const instance = loadInstance(root);
+  if (instance.errors.length > 0 || !instance.platform || !instance.sshKeys) {
+    throw new RebuildError(`the instance repo is invalid: run 'bivy validate ${root}' first`);
+  }
+  if (!instance.platform.backup) throw new RebuildError("platform.yml names no backup: there is nothing to rebuild from");
+  return { platform: instance.platform, sshKeys: instance.sshKeys, apps: instance.apps };
+}
+
+/** The newest Flatcar snapshot (D65): x86, available, the highest version. */
+export function newestFlatcar(images: Image[]): Image {
+  const version = (image: Image) => (image.labels["flatcar-version"] ?? "0").split(".").map(Number);
+  const usable = images
+    .filter((image) => image.status === "available" && image.architecture === "x86" && image.labels.os === "flatcar")
+    .sort((a, b) => {
+      const [x, y] = [version(a), version(b)];
+      for (let index = 0; index < Math.max(x.length, y.length); index++) {
+        const difference = (x[index] ?? 0) - (y[index] ?? 0);
+        if (difference !== 0) return difference;
+      }
+      return a.id - b.id;
+    });
+  const newest = usable.at(-1);
+  if (!newest) throw new RebuildError("no Flatcar snapshot is available in the Hetzner project (runbook section 4)");
+  return newest;
+}
+
+/**
+ * Only the age identity the instance's secrets are encrypted for, not every
+ * key in the file (it may hold others). SOPS key files carry each key's
+ * public key in a comment just above it (`# public key: age1…`).
+ */
+export function instanceIdentity(keyFile: string, sopsConfig: string): Buffer {
+  const recipients: string[] = sopsConfig.match(/age1[0-9a-z]{58}/g) ?? [];
+  const lines = keyFile.split("\n");
+  for (const [index, line] of lines.entries()) {
+    const recipient = /^# public key: (age1[0-9a-z]{58})$/.exec(line.trim())?.[1];
+    const secret = lines[index + 1]?.trim();
+    if (recipient && recipients.includes(recipient) && secret && /^AGE-SECRET-KEY-1[0-9A-Z]+$/.test(secret)) {
+      return Buffer.from(`# public key: ${recipient}\n${secret}\n`);
+    }
+  }
+  throw new RebuildError("the age key file holds no key for the recipients of .sops.yaml (each key needs its '# public key:' line)");
+}
+
+const RUN_PATTERN = /^\d{12}-[0-9a-f]{4}$/;
+const SNAPSHOT_PATTERN = /^[0-9a-f]{8,64}$/;
+
+/** Only the Mac may reach the test server: it holds a full copy of the data. */
+export function testFirewallRules(ipv4: string): FirewallRule[] {
+  const octets = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ipv4)?.slice(1).map(Number);
+  if (!octets || octets.some((octet) => octet > 255)) throw new RebuildError(`'${ipv4}' is not an IPv4 address`);
+  const source = [`${ipv4}/32`];
+  return [
+    { description: "SSH", direction: "in", protocol: "tcp", port: "22", source_ips: source },
+    { description: "HTTP", direction: "in", protocol: "tcp", port: "80", source_ips: source },
+    { description: "HTTPS", direction: "in", protocol: "tcp", port: "443", source_ips: source },
+    { description: "HTTP/3", direction: "in", protocol: "udp", port: "443", source_ips: source },
+  ];
+}
+
+const step = async (deps: RebuildDependencies, state: TestState, name: string, work: () => Promise<void>) => {
+  if (state.done.includes(name)) return;
+  const begin = deps.now();
+  deps.log(`· ${name}`);
+  await work();
+  state.done.push(name);
+  state.timings[name] = Math.round((deps.now() - begin) / 1000);
+  saveState(deps.stateFile, state);
+};
+
+/** Runs a command on the server and fails loudly, without ever printing what was sent to it. */
+function must(remote: Remote, what: string, command: string, options: { input?: string | Buffer; timeoutMs?: number } = {}): string {
+  const result = remote.run(command, options);
+  if (result.status !== 0) throw new RebuildError(`${what} failed (exit ${result.status}): ${result.stderr.trim().split("\n").pop() ?? ""}`);
+  return result.stdout;
+}
+
+async function waitUntil(deps: RebuildDependencies, what: string, timeoutMs: number, check: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = deps.now() + timeoutMs;
+  while (!(await check())) {
+    if (deps.now() > deadline) throw new RebuildError(`${what}: still not there after ${Math.round(timeoutMs / 60_000)} minutes`);
+    await deps.sleep(10_000);
+  }
+}
+
+/** JSON lines a reconciler command printed. */
+export function jsonLines(output: string): { message: string; [key: string]: unknown }[] {
+  return output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as { message: string }];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/** Chooses where the test server goes, and records it before anything is created. */
+async function newState(deps: RebuildDependencies, options: TestOptions): Promise<TestState> {
+  const { hetzner } = deps;
+  (deps.instance ?? (() => instanceOf(options.root)))();
+  const image = newestFlatcar(await hetzner.snapshots("os=flatcar"));
+  const wanted = options.serverType ?? DEFAULT_SERVER_TYPE;
+  const types = await hetzner.serverTypes();
+  const locations = options.location ? [options.location] : LOCATIONS;
+  const choice = locations
+    .map((location) => ({ location, type: orderableTypes(types, location, MINIMUM).find((entry) => entry.name === wanted) }))
+    .find((entry) => entry.type);
+  if (!choice?.type) {
+    const offers = locations.map((location) => `${location}: ${orderableTypes(types, location, MINIMUM).slice(0, 3).map((entry) => `${entry.name} €${entry.hourly}/h`).join(", ") || "none"}`);
+    throw new RebuildError(`${wanted} cannot be ordered in ${locations.join(", ")}; choose --server-type and --location among:\n  ${offers.join("\n  ")}`);
+  }
+  const stamp = new Date(deps.now()).toISOString().replace(/[-:T]/g, "").slice(0, 12);
+  const state: TestState = {
+    run: `${stamp}-${randomBytes(2).toString("hex")}`,
+    startedAt: new Date(deps.now()).toISOString(),
+    location: choice.location,
+    serverType: choice.type.name,
+    hourly: choice.type.hourly,
+    image: image.id,
+    done: [],
+    timings: {},
+  };
+  saveState(deps.stateFile, state);
+  deps.log(`Test ${state.run}: ${state.serverType} in ${state.location} (€${state.hourly}/hour incl. VAT), Flatcar ${image.labels["flatcar-version"]}.`);
+  return state;
+}
+
+/** Creates the temporary resources, each step once, up to a server whose SSH answers. */
+async function create(deps: RebuildDependencies, state: TestState): Promise<void> {
+  const { hetzner } = deps;
+  const labels: Labels = { [TEST_LABEL]: state.run };
+  const name = `${TEST_LABEL}-${state.run}`;
+
+  await step(deps, state, "firewall, open to this Mac only", async () => {
+    const firewall = await hetzner.createFirewall(name, testFirewallRules(await deps.publicIpv4()), labels);
+    state.firewallId = firewall.id;
+  });
+  await step(deps, state, "temporary IPv6", async () => {
+    const ip = await hetzner.createPrimaryIpv6(name, state.location, labels);
+    state.ipv6Id = ip.id;
+    state.ipv6Network = ip.ip;
+  });
+  await step(deps, state, "server", async () => {
+    if (!state.ipv6Network || state.ipv6Id === undefined || state.firewallId === undefined) throw new RebuildError("the state file is incomplete: run --cleanup");
+    if (state.serverId !== undefined) {
+      // Created by an interrupted run: wait for it rather than create another.
+      await waitUntil(deps, "the server", 10 * 60_000, async () => (await hetzner.server(state.serverId as number))?.status === "running");
+      if (state.ipv4Id !== undefined) await hetzner.labelPrimaryIp(state.ipv4Id, labels);
+      return;
+    }
+    const userData = deps.ignition(firstAddress(state.ipv6Network));
+    if (/PRIVATE KEY|AGE-SECRET-KEY/i.test(userData)) throw new RebuildError("the Ignition config holds a private key: refusing to send it as user-data (D7)");
+    const { server, action } = await hetzner.createServer({
+      name,
+      server_type: state.serverType,
+      location: state.location,
+      image: String(state.image),
+      user_data: userData,
+      labels,
+      firewalls: [{ firewall: state.firewallId }],
+      public_net: { enable_ipv4: true, enable_ipv6: true, ipv6: state.ipv6Id },
+    });
+    state.serverId = server.id;
+    if (!server.public_net.ipv4) throw new RebuildError("the server was created without an IPv4");
+    state.ipv4 = server.public_net.ipv4.ip;
+    state.ipv4Id = server.public_net.ipv4.id;
+    saveState(deps.stateFile, state);
+    await hetzner.waitAction(action);
+    // The IPv4 Hetzner created with the server: labelled too, so a cleanup finds it.
+    if (state.ipv4Id !== undefined) await hetzner.labelPrimaryIp(state.ipv4Id, labels);
+  });
+  await step(deps, state, "SSH answers", async () => {
+    const ipv4 = state.ipv4;
+    if (!ipv4) throw new RebuildError("the server has no IPv4");
+    await waitUntil(deps, "the server's SSH", 5 * 60_000, () => {
+      const scanned = deps.scanHostKey(ipv4);
+      if (scanned) state.scanned = scanned;
+      return scanned !== undefined;
+    });
+  });
+}
+
+function askForHostKey(state: TestState): never {
+  throw new WaitingForOwner([
+    `The test server is up at ${state.ipv4}. Before anything secret is sent to it, compare its SSH host key:`,
+    `  seen from this Mac:  ${state.scanned?.fingerprint}`,
+    "Open the server's console in Hetzner's web console (Servers → " + `${TEST_LABEL}-${state.run}` + " → Console):",
+    "the login prompt shows `SSH host key: SHA256:… (ED25519)`. Only if both are identical, run again with",
+    `  --host-key ${state.scanned?.fingerprint}`,
+    "Otherwise run --cleanup.",
+  ].join("\n"));
+}
+
+/** From the confirmed host key to a restored, running copy of the platform. */
+async function restore(deps: RebuildDependencies, state: TestState, options: TestOptions): Promise<void> {
+  const { platform, apps } = (deps.instance ?? (() => instanceOf(options.root)))();
+  const ipv4 = state.ipv4;
+  if (!ipv4 || !state.ipv6Network) throw new RebuildError("the state file is incomplete: run --cleanup");
+  if (!RUN_PATTERN.test(state.run)) throw new RebuildError(`the state file names an odd run '${state.run}': run --cleanup`);
+  const remote = deps.remote(ipv4);
+
+  await step(deps, state, "known host", async () => {
+    const line = state.scanned?.line;
+    if (!line) throw new RebuildError("no host key was recorded: run --cleanup");
+    const address = firstAddress(state.ipv6Network as string).replace(/\/64$/, "");
+    mkdirSync(dirname(deps.knownHosts), { recursive: true, mode: 0o700 });
+    writeFileSync(deps.knownHosts, `${ipv4},${address} ${line.slice(line.indexOf(" ") + 1)}\n`, { mode: 0o600 });
+  });
+  await step(deps, state, "first-boot checks", async () => {
+    const out = must(remote, "first-boot checks", "grep -E '^(ID|VERSION)=' /etc/os-release; sudo test -d /etc/bivouac && echo bivouac-dir; systemctl is-active bivouac-reconciler; sudo nft list table inet bivouac_metadata >/dev/null && echo metadata-block");
+    for (const expected of ["ID=flatcar", "bivouac-dir", "metadata-block"]) {
+      if (!out.includes(expected)) throw new RebuildError(`first-boot check: '${expected}' missing`);
+    }
+  });
+  await step(deps, state, "rebuild marker (test mode)", async () => {
+    // Before the deploy key and the age key: the first pass that can read Git must see it.
+    must(remote, "placing the marker", "sudo sh -c 'umask 077; cat > /etc/bivouac/rebuild.json.tmp && mv /etc/bivouac/rebuild.json.tmp /etc/bivouac/rebuild.json'", { input: '{"mode":"test"}\n' });
+    if (must(remote, "reading the marker", "sudo cat /etc/bivouac/rebuild.json").trim() !== '{"mode":"test"}') throw new RebuildError("the marker did not arrive intact");
+  });
+  await step(deps, state, "deploy key", async () => {
+    const title = `${TEST_LABEL}-${state.run}`;
+    const key = must(remote, "creating the deploy key", `sudo test -e /etc/bivouac/deploy_key || sudo ssh-keygen -q -t ed25519 -N '' -C ${title} -f /etc/bivouac/deploy_key; sudo cat /etc/bivouac/deploy_key.pub`).trim();
+    if (!/^ssh-ed25519 [A-Za-z0-9+/=]+ /.test(key)) throw new RebuildError("the server gave no public deploy key");
+    const added = await deps.github().addDeployKey(title, key);
+    state.deployKeyId = added.id;
+  });
+  await step(deps, state, "age key", async () => {
+    const key = deps.ageKey();
+    if (!key.includes("AGE-SECRET-KEY-")) throw new RebuildError("the age key file holds no age key");
+    const local = createHash("sha256").update(key).digest("hex");
+    // Already there from an interrupted run: only the same key is accepted.
+    const present = remote.run("sudo test -e /etc/bivouac/age.key").status === 0;
+    if (!present) {
+      must(remote, "placing the age key", 'sudo test -e /etc/bivouac/age.key && exit 3; sudo sh -c "umask 077; cat > /etc/bivouac/age.key.tmp && mv /etc/bivouac/age.key.tmp /etc/bivouac/age.key"', { input: key });
+    }
+    const there = must(remote, "checking the age key", "sudo sha256sum /etc/bivouac/age.key").split(" ")[0];
+    if (local !== there) {
+      remote.run("sudo rm -f /etc/bivouac/age.key");
+      throw new RebuildError("the age key on the server differs from this one: removed");
+    }
+  });
+  await step(deps, state, "Postgres, alone", async () => {
+    await waitUntil(deps, "Postgres", 10 * 60_000, () => remote.run("docker inspect -f '{{.State.Health.Status}}' bivouac-postgres").stdout.trim() === "healthy");
+    const others = remote.run("docker ps --format '{{.Names}}' --filter label=bivouac.managed=true").stdout.split("\n").filter(Boolean);
+    if (others.some((name) => name !== "bivouac-postgres")) throw new RebuildError(`containers started before the data was back: ${others.join(", ")}`);
+  });
+  await step(deps, state, "restore the latest nightly copy", async () => {
+    const plan = jsonLines(must(remote, "restore-platform (plan)", `${RECONCILER} restore-platform`, { timeoutMs: 10 * 60_000 }));
+    const described = plan.find((line) => line.message === "rebuild plan");
+    if (!described || typeof described.copy !== "string" || !SNAPSHOT_PATTERN.test(described.copy)) throw new RebuildError(`restore-platform gave no plan: ${JSON.stringify(plan.at(-1))}`);
+    deps.log(`  copy ${described.copy} taken ${String(described.taken)}, ${String(described.size)}`);
+    const result = remote.run(`${RECONCILER} restore-platform --yes --snapshot ${described.copy}`, { timeoutMs: 120 * 60_000 });
+    const lines = jsonLines(result.stdout);
+    for (const line of lines) if (line.message !== "rebuild plan") deps.log(`  ${JSON.stringify(line)}`);
+    if (result.status !== 0 || !lines.some((line) => line.message === "platform restored")) {
+      throw new RebuildError(`restore-platform failed: ${JSON.stringify(lines.at(-1) ?? result.stderr.trim())}`);
+    }
+  });
+  await step(deps, state, "Pocket ID and the apps", async () => {
+    const expected = ["bivouac-pocket-id", "bivouac-caddy", ...apps.map((app) => `bivouac-app-${app.name}`)];
+    await waitUntil(deps, "Pocket ID and the apps", 15 * 60_000, () => {
+      const names = remote.run("docker ps --format '{{.Names}} {{.Status}}' --filter label=bivouac.managed=true").stdout;
+      return expected.every((name) => new RegExp(`^${name} Up`, "m").test(names)) && !/\(health: starting\)|\(unhealthy\)/.test(names);
+    });
+  });
+  await step(deps, state, "checks against the real platform", async () => {
+    const auth = `${AUTH_SUBDOMAIN}.${platform.domain}`;
+    const jwks = "/.well-known/jwks.json";
+    const test = deps.probe(auth, ipv4, jwks);
+    const real = deps.probeReal(auth, jwks);
+    const keys = (body: string) => JSON.stringify((JSON.parse(body) as { keys: { kid: string; n?: string; x?: string }[] }).keys.map((key) => [key.kid, key.n ?? key.x]).sort());
+    if (test.status !== 200 || real.status !== 200 || keys(test.body) !== keys(real.body)) {
+      throw new RebuildError("Pocket ID on the test server does not publish the real signing keys: its data or ENCRYPTION_KEY did not come back");
+    }
+    deps.log("  Pocket ID publishes the same signing keys as the real server");
+    for (const app of apps) {
+      if (app.health === false) continue;
+      const answer = deps.probe(`${app.name}.${platform.domain}`, ipv4, app.health);
+      if (answer.status !== 200) throw new RebuildError(`${app.name} answers ${answer.status} on ${app.health}`);
+      deps.log(`  ${app.name}: ${app.health} answers 200 through Caddy`);
+    }
+  });
+}
+
+/** Deletes what the test created: only what carries its label, never anything protected. */
+export async function cleanup(deps: RebuildDependencies, githubToken: boolean): Promise<string[]> {
+  const { hetzner } = deps;
+  const state = readState(deps.stateFile);
+  const problems: string[] = [];
+  const selector = TEST_LABEL;
+  const ours = (labels: Labels) => typeof labels[TEST_LABEL] === "string" && labels[TEST_LABEL] !== "";
+
+  for (const server of await hetzner.servers(selector)) {
+    if (!ours(server.labels) || server.protection.delete || server.name === "bivouac") {
+      problems.push(`server ${server.id} (${server.name}) left alone: not a test server`);
+      continue;
+    }
+    deps.log(`· deleting server ${server.name}`);
+    await hetzner.waitAction(await hetzner.deleteServer(server.id));
+  }
+  for (const ip of await hetzner.primaryIps(selector)) {
+    if (!ours(ip.labels) || ip.protection.delete) {
+      problems.push(`Primary IP ${ip.id} left alone: not a test IP`);
+      continue;
+    }
+    if (ip.assignee_id !== null) {
+      problems.push(`Primary IP ${ip.ip} is still assigned to server ${ip.assignee_id}`);
+      continue;
+    }
+    deps.log(`· deleting Primary IP ${ip.ip}`);
+    await hetzner.deletePrimaryIp(ip.id);
+  }
+  for (const firewall of await hetzner.firewalls(selector)) {
+    if (!ours(firewall.labels)) continue;
+    deps.log(`· deleting firewall ${firewall.name}`);
+    // Detached by the server's deletion, which may take a moment to show.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await hetzner.deleteFirewall(firewall.id);
+        break;
+      } catch (error) {
+        if (attempt >= 5) {
+          problems.push(`firewall ${firewall.id}: ${(error as Error).message}`);
+          break;
+        }
+        await deps.sleep(5000);
+      }
+    }
+  }
+  if (state?.deployKeyId !== undefined) {
+    if (githubToken) {
+      const github = deps.github();
+      const key = (await github.deployKeys()).find((entry) => entry.id === state.deployKeyId);
+      if (key && !key.title.startsWith(`${TEST_LABEL}-`)) problems.push(`deploy key ${key.id} (${key.title}) left alone: not a test key`);
+      else if (key) {
+        deps.log(`· removing deploy key ${key.title}`);
+        await github.removeDeployKey(key.id);
+      }
+    } else {
+      problems.push(`the deploy key '${TEST_LABEL}-${state.run}' is still on GitHub: remove it (repo Settings → Deploy keys), or run --cleanup with the GitHub token`);
+    }
+  }
+  const left = [
+    ...(await hetzner.servers(selector)).map((entry) => `server ${entry.name}`),
+    ...(await hetzner.primaryIps(selector)).map((entry) => `Primary IP ${entry.ip}`),
+    ...(await hetzner.firewalls(selector)).map((entry) => `firewall ${entry.name}`),
+  ];
+  problems.push(...left.map((entry) => `still there: ${entry}`));
+  if (problems.length === 0) {
+    rmSync(deps.knownHosts, { force: true });
+    rmSync(deps.stateFile, { force: true });
+  }
+  return problems;
+}
+
+export async function rebuildTest(deps: RebuildDependencies, options: TestOptions): Promise<TestState> {
+  const state = readState(deps.stateFile) ?? (await newState(deps, options));
+  try {
+    await create(deps, state);
+  } catch (error) {
+    throw new RebuildError(`${(error as Error).message}\nRun again to carry on, or --cleanup to delete what was created.`);
+  }
+  if (!state.hostKeyConfirmed) {
+    if (!options.hostKey) askForHostKey(state);
+    // Scanned again: what is confirmed is what the server presents now.
+    const now = deps.scanHostKey(state.ipv4 as string);
+    if (!now || now.fingerprint !== state.scanned?.fingerprint || options.hostKey !== now.fingerprint) {
+      throw new RebuildError(`the host key does not match (${options.hostKey} given, ${now?.fingerprint ?? "nothing"} seen): nothing was sent. Run --cleanup.`);
+    }
+    state.hostKeyConfirmed = true;
+    saveState(deps.stateFile, state);
+  }
+  await restore(deps, state, options);
+  return state;
+}
+
+/** curl through the system, so a name of the platform can be sent to another address. */
+export function curlProbe(host: string, address: string | undefined, path: string, insecure: boolean): { status: number; body: string } {
+  const result = spawnSync("curl", [
+    "--silent", "--max-time", "20", "--write-out", "\n%{http_code}",
+    ...(insecure ? ["--insecure"] : []),
+    ...(address ? ["--resolve", `${host}:443:${address}`] : []),
+    `https://${host}${path}`,
+  ], { encoding: "utf8" });
+  const lines = result.stdout.split("\n");
+  return { status: Number(lines.pop()), body: lines.join("\n") };
+}
+
+export function ignitionFor(root: string): (ipv6: string) => string {
+  return (ipv6) => {
+    const { platform, sshKeys } = instanceOf(root);
+    return compileButane(buildButane(root, platform, sshKeys, ipv6));
+  };
+}
+
+export { repositoryPath };

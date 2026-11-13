@@ -1,24 +1,56 @@
 #!/usr/bin/env node
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { generateCaddyfile, loadInstance } from "@bivouac/manifest";
 import { CaddyError, validateCaddyfile } from "./caddy.js";
-import { IgnitionError, buildButane, compileButane } from "./ignition.js";
+import { EXAMPLE_IPV6, IPV6_PLACEHOLDER, IgnitionError, buildButane, compileButane } from "./ignition.js";
+import { GitHub, repositoryPath } from "./github.js";
+import { Hetzner } from "./hetzner.js";
+import { RebuildError, WaitingForOwner, cleanup, curlProbe, ignitionFor, instanceIdentity, rebuildTest } from "./rebuild.js";
+import { SshRemote, scanHostKey } from "./remote.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
 Commands:
   validate [dir]              check an instance repo (manifests, keys, secrets, Butane, Caddyfile)
-  ignition [dir] [-o file]    print the server's Ignition config (JSON)
+  ignition [dir] [-o file] [--ipv6 <address/64>]
+                              print the server's Ignition config (JSON)
+
+  rebuild --test [dir]        rebuild a temporary copy of the platform from the
+                              latest nightly copy, check it, then delete it (D91)
+      --host-key SHA256:…     the fingerprint read in the server's console
+      --keep                  leave the test server running after the checks
+      --cleanup               delete what a test created (only that)
+      --location, --server-type   where the test server goes (default: cx23
+                              where it can be ordered)
+      --ssh-key <file>        default ~/.ssh/id_ed25519
+      --age-key <file>        default ~/.config/sops/age/keys.txt
+      --hetzner-token <file>  default ~/.config/bivouac/hetzner-token
+      --github-token <file>   default ~/.config/bivouac/github-rebuild-token
 
 [dir] defaults to the current directory.`;
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const { positionals, values } = parseArgs({
     args: argv,
     allowPositionals: true,
-    options: { output: { type: "string", short: "o" }, help: { type: "boolean", short: "h" } },
+    options: {
+      output: { type: "string", short: "o" },
+      ipv6: { type: "string" },
+      help: { type: "boolean", short: "h" },
+      test: { type: "boolean" },
+      "host-key": { type: "string" },
+      keep: { type: "boolean" },
+      cleanup: { type: "boolean" },
+      location: { type: "string" },
+      "server-type": { type: "string" },
+      "ssh-key": { type: "string" },
+      "age-key": { type: "string" },
+      "hetzner-token": { type: "string" },
+      "github-token": { type: "string" },
+    },
   });
   const [command, directory = "."] = positionals;
   if (values.help || !command) {
@@ -31,7 +63,9 @@ function main(argv: string[]): number {
     case "validate":
       return validate(root);
     case "ignition":
-      return ignition(root, values.output);
+      return ignition(root, values.output, values.ipv6);
+    case "rebuild":
+      return rebuild(root, values);
     default:
       console.error(`Unknown command '${command}'.\n\n${USAGE}`);
       return 1;
@@ -43,7 +77,7 @@ function validate(root: string): number {
   const errors = [...instance.errors];
   if (instance.sshKeys && instance.platform) {
     try {
-      compileButane(buildButane(root, instance.platform, instance.sshKeys));
+      compileButane(buildButane(root, instance.platform, instance.sshKeys, readFileSync(join(root, "butane", "server.bu"), "utf8").includes(IPV6_PLACEHOLDER) ? EXAMPLE_IPV6 : undefined));
     } catch (error) {
       if (!(error instanceof IgnitionError)) throw error;
       errors.push({ file: "butane/server.bu", message: error.message });
@@ -78,14 +112,14 @@ function validate(root: string): number {
   return 0;
 }
 
-function ignition(root: string, output: string | undefined): number {
+function ignition(root: string, output: string | undefined, ipv6: string | undefined): number {
   const instance = loadInstance(root);
   if (!instance.sshKeys || !instance.platform) {
     console.error("platform.yml or ssh-keys.yml is invalid: run 'bivy validate' for details.");
     return 1;
   }
   try {
-    const json = compileButane(buildButane(root, instance.platform, instance.sshKeys));
+    const json = compileButane(buildButane(root, instance.platform, instance.sshKeys, ipv6));
     if (output) {
       writeFileSync(output, json);
     } else {
@@ -99,4 +133,97 @@ function ignition(root: string, output: string | undefined): number {
   }
 }
 
-process.exitCode = main(process.argv.slice(2));
+const config = (file: string) => join(homedir(), ".config", "bivouac", file);
+
+/**
+ * A credential from a file of mode 600, typed by the owner in a real
+ * terminal (runbook section 0). Never printed, never passed on a command line.
+ */
+function secretFile(path: string, what: string): string {
+  if (!existsSync(path)) {
+    throw new RebuildError(`${what} is missing: type it into ${path} in a real terminal (runbook section 0):\n  read -rs "v?${what}: "; echo; (umask 077; printf '%s' "$v" > ${path}); unset v`);
+  }
+  if ((statSync(path).mode & 0o077) !== 0) throw new RebuildError(`${path} can be read by others: chmod 600 it`);
+  const value = readFileSync(path, "utf8").trim();
+  if (!value) throw new RebuildError(`${path} is empty`);
+  return value;
+}
+
+async function rebuild(root: string, values: Record<string, string | boolean | undefined>): Promise<number> {
+  if (!values.test) {
+    console.error("Only 'bivy rebuild --test' is available: a real rebuild is a separate decision, with the owner's consent (rule 5).");
+    return 1;
+  }
+  const text = (name: string) => (typeof values[name] === "string" ? (values[name] as string) : undefined);
+  const githubTokenPath = text("github-token") ?? config("github-rebuild-token");
+  const instance = loadInstance(root);
+  if (!instance.platform) {
+    console.error("platform.yml is invalid: run 'bivy validate' for details.");
+    return 1;
+  }
+  const repository = repositoryPath(instance.platform.repository);
+  const knownHosts = config("known_hosts-rebuild-test");
+  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
+  const deps = {
+    hetzner: new Hetzner(secretFile(text("hetzner-token") ?? config("hetzner-token"), "the Hetzner token")),
+    github: () => {
+      if (!existsSync(githubTokenPath)) {
+        console.log(`A temporary GitHub token is needed, to add the test server's read-only deploy key. Create it at
+  https://github.com/settings/personal-access-tokens/new?name=bivouac-rebuild-test&description=Deploy+key+of+a+rebuild+test&expires_in=1&administration=write
+choosing "Only select repositories" → ${repository} (nothing else), and delete it once the test is over:
+the test's deploy key goes with it.`);
+      }
+      return new GitHub(secretFile(githubTokenPath, "the temporary GitHub token"), repository);
+    },
+    remote: (host: string) => new SshRemote(host, identity, knownHosts),
+    scanHostKey,
+    publicIpv4: async () => {
+      const response = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(10_000) });
+      if (!response.ok) throw new RebuildError(`api.ipify.org answered HTTP ${response.status}: cannot tell this Mac's IPv4`);
+      return (await response.text()).trim();
+    },
+    ignition: ignitionFor(root),
+    ageKey: () => instanceIdentity(readFileSync(text("age-key") ?? join(homedir(), ".config", "sops", "age", "keys.txt"), "utf8"), readFileSync(join(root, ".sops.yaml"), "utf8")),
+    probe: (host: string, address: string, path: string) => curlProbe(host, address, path, true),
+    probeReal: (host: string, path: string) => curlProbe(host, undefined, path, false),
+    stateFile: config("rebuild-test.json"),
+    knownHosts,
+    log: (message: string) => console.log(message),
+    sleep: (ms: number) => new Promise<void>((done) => setTimeout(done, ms)),
+    now: Date.now,
+  };
+  try {
+    if (!values.cleanup) {
+      const state = await rebuildTest(deps, { root, keep: values.keep === true, hostKey: text("host-key"), location: text("location"), serverType: text("server-type") });
+      const minutes = Math.round((Date.now() - Date.parse(state.startedAt)) / 60_000);
+      console.log(`\n✓ The platform came back on the test server, ${minutes} minutes after the start. Steps (seconds): ${JSON.stringify(state.timings)}`);
+      if (values.keep) {
+        console.log(`The test server is still running at ${state.ipv4} (€${state.hourly}/hour). Delete it with: bivy rebuild --test --cleanup`);
+        return 0;
+      }
+    }
+    const problems = await cleanup(deps, existsSync(githubTokenPath));
+    if (problems.length > 0) {
+      console.error(`✗ Clean-up incomplete:\n  ${problems.join("\n  ")}`);
+      return 1;
+    }
+    console.log(`✓ Everything the test created is deleted. Now delete the temporary GitHub token on GitHub
+  (Settings → Developer settings → Fine-grained tokens), then: rm ${githubTokenPath}`);
+    return 0;
+  } catch (error) {
+    if (error instanceof WaitingForOwner) {
+      console.log(error.message);
+      return 2;
+    }
+    console.error(`✗ ${(error as Error).message}`);
+    if (!values.cleanup && existsSync(config("rebuild-test.json"))) {
+      // The test server may hold the age key and a full copy of the data.
+      console.error("The test server may still be running, billed, with a copy of the data: run again to carry on, or delete it with\n  bivy rebuild --test --cleanup");
+    }
+    return 1;
+  }
+}
+
+main(process.argv.slice(2)).then((code) => {
+  process.exitCode = code;
+});

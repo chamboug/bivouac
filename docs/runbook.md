@@ -701,3 +701,70 @@ its kept `bivouac_r…` ones, `DROP ROLE`, its OIDC client
 (`DELETE /api/oidc/clients/<app>` with the static API key, decrypted in
 memory), and `restic forget` of its `pre-restore` copies (from the Mac, with
 the secrets in environment variables).
+
+## 15. Rebuilding from the backups: `bivy rebuild --test` (D91)
+
+A temporary copy of the platform, rebuilt from the latest `nightly` copy on a
+server billed by the hour, checked against the real one, then deleted. Done
+before the prod phase, then every 3 months with the app check of section 13.
+It never touches the real server, its IPs, the DNS, or the backup repository
+other than to read. Cost: a CX23 is about €0.01 an hour, plus a temporary IPv4.
+
+**Before**: a nightly copy that succeeded (section 12); the Hetzner token in
+`~/.config/bivouac/hetzner-token`; and a **temporary GitHub token** typed into
+`~/.config/bivouac/github-rebuild-token` (the command prints its pre-filled
+creation link: one day, "Administration: write", only the instance repo).
+That permission can also delete the repo: delete the token as soon as the test
+is over. The test's deploy key is deleted with it (GitHub docs).
+
+```bash
+bivy rebuild --test <instance-dir> --ssh-key ~/.ssh/<key>
+```
+
+1. It creates, all labelled `bivouac-rebuild-test=<run>`: a firewall open to
+   the Mac's IPv4 only, a Primary IPv6, and a server from the Flatcar snapshot
+   (CX23 where one can be ordered), whose Ignition carries that IPv6. Then it
+   stops and prints the SSH host key it sees.
+2. **The owner** opens the server's console in Hetzner's web console and reads
+   the `SSH host key: SHA256:… (ED25519)` line. Only if it is identical:
+
+   ```bash
+   bivy rebuild --test <instance-dir> --ssh-key ~/.ssh/<key> --host-key SHA256:…
+   ```
+
+3. It goes on, each step once (an interruption is resumed by running the same
+   command): first-boot checks; the rebuild marker `{"mode":"test"}` in
+   `/etc/bivouac/rebuild.json`; the deploy key generated on the server and
+   added read-only; the age key (standard input, compared by hash); Postgres
+   alone; `restore-platform` (below); Pocket ID, Caddy and the apps; then the
+   checks: Pocket ID publishes the **same signing keys** as the real server,
+   and each app answers its health check through Caddy.
+4. Without `--keep`, it deletes everything it created and checks nothing with
+   its label is left. `bivy rebuild --test --cleanup` does the same after an
+   interruption; it only ever deletes what carries the label, never anything
+   protected. Then delete the GitHub token.
+
+**On a test server** (`"mode": "test"`), for its whole life: no backup,
+clean-up or restore test, no alert, no healthchecks.io ping, no mail settings
+for Pocket ID, and Caddy's own certificate authority (`local_certs`). Its
+known_hosts file is `~/.config/bivouac/known_hosts-rebuild-test`.
+
+**`restore-platform`**, run by `bivy` on a server waiting for its data
+(`docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-platform [--list] [--snapshot <id>] [--yes]`):
+without `--yes` it only says which copy and what it holds. With it: the dumps
+come back from restic (`--no-lock`: nothing is written to the repository);
+Pocket ID's database, then each app's, is created empty with its role and
+derived password, and the dump loaded **as that role** in one transaction
+(D75); the volumes are restored into volumes that do not exist yet. It
+refuses on a server that is not waiting for its data, and never loads into a
+database or volume it did not create. Run again after an interruption, it
+carries on from where it stopped. Once done, it writes
+`/var/lib/bivouac/rebuild/restored.json`, and the next pass starts Pocket ID,
+the apps and Caddy.
+
+**What it proves, and what it does not**: see D91. A real passkey login is
+not tried: passkeys are bound to `auth.<domain>`, which points to the real
+server.
+
+**A real rebuild** is not automated yet: it is a separate decision, with the
+owner's consent (rule 5). The real server is never rebuilt to try it.
