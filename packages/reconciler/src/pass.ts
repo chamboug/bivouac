@@ -20,6 +20,7 @@ import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
 import type { SelfUpdater } from "./self-update.js";
 import { sshKeysProblem, writeSshKeys } from "./ssh-keys.js";
 import { isReachable } from "./metadata-check.js";
+import { readRebuildState, type RebuildState } from "./rebuild.js";
 
 export interface PassConfig {
   source: GitSource;
@@ -29,6 +30,8 @@ export interface PassConfig {
   ageKey: string;
   /** Replaces platform.yml's backup destination, for the tests. */
   backupRepository?: string;
+  /** Placed by `bivy rebuild` (D91); absent on a server that is not being rebuilt. */
+  rebuildMarker: string;
 }
 
 export type Prepared =
@@ -36,7 +39,15 @@ export type Prepared =
   | { status: "invalid"; commit: string; errors: ValidationError[] };
 
 export type PassResult =
-  | { status: "applied" | "unchanged"; commit: string; changes: string[]; failures: { app: string; message: string }[]; backup?: BackupPlan }
+  | {
+      status: "applied" | "unchanged";
+      commit: string;
+      changes: string[];
+      failures: { app: string; message: string }[];
+      backup?: BackupPlan;
+      /** On a server being rebuilt (D91). */
+      rebuild?: RebuildState;
+    }
   | { status: "invalid"; commit: string; errors: ValidationError[] }
   /** platform.yml names a new reconciler version, ready to run: exit so systemd restarts on it. */
   | { status: "restart"; commit: string; image: string };
@@ -88,14 +99,23 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   // First, and independent of the secrets: a broken secrets file must not
   // keep a key change from reaching the server.
   if (instance.sshKeys && writeSshKeys(runtime.stateDir, instance.sshKeys)) changes.push("SSH keys");
+  const rebuild = readRebuildState(config.rebuildMarker, runtime.stateDir);
+  const test = rebuild?.mode === "test";
   const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
   let alertsProblem: string | undefined;
   try {
-    saveAlertCredentials(runtime.stateDir, secrets.alerts);
+    // A test server never alerts anyone (D91): it does not even keep the credentials.
+    if (!test) saveAlertCredentials(runtime.stateDir, secrets.alerts);
   } catch (error) {
     alertsProblem = `the alert credentials could not be saved: ${(error as Error).message}`;
   }
-  await ensureBase(runtime, secrets, domain, instance.platform.mail, changes);
+  // A test server sends no mail: it is a copy of the platform, not the platform.
+  await ensureBase(runtime, secrets, domain, test ? undefined : instance.platform.mail, changes, { postgresOnly: rebuild?.waiting === true });
+  if (rebuild?.waiting) {
+    // Nothing else until restore-platform has brought the data back: no
+    // Pocket ID, no app, no Caddy, no backup.
+    return { status: changes.length > 0 ? "applied" : "unchanged", commit, changes, failures: await platformChecks(runtime, alertsProblem), rebuild };
+  }
 
   const context = {
     runtime,
@@ -115,10 +135,29 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   for (const result of results) changes.push(...result.changes);
 
   const routed = instance.apps.filter((app) => results.find((result) => result.name === app.name)?.routed);
-  const { caddyfile } = generateCaddyfile(instance.platform, routed, instance.sites);
+  const { caddyfile } = generateCaddyfile(instance.platform, routed, instance.sites, { localCerts: test });
   await ensureCaddy(runtime, caddyfile, changes);
 
   const failures = results.flatMap((result) => (result.failure ? [{ app: result.name, message: result.failure }] : []));
+  failures.push(...(await platformChecks(runtime, alertsProblem)));
+  if (instance.platform.backup && !secrets.backup) {
+    failures.push({ app: "(platform)", message: "platform.yml names a backup destination, but 'backup' is missing from the secrets file" });
+  }
+  // A test server never backs up: the repository is the real server's (D91).
+  const backup = test ? undefined : backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
+  return {
+    status: changes.length > 0 ? "applied" : "unchanged",
+    commit,
+    changes,
+    failures,
+    ...(backup ? { backup } : {}),
+    ...(rebuild ? { rebuild } : {}),
+  };
+}
+
+/** What every pass checks about the platform itself, whatever else it did. */
+async function platformChecks(runtime: Runtime, alertsProblem: string | undefined): Promise<{ app: string; message: string }[]> {
+  const failures: { app: string; message: string }[] = [];
   if (alertsProblem) failures.push({ app: "(platform)", message: alertsProblem });
   const keysProblem = sshKeysProblem(runtime.stateDir);
   if (keysProblem) failures.push({ app: "(platform)", message: keysProblem });
@@ -128,11 +167,7 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
       message: `containers can reach the metadata service (${runtime.metadataCheck}): its block is missing (D7)`,
     });
   }
-  if (instance.platform.backup && !secrets.backup) {
-    failures.push({ app: "(platform)", message: "platform.yml names a backup destination, but 'backup' is missing from the secrets file" });
-  }
-  const backup = backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
-  return { status: changes.length > 0 ? "applied" : "unchanged", commit, changes, failures, ...(backup ? { backup } : {}) };
+  return failures;
 }
 
 /**

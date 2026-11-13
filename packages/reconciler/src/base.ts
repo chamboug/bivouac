@@ -110,6 +110,7 @@ export async function ensureBase(
   domain: string,
   mail: MailConfig | undefined,
   changes: string[],
+  options: { postgresOnly?: boolean } = {},
 ): Promise<void> {
   const { docker } = runtime;
   const both = { [PLATFORM_NETWORKS.apps.name]: null, [PLATFORM_NETWORKS.internal.name]: null };
@@ -142,6 +143,9 @@ export async function ensureBase(
   });
 
   await closePlatformDatabases(server);
+  // A rebuilt server waiting for its data (D91): Pocket ID must not create
+  // its tables in an empty database before the restore loads them.
+  if (options.postgresOnly) return;
 
   const pocketIdDatabase = {
     name: POCKET_ID_DATABASE,

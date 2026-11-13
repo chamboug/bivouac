@@ -7,6 +7,7 @@ import { loadInstance } from "@bivouac/manifest";
 import { BackupScheduler, backupPlan, runBackup, runMaintenance, runRestoreTest } from "./backup.js";
 import { appBeingRestored } from "./lock.js";
 import { parseRestoreArgs, restoreApp } from "./restore.js";
+import { DEFAULT_MARKER, parsePlatformRestoreArgs, readRebuildState, restorePlatform } from "./rebuild.js";
 import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
 import { checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
@@ -41,6 +42,8 @@ import { SelfUpdater } from "./self-update.js";
  *   BIVOUAC_RECONCILER_IMAGE  the image this reconciler runs, set by the
  *                             systemd unit; without it, the reconciler does
  *                             not update itself (D50)
+ *   BIVOUAC_REBUILD_MARKER    where `bivy rebuild` places its marker
+ *                             (default: /etc/bivouac/rebuild.json, D91)
  *   /etc/bivouac/deploy_key   read-only deploy key (D30)
  *   /etc/bivouac/age.key      age key decrypting the secrets (D7)
  *
@@ -53,6 +56,9 @@ import { SelfUpdater } from "./self-update.js";
  * `main.js restore-app <app> [options]` restores one app's data from a
  * backup (restore.ts, runbook section 14), beside the running reconciler:
  * `docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-app …`.
+ *
+ * `main.js restore-platform [--list] [--snapshot <id>] [--yes]` brings the
+ * whole platform's data back on a server being rebuilt (rebuild.ts, D91).
  *
  * `main.js selftest` only checks that the image runs and finds its tools
  * (git, ssh, sops): a new version passes it before the reconciler moves to
@@ -88,6 +94,7 @@ function configFromEnvironment(): PassConfig & { interval: number; self: string;
     checkout: join(stateDir, "repo"),
     ageKey: env.BIVOUAC_AGE_KEY ?? "/etc/bivouac/age.key",
     ...(env.BIVOUAC_BACKUP_REPOSITORY ? { backupRepository: env.BIVOUAC_BACKUP_REPOSITORY } : {}),
+    rebuildMarker: env.BIVOUAC_REBUILD_MARKER ?? DEFAULT_MARKER,
     interval,
     self,
     ...(env.BIVOUAC_RECONCILER_IMAGE ? { image: env.BIVOUAC_RECONCILER_IMAGE } : {}),
@@ -167,6 +174,11 @@ async function main(argv: string[]): Promise<number> {
   if (argv[0] === "restore-app") {
     try {
       const options = parseRestoreArgs(argv.slice(1));
+      // It first sends a safety copy to the repository: never from a test
+      // server, nor before the platform's data is back (D91).
+      const rebuild = readRebuildState(config.rebuildMarker, config.runtime.stateDir);
+      if (rebuild?.mode === "test") throw new Error("this is a rebuild test server: it never writes to the backups, and restore-app does");
+      if (rebuild?.waiting) throw new Error("this server is waiting for its data: use restore-platform");
       // The checkout as the running reconciler last applied it: syncing it
       // here would race with its passes.
       const instance = loadInstance(config.checkout);
@@ -175,6 +187,22 @@ async function main(argv: string[]): Promise<number> {
       const plan = backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
       if (!plan) throw new Error("backups are not configured on this platform");
       await restoreApp({ runtime: config.runtime, plan, secrets, apps: instance.apps, log }, options);
+      return 0;
+    } catch (error) {
+      log("restore failed", { error: (error as Error).message });
+      return 1;
+    }
+  }
+
+  if (argv[0] === "restore-platform") {
+    try {
+      const options = parsePlatformRestoreArgs(argv.slice(1));
+      const instance = loadInstance(config.checkout);
+      if (!instance.platform) throw new Error("the instance repo checkout cannot be read: wait for a pass");
+      const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
+      const plan = backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
+      if (!plan) throw new Error("backups are not configured on this platform: there is nothing to restore from");
+      await restorePlatform({ runtime: config.runtime, plan, secrets, apps: instance.apps, marker: config.rebuildMarker, log }, options);
       return 0;
     } catch (error) {
       log("restore failed", { error: (error as Error).message });
@@ -214,7 +242,23 @@ async function main(argv: string[]): Promise<number> {
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
 
+  /**
+   * A test server (D91) never alerts, pings or backs up: the real server is
+   * still running. A marker that cannot be read stops every pass, and is
+   * reported: a test server cannot send alerts anyway (its credentials are
+   * never saved, and it never gets a backup plan), while a real server must
+   * not fall silent.
+   */
+  const testServer = () => {
+    try {
+      return readRebuildState(config.rebuildMarker, config.runtime.stateDir)?.mode === "test";
+    } catch {
+      return false;
+    }
+  };
+
   const loop = async () => {
+    const quiet = testServer();
     try {
       await backups.recover();
       const result = await runPass(config, config.runtime, selfUpdater);
@@ -226,13 +270,17 @@ async function main(argv: string[]): Promise<number> {
         // does a restore of one app, which runs inside this container.
         process.exit(0);
       }
-      if (result.status === "applied" || result.status === "unchanged") backups.update(result.backup);
-      backups.tick();
-      await watch?.afterPass({ result }, [backups.observation()]);
+      if (result.status === "applied" || result.status === "unchanged") backups.update(quiet ? undefined : result.backup);
+      if (!quiet) {
+        backups.tick();
+        await watch?.afterPass({ result }, [backups.observation()]);
+      }
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
-      backups.tick();
-      await watch?.afterPass({ error: error as Error }, [backups.observation()]);
+      if (!quiet) {
+        backups.tick();
+        await watch?.afterPass({ error: error as Error }, [backups.observation()]);
+      }
     }
     if (!stopping) {
       timer = setTimeout(() => void loop(), config.interval * 1000);

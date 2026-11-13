@@ -130,6 +130,13 @@ export class Docker {
     }
   }
 
+  async volumeExists(name: string): Promise<boolean> {
+    const response = await this.call("GET", `/volumes/${encodeURIComponent(name)}`);
+    if (response.status === 404) return false;
+    if (response.status !== 200) throw new DockerError(`inspect volume ${name}: ${errorMessage(response)}`, response.status);
+    return true;
+  }
+
   async networkExists(name: string): Promise<boolean> {
     const response = await this.call("GET", `/networks/${encodeURIComponent(name)}`);
     if (response.status === 404) return false;

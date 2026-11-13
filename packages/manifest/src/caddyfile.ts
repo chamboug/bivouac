@@ -44,6 +44,7 @@ export function generateCaddyfile(
   platform: PlatformConfig,
   apps: AppManifest[],
   sites: SiteManifest[],
+  options: { localCerts?: boolean } = {},
 ): CaddyfileResult {
   const errors: ValidationError[] = [];
   const blocks: string[] = [
@@ -52,6 +53,9 @@ export function generateCaddyfile(
       "# The admin API only listens inside Caddy's container; the reconciler",
       "# reloads the config with `docker exec`.",
       "admin localhost:2019",
+      // A rebuild test server (D91): the names point to the real server, so
+      // certificates come from Caddy's own authority, never Let's Encrypt.
+      ...(options.localCerts ? ["local_certs"] : []),
     ]),
     authBlock(platform),
   ];

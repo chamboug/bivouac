@@ -124,6 +124,8 @@ export function runRestic(
 ): Promise<OneOffResult> {
   const local = plan.repository.startsWith("/");
   if (local) mkdirSync(plan.repository, { recursive: true });
+  // On a new server nothing has created it yet (a rebuild's first reads, D91).
+  mkdirSync(join(runtime.stateDir, "backup", "cache"), { recursive: true, mode: 0o700 });
   return runOneOff(runtime, {
     name,
     image: PLATFORM_IMAGES.restic,
@@ -321,6 +323,8 @@ export async function runMaintenance(runtime: Runtime, plan: BackupPlan, log: (m
 const RESTORE_CONTAINER = "bivouac-restore-test";
 /** The one-off containers of a restore of one app (restore.ts). */
 export const RESTORE_APP_CONTAINERS = ["bivouac-restore-app-read", "bivouac-restore-app", "bivouac-restore-app-dump", "bivouac-restore-app-load", "bivouac-restore-app-files"];
+/** The one-off containers of a rebuild's restore (rebuild.ts). */
+export const REBUILD_CONTAINERS = ["bivouac-rebuild-read", "bivouac-rebuild-restic", "bivouac-rebuild-load"];
 const RESTORE_STUCK_AFTER = 3 * HOUR;
 const USER_TABLES = "SELECT count(*) AS count FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
 const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
@@ -544,7 +548,7 @@ export class BackupScheduler {
     const { runtime } = this.options;
     const stale = clearStaleLock(runtime.stateDir);
     if (stale?.job === "restore") this.options.log("a restore was interrupted: its app stays stopped until it is restored again", { app: stale.app });
-    for (const name of [CONTAINER, `${CONTAINER}-dump`, RESTORE_CONTAINER, ...RESTORE_APP_CONTAINERS]) {
+    for (const name of [CONTAINER, `${CONTAINER}-dump`, RESTORE_CONTAINER, ...RESTORE_APP_CONTAINERS, ...REBUILD_CONTAINERS]) {
       await runtime.docker.removeContainer(name, { anonymousVolumes: true });
     }
     for (const leftover of ["dumps", "restore-test", "restore-app"]) rmSync(join(runtime.stateDir, "backup", leftover), { recursive: true, force: true });

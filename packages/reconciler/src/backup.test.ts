@@ -280,6 +280,7 @@ describe("after a restart in the middle of a run", () => {
     expect(removed).toEqual([
       "bivouac-backup:true", "bivouac-backup-dump:true", "bivouac-restore-test:true",
       "bivouac-restore-app-read:true", "bivouac-restore-app:true", "bivouac-restore-app-dump:true", "bivouac-restore-app-load:true", "bivouac-restore-app-files:true",
+      "bivouac-rebuild-read:true", "bivouac-rebuild-restic:true", "bivouac-rebuild-load:true",
     ]);
     expect(existsSync(join(stateDir, "backup", "dumps"))).toBe(false);
     expect(existsSync(join(stateDir, "backup", "restore-test"))).toBe(false);

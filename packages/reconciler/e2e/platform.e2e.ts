@@ -4,6 +4,9 @@
  * like passes on a real server.
  */
 import { createHash, createHmac } from "node:crypto";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PLATFORM_IMAGES } from "../../manifest/src/platform.ts";
 import {
@@ -714,5 +717,103 @@ describe("z. turning an app's MCP off (D85)", () => {
     expect(pocketIdApi(platform, "GET", "/api/oidc/clients/recettes-mcp").status).toBe(404);
     expect(inspect<ContainerState>("bivouac-app-recettes").Config.Env.some((line) => line.startsWith("MCP_RESOURCE="))).toBe(false);
     expect(pocketIdApi(platform, "GET", "/api/oidc/clients/recettes").status).toBe(200);
+  });
+});
+
+describe("l. rebuilding the platform from a copy, in test mode (D91)", () => {
+  const owner = (sql: string) => psql("recettes", derive(platform.masterSecret, "db:recettes"), "recettes", sql);
+  const superuser = (database: string, sql: string) => psql("postgres", derive(platform.masterSecret, "postgres:superuser"), database, sql);
+  const titles = () => owner("SELECT title FROM public.books ORDER BY title").stdout.trim();
+  const uploads = () => run("docker", ["run", "--rm", "--volume", "bivouac-app-recettes_uploads:/v", "alpine:3.24", "sh", "-c", "ls /v; stat -c %u:%g /v/book.epub"]).stdout.trim();
+  const pocketIdUsers = () => superuser("bivouac_pocket_id", "SELECT count(*) FROM public.users").stdout.trim();
+  const running = () => docker("ps", "--format", "{{.Names}}", "--filter", "label=bivouac.managed=true").split("\n").filter(Boolean).sort();
+  const messages = (pass: PassOutput) => pass.logs.map((line) => line.message);
+  let rebuilt: Platform;
+  let env: Record<string, string>;
+  /** Every file of the repository with its hash: a rebuild must not change one byte. */
+  const repositoryListing = () =>
+    docker("run", "--rm", "--volume", `${rebuilt.state}/restic-repo:/repo:ro`, "alpine:3.24", "sh", "-c", "cd /repo && find . -type f | sort | xargs sha256sum");
+  const before = { titles: "", uploads: "", users: "" };
+  let listing = "";
+
+  beforeAll(() => {
+    const repository = `${platform.state}/restic-repo`;
+    const backup = runOnce(platform, { args: ["--backup"], env: { BIVOUAC_BACKUP_REPOSITORY: repository } });
+    expect(backup.status).toBe(0);
+    before.titles = titles();
+    before.uploads = uploads();
+    before.users = pocketIdUsers();
+    expect(before.titles).not.toBe("");
+
+    // A new server: nothing left of the old one but the repository.
+    const refused = runOnce(platform, { command: "restore-platform", args: ["--yes"], env: { BIVOUAC_BACKUP_REPOSITORY: repository } });
+    expect(refused.status).toBe(1);
+    expect(JSON.stringify(refused.logs)).toContain("not being rebuilt");
+    destroyPlatform();
+    const state = realpathSync(mkdtempSync(join(tmpdir(), "bivouac-e2e-rebuilt-")));
+    docker("run", "--rm", "--volume", `${platform.state}:/old:ro`, "--volume", `${state}:/new`, "alpine:3.24", "cp", "-a", "/old/restic-repo", "/new/restic-repo");
+    rebuilt = { ...platform, state };
+    writeStateFile(rebuilt, "marker/rebuild.json", '{"mode":"test"}');
+    env = { BIVOUAC_REBUILD_MARKER: `${state}/marker/rebuild.json`, BIVOUAC_BACKUP_REPOSITORY: `${state}/restic-repo` };
+    listing = repositoryListing();
+  });
+
+  it("starts only Postgres until the data is back", () => {
+    const pass = runOnce(rebuilt, { env });
+    expect(pass.status).toBe(0);
+    expect(running()).toEqual(["bivouac-postgres"]);
+  });
+
+  it("without --yes, says what it would restore and changes nothing", () => {
+    const pass = runOnce(rebuilt, { command: "restore-platform", env });
+    expect(pass.status).toBe(0);
+    expect(messages(pass)).toEqual(expect.arrayContaining(["rebuild plan", "nothing changed: add --yes to restore"]));
+    expect(superuser("postgres", "SELECT count(*) FROM pg_database WHERE datname = 'recettes'").stdout.trim()).toBe("0");
+  });
+
+  it("restores every database as its own role, and the volumes", () => {
+    const pass = runOnce(rebuilt, { command: "restore-platform", args: ["--yes"], env });
+    expect(JSON.stringify(pass.logs)).toContain("platform restored");
+    expect(pass.status).toBe(0);
+    expect(titles()).toBe(before.titles);
+    expect(pocketIdUsers()).toBe(before.users);
+    expect(superuser("postgres", "SELECT pg_get_userbyid(datdba), has_database_privilege('public', 'recettes', 'CONNECT') FROM pg_database WHERE datname = 'recettes'").stdout.trim()).toBe("recettes|f");
+    expect(superuser("recettes", "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname = 'books'").stdout.trim()).toBe("recettes");
+    expect(uploads()).toBe(before.uploads);
+  });
+
+  it("then starts Pocket ID and the apps on their data, with the same secrets", () => {
+    let pass = runOnce(rebuilt, { env });
+    // Pocket ID may first refuse to start on a copy of a running instance (D68).
+    for (let attempt = 0; attempt < 3 && pass.status !== 0; attempt++) pass = runOnce(rebuilt, { env });
+    expect(JSON.stringify(pass.logs)).not.toContain("app failed");
+    expect(pass.status).toBe(0);
+    expect(running()).toEqual(expect.arrayContaining(["bivouac-pocket-id", "bivouac-caddy", "bivouac-app-recettes", "bivouac-app-biblio"]));
+    expect(tokenAnswer("recettes", derive(platform.masterSecret, "oidc:recettes"))).toBe("invalid_grant");
+    expect(titles()).toBe(before.titles);
+  });
+
+  it("never backs up, alerts or sends mail on a test server", () => {
+    const pass = runOnce(rebuilt, { args: ["--backup"], env });
+    expect(pass.status).toBe(1);
+    expect(JSON.stringify(pass.logs)).toContain("nothing to back up");
+    expect(readStateFile(rebuilt, "secrets/alerts/credentials.json")).toBeUndefined();
+    expect(inspect<ContainerState>("bivouac-pocket-id").Config.Env.some((line) => line.startsWith("SMTP_"))).toBe(false);
+    expect(readStateFile(rebuilt, "caddy/Caddyfile")).toContain("local_certs");
+    // restore-app would first send a safety copy to the repository.
+    const restoreApp = runOnce(rebuilt, { command: "restore-app", args: ["recettes", "--yes"], env });
+    expect(restoreApp.status).toBe(1);
+    expect(JSON.stringify(restoreApp.logs)).toContain("rebuild test server");
+  });
+
+  it("refuses to restore a second time over the restored data", () => {
+    const pass = runOnce(rebuilt, { command: "restore-platform", args: ["--yes"], env });
+    expect(pass.status).toBe(1);
+    expect(JSON.stringify(pass.logs)).toContain("already restored");
+  });
+
+  it("left the repository exactly as it was, and no container behind", () => {
+    expect(repositoryListing()).toBe(listing);
+    expect(docker("ps", "--all", "--format", "{{.Names}}", "--filter", "name=bivouac-rebuild")).toBe("");
   });
 });

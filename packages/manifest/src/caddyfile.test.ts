@@ -28,6 +28,11 @@ describe("caddyfile", () => {
     expect(generateCaddyfile(platform, [], []).caddyfile).toMatch(/^\{\n(\t#.*\n)*\tadmin localhost:2019\n\}/);
   });
 
+  it("uses Caddy's own authority only on a rebuild test server (D91)", () => {
+    expect(generateCaddyfile(platform, [], []).caddyfile).not.toContain("local_certs");
+    expect(generateCaddyfile(platform, [], [], { localCerts: true }).caddyfile).toMatch(/^\{\n(\t#.*\n)*\tadmin localhost:2019\n\tlocal_certs\n\}/);
+  });
+
   it("always refuses Pocket ID's first-admin page by default (D15)", () => {
     const { caddyfile } = generateCaddyfile(platform, [], []);
     expect(caddyfile).toContain(

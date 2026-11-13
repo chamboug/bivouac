@@ -131,8 +131,8 @@ function parseJsonLine<T>(output: string): T {
   return JSON.parse(line) as T;
 }
 
-async function listSnapshots(runtime: Runtime, plan: BackupPlan): Promise<Snapshot[]> {
-  const result = await runRestic(runtime, plan, 10 * MINUTE, ["snapshots", "--no-lock", "--host", RESTIC_HOST, "--json"], [], READ_CONTAINER);
+export async function listSnapshots(runtime: Runtime, plan: BackupPlan, name: string = READ_CONTAINER): Promise<Snapshot[]> {
+  const result = await runRestic(runtime, plan, 10 * MINUTE, ["snapshots", "--no-lock", "--host", RESTIC_HOST, "--json"], [], name);
   if (result.exitCode !== 0) throw new Error(`restic snapshots failed (exit ${result.exitCode}): ${lastLine(result.logs)}`);
   return parseJsonLine<Snapshot[]>(result.logs);
 }
@@ -336,9 +336,9 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
  * own table (PostGIS's `spatial_ref_sys`, observed): the role may not write
  * them, and the extension brought them back already.
  */
-async function loadDump(runtime: Runtime, role: string, target: string, dumps: string, password: string): Promise<void> {
+export async function loadDump(runtime: Runtime, role: string, target: string, dumps: string, password: string, name: string = LOAD_CONTAINER): Promise<void> {
   await checked(`loading the dump of ${role}`, runOneOff(runtime, {
-    name: LOAD_CONTAINER,
+    name,
     image: PLATFORM_IMAGES.postgres,
     env: { PGPASSWORD: password },
     cmd: [
