@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { appManifestSchema } from "@bivouac/manifest";
 import { Hetzner } from "./hetzner.js";
 import { HOST_KEY_PATH, secretsIn } from "./hostkey.js";
-import { rebuildReal, type RealDependencies, type RealState, type RebuildPlan } from "./rebuild-real.js";
+import { spawnSync } from "node:child_process";
+import { checkoutProblems, rebuildReal, type RealDependencies, type RealState, type RebuildPlan } from "./rebuild-real.js";
 import type { CommandOutput, Remote } from "./remote.js";
 
 type Json = Record<string, unknown>;
@@ -24,6 +25,7 @@ class FakeHetzner {
   failRebuild = false;
   failStatus = 500;
   loseAnswer = false;
+  killOnRebuild = false;
   actions: Json[] = [];
   servers: Json[] = [{ id: 1, name: "bivouac", status: "running", labels: {}, location: { name: "fsn1" }, protection: { delete: true, rebuild: true }, server_type: { name: "cx23" }, public_net: { ipv4: { id: 2, ip: "203.0.113.10" }, ipv6: { id: 3, ip: "2001:db8:1::/64" }, firewalls: [{ id: 4 }] } }];
   ips: Json[] = [
@@ -56,6 +58,7 @@ class FakeHetzner {
       return server ? reply(200, { server }) : reply(404, { error: { code: "not_found", message: "no" } });
     }
     if (/^\/servers\/\d+\/actions$/.test(path) && method === "GET") return reply(200, { actions: this.actions });
+    if (/^\/actions\/\d+$/.test(path) && method === "GET") return reply(200, { action: { id: 1, status: "success" } });
     if ((match = /^\/servers\/(\d+)\/actions\/change_protection$/.exec(path))) {
       const server = this.servers.find((entry) => entry.id === Number(match?.[1]));
       if (server) server.protection = { delete: body.delete, rebuild: body.rebuild };
@@ -64,10 +67,11 @@ class FakeHetzner {
     if ((match = /^\/servers\/(\d+)\/actions\/rebuild$/.exec(path))) {
       const server = this.servers.find((entry) => entry.id === Number(match?.[1]));
       if ((server?.protection as Json).rebuild) return reply(403, { error: { code: "protected", message: "protected" } });
+      if (this.killOnRebuild) throw new Error("killed");
       if (this.failRebuild) return reply(this.failStatus, { error: { code: "server_error", message: "boom" } });
       this.userData = String(body.user_data);
       this.onNewSystem();
-      this.actions.unshift({ id: action.id, command: "rebuild_server", started: "2026-11-14T09:30:00Z", status: "success" });
+      this.actions.unshift({ id: action.id, command: "rebuild_server", status: "success" });
       if (this.loseAnswer) throw new TypeError("fetch failed");
       return reply(201, { action, root_password: "not-for-anyone" });
     }
@@ -257,7 +261,7 @@ describe("bivy rebuild (D91)", () => {
 
   it("stops on an instance checkout that is not exactly origin/main", async () => {
     const { deps } = setup({ checkout: () => ["/x is not exactly origin/main: pull first"] });
-    await expect(rebuildReal(deps, options)).rejects.toThrow(/plan has problems/);
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/checkout cannot be trusted/);
   });
 
   it("--plan never acts, even with a rebuild under way", async () => {
@@ -287,16 +291,75 @@ describe("bivy rebuild (D91)", () => {
     expect(server.backupAsked).toBe(true);
   });
 
-  it("can abandon a rebuild that erased nothing, never one that did", async () => {
+  it("can abandon a rebuild that erased nothing, never one that may have", async () => {
     const { deps, hetzner } = setup({ probeReal: () => ({ status: 503, body: "" }) });
     await expect(rebuildReal(deps, options)).rejects.toThrow(/503/);
     await rebuildReal(deps, { ...options, abandon: true });
     expect(existsSync(deps.stateFile)).toBe(false);
     deps.probeReal = () => ({ status: 200, body: JWKS });
+    hetzner.loseAnswer = true;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/fetch failed/);
+    await expect(rebuildReal(deps, { ...options, abandon: true })).rejects.toThrow(/may already have been sent/);
+  });
+
+  it("a rebuild Hetzner never carried out leads to a new plan, confirmation and backup, not a silent resend", async () => {
+    const { deps, hetzner, server, asked } = setup();
     hetzner.failRebuild = true;
-    hetzner.failStatus = 500;
+    hetzner.failStatus = 503;
     await expect(rebuildReal(deps, options)).rejects.toThrow(/boom/);
-    await expect(rebuildReal(deps, { ...options, abandon: true })).rejects.toThrow(/carried on, not abandoned/);
+    expect(hetzner.servers[0]?.protection).toEqual({ delete: true, rebuild: true });
+    hetzner.failRebuild = false;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/never carried out by Hetzner: nothing was erased/);
+    expect(hetzner.calls.filter((call) => call.includes("/actions/rebuild"))).toHaveLength(1);
+    expect(server.rebuilt).toBe(false);
+    server.backupAsked = false;
+    await rebuildReal(deps, options);
+    expect(asked).toHaveLength(2);
+    expect(server.backupAsked).toBe(true);
+  });
+
+  it("a refused rebuild (4xx) starts over", async () => {
+    const { deps, hetzner, asked } = setup();
+    hetzner.failRebuild = true;
+    hetzner.failStatus = 422;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/boom/);
+    hetzner.failRebuild = false;
+    await rebuildReal(deps, options);
+    expect(asked).toHaveLength(2);
+  });
+
+  it("puts the protection back first when a run was killed while it was lifted", async () => {
+    const { deps, hetzner } = setup();
+    hetzner.killOnRebuild = true;
+    // A kill skips the finally: simulated by lifting the protection by hand.
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/killed/);
+    (hetzner.servers[0] as Json).protection = { delete: false, rebuild: false };
+    hetzner.killOnRebuild = false;
+    deps.ask = async () => "no";
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/never carried out/);
+    expect(hetzner.servers[0]?.protection).toEqual({ delete: true, rebuild: true });
+  });
+
+  it("takes over the lock of a run whose process is gone", async () => {
+    const { deps } = setup();
+    writeFileSync(`${deps.stateFile}.lock`, "999999999\n");
+    await rebuildReal(deps, options);
+    expect(existsSync(`${deps.stateFile}.lock`)).toBe(false);
+  });
+
+  it("checks the instance checkout again on a resumed run", async () => {
+    let problems: string[] = [];
+    const { deps, server } = setup({ checkout: () => problems });
+    const original = server.run.bind(server);
+    server.run = (command) => {
+      if (server.rebuilt && !problems.length && command.includes("ssh-keygen")) {
+        problems = ["/x has uncommitted changes"];
+        throw new Error("connection lost");
+      }
+      return original(command);
+    };
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/connection lost/);
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/checkout cannot be trusted/);
   });
 
   it("stops when the fresh backup fails, without erasing anything", async () => {
@@ -405,5 +468,28 @@ describe("bivy rebuild (D91)", () => {
     expect((created.body as Json).public_net).toEqual({ enable_ipv4: true, enable_ipv6: true, ipv4: 2, ipv6: 3 });
     expect((created.body as Json).firewalls).toEqual([{ firewall: 4 }]);
     expect(server.backupAsked).toBe(false);
+  });
+});
+
+describe("the instance checkout", () => {
+  it("must be exactly origin/main with nothing uncommitted (.DS_Store aside)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bivy-checkout-"));
+    dirs.push(dir);
+    const git = (cwd: string, ...args: string[]) => spawnSync("git", ["-C", cwd, "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { encoding: "utf8" });
+    git(dir, "init", "-q", "--bare", "-b", "main", "origin.git");
+    git(dir, "clone", "-q", join(dir, "origin.git"), "work");
+    const work = join(dir, "work");
+    writeFileSync(join(work, "platform.yml"), "a\n");
+    git(work, "add", ".");
+    git(work, "commit", "-qm", "one");
+    git(work, "push", "-q", "origin", "HEAD:main");
+    expect(checkoutProblems(work)).toEqual([]);
+    writeFileSync(join(work, ".DS_Store"), "x");
+    expect(checkoutProblems(work)).toEqual([]);
+    writeFileSync(join(work, "platform.yml"), "b\n");
+    expect(checkoutProblems(work).join()).toMatch(/uncommitted/);
+    git(work, "commit", "-qam", "two");
+    expect(checkoutProblems(work).join()).toMatch(/not exactly origin\/main/);
+    expect(checkoutProblems(join(dir, "nowhere")).join()).toMatch(/git fetch failed/);
   });
 });

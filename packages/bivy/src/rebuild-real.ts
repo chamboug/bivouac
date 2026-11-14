@@ -1,5 +1,6 @@
-import { closeSync, copyFileSync, existsSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { AUTH_SUBDOMAIN, type AppManifest, type PlatformConfig, type SshKeys } from "@bivouac/manifest";
 import { repositoryPath } from "./github.js";
 import { HetznerError, orderableTypes, type Hetzner, type Image, type PrimaryIp, type Server } from "./hetzner.js";
@@ -92,8 +93,10 @@ export interface RealState extends RunState {
   ipv4Id: number;
   ipv6Id: number;
   firewallId?: number;
-  /** When the rebuild or the creation was about to be sent (the Mac's clock): a lost answer is looked up, not sent again blindly. */
+  /** Set just before the rebuild or the creation is sent: a lost answer is looked up, never sent again blindly. */
   requesting?: string;
+  /** The server's newest action before the rebuild was sent: a rebuild action after it is ours. */
+  lastActionId?: number;
   /** Set as soon as Hetzner accepted the rebuild or the creation: never sent twice. */
   serverRequested?: boolean;
   /** The old server could not make a fresh backup, and the owner accepted it. */
@@ -101,6 +104,16 @@ export interface RealState extends RunState {
   /** Pocket ID's public signing keys before the rebuild, to compare after. */
   signingKeys?: string;
   knownHostsBackup?: string;
+}
+
+/** The rebuild trusts the instance checkout (SSH keys, versions, apps): it must be exactly origin/main. */
+export function checkoutProblems(root: string): string[] {
+  const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  if (git("fetch", "--quiet", "origin").status !== 0) return [`git fetch failed in ${root}`];
+  const dirty = git("status", "--porcelain").stdout.split("\n").filter((line) => line.trim() && !line.endsWith(".DS_Store"));
+  const problems = dirty.length > 0 ? [`${root} has uncommitted changes: ${dirty.slice(0, 3).join(", ")}`] : [];
+  if (git("rev-parse", "HEAD").stdout.trim() !== git("rev-parse", "origin/main").stdout.trim()) problems.push(`${root} is not exactly origin/main: pull first`);
+  return problems;
 }
 
 const isOurs = (labels: Record<string, string>) => TEST_LABEL in labels;
@@ -216,7 +229,7 @@ export function describePlan(plan: RebuildPlan, domain: string): string {
     `  IPs kept: ${plan.ipv4.ip} and ${plan.ipv6.ip}; DNS of ${domain} unchanged.`,
     `  Firewall: ${plan.firewall ? plan.firewall.name : "missing"}. Image: Flatcar ${plan.image.labels["flatcar-version"] ?? "?"} (snapshot ${plan.image.id}).`,
     "unreachable" in plan.backup
-      ? `  The old server does not answer (${plan.backup.unreachable}): what was written since its last nightly copy is LOST.`
+      ? `  The old server does not answer (${plan.backup.unreachable}): what was written since its last nightly copy is LOST. If Pocket ID is only restarting (about a minute, D68), wait and plan again.`
       : `  Last backup of the old server: ${plan.backup.lastSuccessAt ?? "none"}. A fresh one is made first; nothing is erased if it fails.`,
     "  Afterwards: you add the new server's read-only deploy key on GitHub when asked, and remove the old one at the end.",
   ];
@@ -267,26 +280,29 @@ async function ownerAddsDeployKey(deps: RealDependencies, platform: PlatformConf
 
 const jwksKeys = (body: string) => JSON.stringify((JSON.parse(body) as { keys: { kid: string; n?: string; x?: string }[] }).keys.map((key) => [key.kid, key.n ?? key.x]).sort());
 
+const erased = (entry: RealState) => entry.serverRequested === true || entry.requesting !== undefined;
+
 export async function rebuildReal(deps: RealDependencies, options: RealOptions): Promise<RealState | RebuildPlan> {
   const { platform } = (deps.instance ?? (() => instanceOf(options.root)))();
-  const state = readState<RealState>(deps.stateFile);
-  const erased = (entry: RealState) => entry.serverRequested === true || entry.requesting !== undefined;
 
   if (options.plan) {
+    const state = readState<RealState>(deps.stateFile);
     // Only ever reads, whatever state a rebuild is in.
     if (state) deps.log(`A rebuild is under way (${state.run}): ${erased(state) ? "the server was already sent for rebuilding; run without --plan to carry on" : "it stopped before anything was erased"}. Steps done: ${state.done.join(", ") || "none"}.\n`);
     const plan = await planRebuild(deps, options);
     deps.log(describePlan(plan, platform.domain));
     return plan;
   }
-  if (options.abandon) {
+  // The state is read inside the lock: another run cannot change it meanwhile.
+  return withLock(`${deps.stateFile}.lock`, async () => {
+    const state = readState<RealState>(deps.stateFile);
+    if (!options.abandon) return run(deps, options, state);
     if (!state) throw new RebuildError("no rebuild under way: nothing to abandon");
-    if (erased(state)) throw new RebuildError("the server was already sent for rebuilding: the rebuild must be carried on, not abandoned");
+    if (erased(state)) throw new RebuildError("the server may already have been sent for rebuilding: run without --abandon, which finds out and carries on, or stops saying nothing was erased");
     rmSync(deps.stateFile);
     deps.log(`Rebuild ${state.run} abandoned: nothing had been erased.`);
     return state;
-  }
-  return withLock(`${deps.stateFile}.lock`, () => run(deps, options, state));
+  });
 }
 
 /**
@@ -311,7 +327,20 @@ async function withLock<T>(path: string, work: () => Promise<T>): Promise<T> {
   try {
     fd = openSync(path, "wx", 0o600);
   } catch {
-    throw new RebuildError(`another bivy rebuild is running (${path}); if none is, remove that file`);
+    // Left by a run that was killed (Ctrl-C does not run the clean-up): taken over if its process is gone.
+    const pid = Number(existsSync(path) ? readFileSync(path, "utf8").trim() : Number.NaN);
+    let alive = !Number.isInteger(pid) || pid <= 0;
+    if (!alive) {
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch (error) {
+        alive = (error as NodeJS.ErrnoException).code === "EPERM";
+      }
+    }
+    if (alive) throw new RebuildError(`another bivy rebuild is running (${path}); if none is, remove that file`);
+    rmSync(path, { force: true });
+    fd = openSync(path, "wx", 0o600);
   }
   try {
     writeSync(fd, `${process.pid}\n`);
@@ -326,7 +355,21 @@ async function run(deps: RealDependencies, options: RealOptions, found: RealStat
   const { hetzner } = deps;
   const { platform, apps } = (deps.instance ?? (() => instanceOf(options.root)))();
   let state = found;
-  if (state && !(state.serverRequested === true || state.requesting !== undefined)) {
+  // Every run, resumed or not: Ignition (SSH keys), versions and apps come from this checkout.
+  const checkout = () => {
+    const problems = deps.checkout?.() ?? [];
+    if (problems.length > 0) throw new RebuildError(`the instance checkout cannot be trusted: ${problems.join("; ")}`);
+  };
+  checkout();
+  if (state && state.kind === "in place" && state.serverId !== undefined && !state.serverRequested) {
+    // Killed while the protection was lifted: put it back before anything else.
+    const server = await hetzner.server(state.serverId);
+    if (server && !server.protection.delete) {
+      await hetzner.waitAction(await hetzner.changeServerProtection(server.id, true));
+      deps.log(`  delete and rebuild protection of server ${server.id} put back`);
+    }
+  }
+  if (state && !erased(state)) {
     // Stopped before anything was erased: a new plan, a new confirmation and a new backup, never an old "yes".
     deps.log(`An earlier rebuild (${state.run}) stopped before anything was erased: starting over.`);
     rmSync(deps.stateFile);
@@ -398,11 +441,11 @@ async function run(deps: RealDependencies, options: RealOptions, found: RealStat
   await step(deps, current, current.kind === "in place" ? "server rebuilt" : "server created", async () => {
     if (!current.ipv6Network) throw new RebuildError("the state file is incomplete");
     if (current.requesting && !current.serverRequested) {
-      // Sent by an interrupted run whose answer was lost: look it up rather than send it again.
-      const since = Date.parse(current.requesting) - 5 * 60_000;
+      // Sent by an interrupted run whose answer was lost: look it up (by
+      // Hetzner's own action IDs, no clock), never send it again blindly.
       if (current.kind === "in place") {
         const actions = await hetzner.serverActions(current.serverId as number);
-        if (actions.some((action) => action.command === "rebuild_server" && Date.parse(action.started ?? "") >= since)) current.serverRequested = true;
+        if (actions.some((action) => action.command === "rebuild_server" && action.id > (current.lastActionId ?? Number.MAX_SAFE_INTEGER))) current.serverRequested = true;
       } else {
         const created = (await hetzner.servers()).find((server) => server.name === SERVER_NAME && !isOurs(server.labels));
         if (created) {
@@ -410,21 +453,30 @@ async function run(deps: RealDependencies, options: RealOptions, found: RealStat
           current.serverRequested = true;
         }
       }
-      if (current.serverRequested) saveState(deps.stateFile, current);
-      else delete current.requesting;
+      if (!current.serverRequested) {
+        // Never sent: the confirmation and the backup are no longer fresh. Start over.
+        delete current.requesting;
+        current.done = current.done.filter((name) => name !== "fresh backup" && name !== "signing keys before");
+        saveState(deps.stateFile, current);
+        throw new RebuildError("the rebuild was never carried out by Hetzner: nothing was erased. Run again: it starts over with a new plan, confirmation and backup");
+      }
+      saveState(deps.stateFile, current);
     }
     if (!current.serverRequested) {
+      checkout();
       backUpKnownHosts(deps, current);
       const hostKey = deps.newHostKey();
       const userData = withHostKey(deps.ignition(firstAddress(current.ipv6Network)), hostKey);
       current.provisionalKey = keyPart(hostKey.publicKey);
-      current.requesting = new Date(deps.now()).toISOString();
       saveState(deps.stateFile, current);
       if (current.kind === "in place") {
         const id = current.serverId as number;
+        current.lastActionId = Math.max(0, ...(await hetzner.serverActions(id)).map((action) => action.id));
         // Delete and rebuild protection share one value (D65): lifted for the rebuild only, put back whatever happens.
         await hetzner.waitAction(await hetzner.changeServerProtection(id, false));
         try {
+          current.requesting = new Date(deps.now()).toISOString();
+          saveState(deps.stateFile, current);
           const action = await refusedOrSent(deps, current, () => hetzner.rebuildServer(id, String(current.image), userData));
           current.serverRequested = true;
           saveState(deps.stateFile, current);
@@ -433,6 +485,8 @@ async function run(deps: RealDependencies, options: RealOptions, found: RealStat
           await hetzner.waitAction(await hetzner.changeServerProtection(id, true));
         }
       } else {
+        current.requesting = new Date(deps.now()).toISOString();
+        saveState(deps.stateFile, current);
         const { server, action } = await refusedOrSent(deps, current, () => hetzner.createServer({
           name: SERVER_NAME,
           server_type: current.serverType,

@@ -3,7 +3,6 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { spawnSync } from "node:child_process";
 import { generateCaddyfile, loadInstance } from "@bivouac/manifest";
 import { CaddyError, validateCaddyfile } from "./caddy.js";
 import { EXAMPLE_IPV6, IPV6_PLACEHOLDER, IgnitionError, buildButane, compileButane } from "./ignition.js";
@@ -12,7 +11,7 @@ import { Hetzner } from "./hetzner.js";
 import { newHostKey } from "./hostkey.js";
 import { RebuildError, cleanup, curlProbe, ignitionFor, instanceIdentity, rebuildTest } from "./rebuild.js";
 import { SshRemote, scanHostKey } from "./remote.js";
-import { rebuildReal } from "./rebuild-real.js";
+import { checkoutProblems, rebuildReal } from "./rebuild-real.js";
 import { resolve4 } from "node:dns/promises";
 import { createInterface } from "node:readline/promises";
 
@@ -236,16 +235,6 @@ the test's deploy key goes with it.`);
     }
     return 1;
   }
-}
-
-/** The rebuild trusts the instance checkout (SSH keys, versions, apps): it must be exactly origin/main. */
-function checkoutProblems(root: string): string[] {
-  const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
-  if (git("fetch", "--quiet", "origin").status !== 0) return [`git fetch failed in ${root}`];
-  const dirty = git("status", "--porcelain").stdout.split("\n").filter((line) => line.trim() && !line.endsWith(".DS_Store"));
-  const problems = dirty.length > 0 ? [`${root} has uncommitted changes: ${dirty.slice(0, 3).join(", ")}`] : [];
-  if (git("rev-parse", "HEAD").stdout.trim() !== git("rev-parse", "origin/main").stdout.trim()) problems.push(`${root} is not exactly origin/main: pull first`);
-  return problems;
 }
 
 async function realRebuild(root: string, values: Record<string, string | boolean | undefined>, text: (name: string) => string | undefined): Promise<number> {
