@@ -343,8 +343,10 @@ async function restore(deps: RebuildDependencies, state: TestState, options: Tes
   });
   await step(deps, state, "first-boot checks", async () => {
     const out = must(remote, "first-boot checks", "grep -E '^(ID|VERSION)=' /etc/os-release; sudo test -d /etc/bivouac && echo bivouac-dir; systemctl is-active bivouac-reconciler; sudo nft list table inet bivouac_metadata >/dev/null && echo metadata-block");
+    // os-release quotes its values (`ID="flatcar"`, seen on the first real run).
+    const lines = out.split("\n").map((line) => line.trim().replace(/^(ID|VERSION)="(.*)"$/, "$1=$2"));
     for (const expected of ["ID=flatcar", "bivouac-dir", "metadata-block"]) {
-      if (!out.includes(expected)) throw new RebuildError(`first-boot check: '${expected}' missing`);
+      if (!lines.includes(expected)) throw new RebuildError(`first-boot check: '${expected}' missing`);
     }
   });
   await step(deps, state, "rebuild marker (test mode)", async () => {

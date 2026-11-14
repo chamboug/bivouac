@@ -138,7 +138,7 @@ class FakeServer implements Remote {
       return ok("");
     }
     if (command === "sudo test -e /etc/bivouac/age.key") return { status: 1, stdout: "", stderr: "" };
-    if (command.startsWith("grep -E")) return ok("ID=flatcar\nVERSION=4757.2.3\nbivouac-dir\nactive\nmetadata-block\n");
+    if (command.startsWith("grep -E")) return ok('ID="flatcar"\nVERSION="4757.2.3"\nbivouac-dir\nactive\nmetadata-block\n');
     if (command === "sudo cat /etc/bivouac/rebuild.json") return ok('{"mode":"test"}\n');
     if (command.includes("deploy_key.pub")) return ok("ssh-ed25519 AAAAtest bivouac-rebuild-test\n");
     if (command.includes("sha256sum /etc/bivouac/age.key")) return ok("0c1f4ca1e4fb5d6b5b2b31f7c0ab4ab9f0b4b65e2f3f6d0ed0aa8ac6fbc2f2b9  /etc/bivouac/age.key\n");
