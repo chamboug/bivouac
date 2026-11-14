@@ -10,4 +10,4 @@ repository: git@github.com:example/bivouac-platform.git
 # one (Ignition); afterwards the reconciler moves itself to the version
 # written here (D50). Pinned by digest: a tag can be pushed again (D61).
 reconciler:
-  image: ghcr.io/chamboug/bivouac-reconciler:sha-d44cf3b@sha256:a52d03792b72a3bbe2546115bd6d302895daf12392929958ad4c3379f1629799
+  image: ghcr.io/chamboug/bivouac-reconciler:sha-e4f096b@sha256:4243f6de51c21e57bbd3b155e8b2488dc697a83296b83d9802effcc68fbf835b
