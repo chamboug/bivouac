@@ -22,6 +22,9 @@ class FakeHetzner {
   calls: string[] = [];
   nextId = 1000;
   failRebuild = false;
+  failStatus = 500;
+  loseAnswer = false;
+  actions: Json[] = [];
   servers: Json[] = [{ id: 1, name: "bivouac", status: "running", labels: {}, location: { name: "fsn1" }, protection: { delete: true, rebuild: true }, server_type: { name: "cx23" }, public_net: { ipv4: { id: 2, ip: "203.0.113.10" }, ipv6: { id: 3, ip: "2001:db8:1::/64" }, firewalls: [{ id: 4 }] } }];
   ips: Json[] = [
     { id: 2, type: "ipv4", ip: "203.0.113.10", labels: {}, assignee_id: 1, auto_delete: false, location: { name: "fsn1" }, protection: { delete: true } },
@@ -52,6 +55,7 @@ class FakeHetzner {
       const server = this.servers.find((entry) => entry.id === Number(match?.[1]));
       return server ? reply(200, { server }) : reply(404, { error: { code: "not_found", message: "no" } });
     }
+    if (/^\/servers\/\d+\/actions$/.test(path) && method === "GET") return reply(200, { actions: this.actions });
     if ((match = /^\/servers\/(\d+)\/actions\/change_protection$/.exec(path))) {
       const server = this.servers.find((entry) => entry.id === Number(match?.[1]));
       if (server) server.protection = { delete: body.delete, rebuild: body.rebuild };
@@ -60,9 +64,11 @@ class FakeHetzner {
     if ((match = /^\/servers\/(\d+)\/actions\/rebuild$/.exec(path))) {
       const server = this.servers.find((entry) => entry.id === Number(match?.[1]));
       if ((server?.protection as Json).rebuild) return reply(403, { error: { code: "protected", message: "protected" } });
-      if (this.failRebuild) return reply(500, { error: { code: "server_error", message: "boom" } });
+      if (this.failRebuild) return reply(this.failStatus, { error: { code: "server_error", message: "boom" } });
       this.userData = String(body.user_data);
       this.onNewSystem();
+      this.actions.unshift({ id: action.id, command: "rebuild_server", started: "2026-11-14T09:30:00Z", status: "success" });
+      if (this.loseAnswer) throw new TypeError("fetch failed");
       return reply(201, { action, root_password: "not-for-anyone" });
     }
     if (method === "POST" && path === "/servers") {
@@ -84,7 +90,12 @@ class FakeServer implements Remote {
   restored = false;
   deployKeyAdded = false;
   deployKeyWritable = false;
-  lastSuccessAt = Date.parse("2026-11-14T02:01:00Z");
+  receivePackFails = false;
+  /** What the old server's next backup does. */
+  backupOutcome: "success" | "failure" = "success";
+  lastSuccessAt = Date.parse("2026-11-14T01:01:00Z");
+  lastAttemptAt = Date.parse("2026-11-14T01:00:50Z");
+  lastError: string | undefined;
   backupAsked = false;
   reachable = true;
   knownHosts = () => "";
@@ -96,10 +107,13 @@ class FakeServer implements Remote {
     if (!this.rebuilt) {
       if (command.includes("jq -c")) {
         this.backupAsked = true;
-        this.lastSuccessAt = Date.parse("2026-11-14T09:05:00Z");
+        // The server's clock, unrelated to the Mac's: an hour behind here.
+        this.lastAttemptAt = Math.max(this.lastAttemptAt, Date.parse("2026-11-14T08:05:00Z")) + 60_000;
+        if (this.backupOutcome === "success") this.lastSuccessAt = this.lastAttemptAt + 30_000;
+        else this.lastError = "restic: bucket not found";
         return ok("");
       }
-      if (command.includes("state.json")) return ok(`{"lastSuccessAt":${this.lastSuccessAt}}\n`);
+      if (command.includes("state.json")) return ok(`${JSON.stringify({ lastSuccessAt: this.lastSuccessAt, lastAttemptAt: this.lastAttemptAt, ...(this.lastError ? { lastError: this.lastError } : {}) })}\n`);
       return ok("");
     }
     if (command.includes(`-f ${HOST_KEY_PATH}.new`) && command.includes("ssh-keygen")) return ok(`${OWN_KEY}\n`);
@@ -120,7 +134,10 @@ class FakeServer implements Remote {
       }
       return ok("abc\trefs/heads/main\n");
     }
-    if (command.includes("git-receive-pack")) return ok(this.deployKeyWritable ? "0000 refs\n" : "ERROR: The key you are authenticating with has been marked as read only.\n");
+    if (command.includes("git-receive-pack")) {
+      if (this.receivePackFails) return ok("Unable to find image locally\ndocker: error pulling image\n");
+      return ok(this.deployKeyWritable ? `00a1${"a".repeat(40)} refs/heads/main\0report-status delete-refs\n0000\n` : "ERROR: The key you are authenticating with has been marked as read only.\n");
+    }
     if (command.includes("Health.Status")) return ok("healthy\n");
     if (command.includes("docker ps")) return ok(this.restored ? "bivouac-pocket-id Up 1 minute (healthy)\nbivouac-caddy Up 1 minute (healthy)\nbivouac-app-biblio Up 1 minute\n" : "bivouac-postgres\n");
     if (command.endsWith("restore-platform")) return ok('{"message":"rebuild plan","copy":"abcd1234","taken":"2026-11-14T09:05:00Z","size":"4.9 GiB"}\n');
@@ -216,7 +233,7 @@ describe("bivy rebuild --plan (D91)", () => {
   });
 
   it("an old server that does not answer needs --without-fresh-backup", async () => {
-    const { deps, server } = setup();
+    const { deps, server } = setup({ probeReal: () => ({ status: 0, body: "" }) });
     server.reachable = false;
     const plan = (await rebuildReal(deps, { ...options, plan: true })) as RebuildPlan;
     expect(plan.problems.join("\n")).toMatch(/--without-fresh-backup/);
@@ -231,6 +248,85 @@ describe("bivy rebuild --plan (D91)", () => {
 });
 
 describe("bivy rebuild (D91)", () => {
+  it("refuses to erase a platform that still answers when only SSH fails", async () => {
+    const { deps, server } = setup();
+    server.reachable = false;
+    const plan = (await rebuildReal(deps, { ...options, plan: true, withoutFreshBackup: true })) as RebuildPlan;
+    expect(plan.problems.join("\n")).toMatch(/still answers while SSH does not/);
+  });
+
+  it("stops on an instance checkout that is not exactly origin/main", async () => {
+    const { deps } = setup({ checkout: () => ["/x is not exactly origin/main: pull first"] });
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/plan has problems/);
+  });
+
+  it("--plan never acts, even with a rebuild under way", async () => {
+    const { deps, hetzner, server } = setup();
+    hetzner.failRebuild = true;
+    hetzner.failStatus = 500;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/boom/);
+    const before = [writes(hetzner).length, server.commands.length];
+    let asked = 0;
+    deps.ask = async () => {
+      asked++;
+      return "apps.example.com";
+    };
+    await rebuildReal(deps, { ...options, plan: true });
+    expect([writes(hetzner).length, asked]).toEqual([before[0], 0]);
+    expect(server.commands.slice(before[1] ?? 0).every((command) => command.startsWith("sudo cat /var/lib/bivouac/backup/state.json; echo; sudo test"))).toBe(true);
+  });
+
+  it("starts over with a new plan, confirmation and backup when it stopped before erasing", async () => {
+    const { deps, hetzner, server, asked } = setup({ probeReal: () => ({ status: 503, body: "" }) });
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/Pocket ID answers 503/);
+    expect(writes(hetzner)).toEqual([]);
+    deps.probeReal = () => ({ status: 200, body: JWKS });
+    server.backupAsked = false;
+    await rebuildReal(deps, options);
+    expect(asked).toHaveLength(2);
+    expect(server.backupAsked).toBe(true);
+  });
+
+  it("can abandon a rebuild that erased nothing, never one that did", async () => {
+    const { deps, hetzner } = setup({ probeReal: () => ({ status: 503, body: "" }) });
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/503/);
+    await rebuildReal(deps, { ...options, abandon: true });
+    expect(existsSync(deps.stateFile)).toBe(false);
+    deps.probeReal = () => ({ status: 200, body: JWKS });
+    hetzner.failRebuild = true;
+    hetzner.failStatus = 500;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/boom/);
+    await expect(rebuildReal(deps, { ...options, abandon: true })).rejects.toThrow(/carried on, not abandoned/);
+  });
+
+  it("stops when the fresh backup fails, without erasing anything", async () => {
+    const { deps, hetzner, server } = setup();
+    server.backupOutcome = "failure";
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/fresh backup failed.*bucket not found/);
+    expect(writes(hetzner)).toEqual([]);
+  });
+
+  it("one run at a time", async () => {
+    const { deps } = setup();
+    writeFileSync(`${deps.stateFile}.lock`, "1\n");
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/another bivy rebuild is running/);
+  });
+
+  it("looks up a rebuild whose answer was lost instead of sending it again", async () => {
+    const { deps, hetzner } = setup();
+    hetzner.loseAnswer = true;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/fetch failed/);
+    hetzner.loseAnswer = false;
+    await rebuildReal(deps, options);
+    expect(hetzner.calls.filter((call) => call.includes("/actions/rebuild"))).toHaveLength(1);
+  });
+
+  it("says it could not check the deploy key, rather than blaming the key", async () => {
+    const { deps, server } = setup();
+    server.receivePackFails = true;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/could not check that the deploy key is read-only/);
+  });
+
   it("changes nothing without the typed confirmation", async () => {
     const { deps, hetzner, server } = setup({ ask: async () => "yes" });
     await expect(rebuildReal(deps, options)).rejects.toThrow(/not confirmed/);

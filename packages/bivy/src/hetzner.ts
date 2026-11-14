@@ -70,6 +70,8 @@ export interface ServerType {
 
 export interface Action {
   id: number;
+  command?: string;
+  started?: string;
   status: "running" | "success" | "error";
   error?: { code: string; message: string } | null;
 }
@@ -182,6 +184,11 @@ export class Hetzner {
     // The answer also holds a root password: it is never kept or shown.
     const answer = await this.call<{ server: Server; action: Action }>("POST", "/servers", body);
     return { server: answer.server, action: answer.action };
+  }
+
+  /** The server's latest actions, newest first (`command` is e.g. "rebuild_server"). */
+  async serverActions(id: number): Promise<Action[]> {
+    return (await this.call<{ actions: Action[] }>("GET", `/servers/${id}/actions?sort=id:desc&per_page=25`)).actions;
   }
 
   async deleteServer(id: number): Promise<Action> {

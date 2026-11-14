@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { spawnSync } from "node:child_process";
 import { generateCaddyfile, loadInstance } from "@bivouac/manifest";
 import { CaddyError, validateCaddyfile } from "./caddy.js";
 import { EXAMPLE_IPV6, IPV6_PLACEHOLDER, IgnitionError, buildButane, compileButane } from "./ignition.js";
@@ -29,6 +30,7 @@ Commands:
       --server-type <type>    for a new server, when no cx23 can be ordered
       --without-fresh-backup  the old server is gone: accept losing what was
                               written since its last nightly copy
+      --abandon               forget a rebuild that stopped before erasing anything
       --ssh-key <file>        default ~/.ssh/id_ed25519
 
   rebuild --test [dir]        rebuild a temporary copy of the platform from the
@@ -57,6 +59,7 @@ async function main(argv: string[]): Promise<number> {
       cleanup: { type: "boolean" },
       plan: { type: "boolean" },
       "without-fresh-backup": { type: "boolean" },
+      abandon: { type: "boolean" },
       location: { type: "string" },
       "server-type": { type: "string" },
       "ssh-key": { type: "string" },
@@ -165,6 +168,10 @@ function secretFile(path: string, what: string): string {
 async function rebuild(root: string, values: Record<string, string | boolean | undefined>): Promise<number> {
   const text = (name: string) => (typeof values[name] === "string" ? (values[name] as string) : undefined);
   if (!values.test) return realRebuild(root, values, text);
+  if (values.plan || values["without-fresh-backup"] || values.abandon) {
+    console.error("--plan, --without-fresh-backup and --abandon are for the real 'bivy rebuild' only.");
+    return 1;
+  }
   const githubTokenPath = text("github-token") ?? config("github-rebuild-token");
   const instance = loadInstance(root);
   if (!instance.platform) {
@@ -231,6 +238,16 @@ the test's deploy key goes with it.`);
   }
 }
 
+/** The rebuild trusts the instance checkout (SSH keys, versions, apps): it must be exactly origin/main. */
+function checkoutProblems(root: string): string[] {
+  const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+  if (git("fetch", "--quiet", "origin").status !== 0) return [`git fetch failed in ${root}`];
+  const dirty = git("status", "--porcelain").stdout.split("\n").filter((line) => line.trim() && !line.endsWith(".DS_Store"));
+  const problems = dirty.length > 0 ? [`${root} has uncommitted changes: ${dirty.slice(0, 3).join(", ")}`] : [];
+  if (git("rev-parse", "HEAD").stdout.trim() !== git("rev-parse", "origin/main").stdout.trim()) problems.push(`${root} is not exactly origin/main: pull first`);
+  return problems;
+}
+
 async function realRebuild(root: string, values: Record<string, string | boolean | undefined>, text: (name: string) => string | undefined): Promise<number> {
   if (values.keep || values.cleanup || text("location") || text("github-token")) {
     console.error("--keep, --cleanup, --location and --github-token are for 'bivy rebuild --test' only.");
@@ -247,6 +264,7 @@ async function realRebuild(root: string, values: Record<string, string | boolean
     ageKey: () => instanceIdentity(readFileSync(text("age-key") ?? join(homedir(), ".config", "sops", "age", "keys.txt"), "utf8"), readFileSync(join(root, ".sops.yaml"), "utf8")),
     probeReal: (host: string, path: string) => curlProbe(host, undefined, path, false),
     resolve: (name: string) => resolve4(name),
+    checkout: () => checkoutProblems(root),
     ask: async (question: string) => {
       // Only a person at a terminal can confirm: never a pipe or a script.
       if (!process.stdin.isTTY) throw new RebuildError("a rebuild is confirmed by typing in a terminal: none here");
@@ -264,8 +282,9 @@ async function realRebuild(root: string, values: Record<string, string | boolean
     now: Date.now,
   };
   try {
-    const result = await rebuildReal(deps, { root, plan: values.plan === true, serverType: text("server-type"), withoutFreshBackup: values["without-fresh-backup"] === true });
+    const result = await rebuildReal(deps, { root, plan: values.plan === true, abandon: values.abandon === true, serverType: text("server-type"), withoutFreshBackup: values["without-fresh-backup"] === true });
     if ("problems" in result) return result.problems.length > 0 ? 1 : 0;
+    if (values.abandon) return 0;
     console.log(`\n✓ The platform is back on ${result.ipv4}. Now:
   - remove the OLD deploy key on GitHub (repo Settings → Deploy keys; keep '${"bivouac-server-" + result.run}');
   - check tomorrow that the first nightly backup ran (it waits for the next night, D74);
