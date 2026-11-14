@@ -11,6 +11,9 @@ import { Hetzner } from "./hetzner.js";
 import { newHostKey } from "./hostkey.js";
 import { RebuildError, cleanup, curlProbe, ignitionFor, instanceIdentity, rebuildTest } from "./rebuild.js";
 import { SshRemote, scanHostKey } from "./remote.js";
+import { rebuildReal } from "./rebuild-real.js";
+import { resolve4 } from "node:dns/promises";
+import { createInterface } from "node:readline/promises";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -18,6 +21,15 @@ Commands:
   validate [dir]              check an instance repo (manifests, keys, secrets, Butane, Caddyfile)
   ignition [dir] [-o file] [--ipv6 <address/64>]
                               print the server's Ignition config (JSON)
+
+  rebuild [dir]               rebuild the real server from the latest nightly copy,
+                              on the same IPs (D91). Erases the server: a decision
+                              of its own, with a typed confirmation (rule 5)
+      --plan                  only read, and say what it would do
+      --server-type <type>    for a new server, when no cx23 can be ordered
+      --without-fresh-backup  the old server is gone: accept losing what was
+                              written since its last nightly copy
+      --ssh-key <file>        default ~/.ssh/id_ed25519
 
   rebuild --test [dir]        rebuild a temporary copy of the platform from the
                               latest nightly copy, check it, then delete it (D91)
@@ -43,6 +55,8 @@ async function main(argv: string[]): Promise<number> {
       test: { type: "boolean" },
       keep: { type: "boolean" },
       cleanup: { type: "boolean" },
+      plan: { type: "boolean" },
+      "without-fresh-backup": { type: "boolean" },
       location: { type: "string" },
       "server-type": { type: "string" },
       "ssh-key": { type: "string" },
@@ -149,11 +163,8 @@ function secretFile(path: string, what: string): string {
 }
 
 async function rebuild(root: string, values: Record<string, string | boolean | undefined>): Promise<number> {
-  if (!values.test) {
-    console.error("Only 'bivy rebuild --test' is available: a real rebuild is a separate decision, with the owner's consent (rule 5).");
-    return 1;
-  }
   const text = (name: string) => (typeof values[name] === "string" ? (values[name] as string) : undefined);
+  if (!values.test) return realRebuild(root, values, text);
   const githubTokenPath = text("github-token") ?? config("github-rebuild-token");
   const instance = loadInstance(root);
   if (!instance.platform) {
@@ -216,6 +227,53 @@ the test's deploy key goes with it.`);
       // The test server may hold the age key and a full copy of the data.
       console.error("The test server may still be running, billed, with a copy of the data: run again to carry on, or delete it with\n  bivy rebuild --test --cleanup");
     }
+    return 1;
+  }
+}
+
+async function realRebuild(root: string, values: Record<string, string | boolean | undefined>, text: (name: string) => string | undefined): Promise<number> {
+  if (values.keep || values.cleanup || text("location") || text("github-token")) {
+    console.error("--keep, --cleanup, --location and --github-token are for 'bivy rebuild --test' only.");
+    return 1;
+  }
+  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
+  const knownHosts = config("known_hosts");
+  const deps = {
+    hetzner: new Hetzner(secretFile(text("hetzner-token") ?? config("hetzner-token"), "the Hetzner token")),
+    remote: (host: string) => new SshRemote(host, identity, knownHosts),
+    scanHostKey,
+    newHostKey: () => newHostKey(),
+    ignition: ignitionFor(root),
+    ageKey: () => instanceIdentity(readFileSync(text("age-key") ?? join(homedir(), ".config", "sops", "age", "keys.txt"), "utf8"), readFileSync(join(root, ".sops.yaml"), "utf8")),
+    probeReal: (host: string, path: string) => curlProbe(host, undefined, path, false),
+    resolve: (name: string) => resolve4(name),
+    ask: async (question: string) => {
+      // Only a person at a terminal can confirm: never a pipe or a script.
+      if (!process.stdin.isTTY) throw new RebuildError("a rebuild is confirmed by typing in a terminal: none here");
+      const terminal = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        return await terminal.question(question);
+      } finally {
+        terminal.close();
+      }
+    },
+    stateFile: config("rebuild.json"),
+    knownHosts,
+    log: (message: string) => console.log(message),
+    sleep: (ms: number) => new Promise<void>((done) => setTimeout(done, ms)),
+    now: Date.now,
+  };
+  try {
+    const result = await rebuildReal(deps, { root, plan: values.plan === true, serverType: text("server-type"), withoutFreshBackup: values["without-fresh-backup"] === true });
+    if ("problems" in result) return result.problems.length > 0 ? 1 : 0;
+    console.log(`\n✓ The platform is back on ${result.ipv4}. Now:
+  - remove the OLD deploy key on GitHub (repo Settings → Deploy keys; keep '${"bivouac-server-" + result.run}');
+  - check tomorrow that the first nightly backup ran (it waits for the next night, D74);
+  - the platform's known_hosts before the rebuild is kept in ${result.knownHostsBackup ?? "(none)"}.`);
+    return 0;
+  } catch (error) {
+    console.error(`✗ ${(error as Error).message}`);
+    if (existsSync(config("rebuild.json"))) console.error("Run the same command again to carry on from where it stopped: a step already done is never repeated.");
     return 1;
   }
 }

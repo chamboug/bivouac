@@ -30,27 +30,34 @@ export const DEFAULT_SERVER_TYPE = "cx23";
 const MINIMUM = { memory: 4, disk: 40 };
 const RECONCILER = "docker exec bivouac-reconciler node packages/reconciler/dist/main.js";
 
-export interface TestState {
+/** What a test and a real rebuild both record, step by step. */
+export interface RunState {
   run: string;
   startedAt: string;
+  ipv6Network?: string;
+  ipv4?: string;
+  /** The provisional host key placed with the Ignition config (public part only). */
+  provisionalKey?: string;
+  /** The host key the server made itself, recorded over a verified connection. */
+  hostKey?: string;
+  done: string[];
+  timings: Record<string, number>;
+}
+
+export interface TestState extends RunState {
   location: string;
   serverType: string;
   hourly: number;
   image: number;
   firewallId?: number;
   ipv6Id?: number;
-  ipv6Network?: string;
   serverId?: number;
   ipv4Id?: number;
-  ipv4?: string;
-  /** The provisional host key placed with the Ignition config (public part only). */
-  provisionalKey?: string;
-  /** The host key the server made itself, recorded over a verified connection. */
-  hostKey?: string;
   deployKeyId?: number;
-  done: string[];
-  timings: Record<string, number>;
 }
+
+/** What the steps shared by a test and a real rebuild need. */
+export type CommonDependencies = Pick<RebuildDependencies, "remote" | "scanHostKey" | "ageKey" | "stateFile" | "knownHosts" | "log" | "sleep" | "now">;
 
 export interface RebuildDependencies {
   /** The instance repo, read and validated (by default from the directory given). */
@@ -88,12 +95,12 @@ export interface TestOptions {
 
 export class RebuildError extends Error {}
 
-function readState(path: string): TestState | undefined {
+export function readState<T extends RunState = TestState>(path: string): T | undefined {
   if (!existsSync(path)) return undefined;
-  return JSON.parse(readFileSync(path, "utf8")) as TestState;
+  return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
-function saveState(path: string, state: TestState): void {
+export function saveState(path: string, state: RunState): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   writeFileSync(`${path}.new`, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   renameSync(`${path}.new`, path);
@@ -160,7 +167,7 @@ export function testFirewallRules(ipv4: string): FirewallRule[] {
   ];
 }
 
-const step = async (deps: RebuildDependencies, state: TestState, name: string, work: () => Promise<void>) => {
+export const step = async (deps: CommonDependencies, state: RunState, name: string, work: () => Promise<void>) => {
   if (state.done.includes(name)) return;
   const begin = deps.now();
   deps.log(`· ${name}`);
@@ -171,13 +178,13 @@ const step = async (deps: RebuildDependencies, state: TestState, name: string, w
 };
 
 /** Runs a command on the server and fails loudly, without ever printing what was sent to it. */
-function must(remote: Remote, what: string, command: string, options: { input?: string | Buffer; timeoutMs?: number } = {}): string {
+export function must(remote: Remote, what: string, command: string, options: { input?: string | Buffer; timeoutMs?: number } = {}): string {
   const result = remote.run(command, options);
   if (result.status !== 0) throw new RebuildError(`${what} failed (exit ${result.status}): ${result.stderr.trim().split("\n").pop() ?? ""}`);
   return result.stdout;
 }
 
-async function waitUntil(deps: RebuildDependencies, what: string, timeoutMs: number, check: () => boolean | Promise<boolean>): Promise<void> {
+export async function waitUntil(deps: Pick<CommonDependencies, "now" | "sleep">, what: string, timeoutMs: number, check: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = deps.now() + timeoutMs;
   while (!(await check())) {
     if (deps.now() > deadline) throw new RebuildError(`${what}: still not there after ${Math.round(timeoutMs / 60_000)} minutes`);
@@ -292,27 +299,40 @@ async function create(deps: RebuildDependencies, state: TestState): Promise<void
 }
 
 /** `<host> ssh-ed25519 AAAA…` as ssh-keyscan prints it → `ssh-ed25519 AAAA…`. */
-function scannedKey(line: string): string {
+export function scannedKey(line: string): string {
   return keyPart(line.slice(line.indexOf(" ") + 1));
 }
 
-function writeKnownHosts(deps: RebuildDependencies, state: TestState, key: string): void {
+function writeKnownHosts(deps: CommonDependencies, state: RunState, key: string): void {
   const address = firstAddress(state.ipv6Network as string).replace(/\/64$/, "");
   mkdirSync(dirname(deps.knownHosts), { recursive: true, mode: 0o700 });
   writeFileSync(deps.knownHosts, `${state.ipv4},${address} ${key}\n`, { mode: 0o600 });
 }
 
-/** From the confirmed host key to a restored, running copy of the platform. */
-async function restore(deps: RebuildDependencies, state: TestState, options: TestOptions): Promise<void> {
-  const { platform, apps } = (deps.instance ?? (() => instanceOf(options.root)))();
+/** How a test and a real rebuild differ while the platform comes back. */
+export interface BringBack {
+  mode: "test" | "rebuild";
+  apps: AppManifest[];
+  /** Makes the server's deploy key readable by GitHub: through the API for a test, by the owner for a real rebuild. */
+  deployKey: (remote: Remote, title: string, publicKey: string) => Promise<void>;
+  /** The deploy key's title on GitHub. */
+  deployKeyTitle: string;
+}
+
+/**
+ * From a server presenting its provisional host key to a restored, running
+ * copy of the platform: the steps a test and a real rebuild share.
+ */
+export async function bringBack(deps: CommonDependencies, state: RunState, how: BringBack): Promise<void> {
+  const { apps } = how;
   const ipv4 = state.ipv4;
-  if (!ipv4 || !state.ipv6Network) throw new RebuildError("the state file is incomplete: run --cleanup");
-  if (!RUN_PATTERN.test(state.run)) throw new RebuildError(`the state file names an odd run '${state.run}': run --cleanup`);
+  if (!ipv4 || !state.ipv6Network) throw new RebuildError("the state file is incomplete");
+  if (!RUN_PATTERN.test(state.run)) throw new RebuildError(`the state file names an odd run '${state.run}'`);
   const remote = deps.remote(ipv4);
 
   await step(deps, state, "host key replaced", async () => {
     const provisional = state.provisionalKey;
-    if (!provisional) throw new RebuildError("no provisional host key was recorded: run --cleanup");
+    if (!provisional) throw new RebuildError("no provisional host key was recorded");
     // Interrupted once the new key was recorded: only that key is trusted
     // from then on. Never fall back to the provisional key, which the
     // user-data still holds: whoever reads it could make the new key's
@@ -320,7 +340,7 @@ async function restore(deps: RebuildDependencies, state: TestState, options: Tes
     if (state.hostKey) {
       writeKnownHosts(deps, state, state.hostKey);
       if (remote.run("true").status !== 0) {
-        throw new RebuildError("the server does not answer with the host key recorded for it: nothing was sent. Run --cleanup, then start again");
+        throw new RebuildError("the server does not answer with the host key recorded for it: nothing more was sent. Do not run again: find out why first (D91)");
       }
       return;
     }
@@ -349,17 +369,18 @@ async function restore(deps: RebuildDependencies, state: TestState, options: Tes
       if (!lines.includes(expected)) throw new RebuildError(`first-boot check: '${expected}' missing`);
     }
   });
-  await step(deps, state, "rebuild marker (test mode)", async () => {
+  const marker = JSON.stringify({ mode: how.mode });
+  await step(deps, state, `rebuild marker (${how.mode} mode)`, async () => {
     // Before the deploy key and the age key: the first pass that can read Git must see it.
-    must(remote, "placing the marker", "sudo sh -c 'umask 077; cat > /etc/bivouac/rebuild.json.tmp && mv /etc/bivouac/rebuild.json.tmp /etc/bivouac/rebuild.json'", { input: '{"mode":"test"}\n' });
-    if (must(remote, "reading the marker", "sudo cat /etc/bivouac/rebuild.json").trim() !== '{"mode":"test"}') throw new RebuildError("the marker did not arrive intact");
+    must(remote, "placing the marker", "sudo sh -c 'umask 077; cat > /etc/bivouac/rebuild.json.tmp && mv /etc/bivouac/rebuild.json.tmp /etc/bivouac/rebuild.json'", { input: `${marker}\n` });
+    if (must(remote, "reading the marker", "sudo cat /etc/bivouac/rebuild.json").trim() !== marker) throw new RebuildError("the marker did not arrive intact");
   });
   await step(deps, state, "deploy key", async () => {
-    const title = `${TEST_LABEL}-${state.run}`;
+    const title = how.deployKeyTitle;
+    if (!/^[A-Za-z0-9._-]+$/.test(title)) throw new RebuildError(`odd deploy key title '${title}'`);
     const key = must(remote, "creating the deploy key", `sudo test -e /etc/bivouac/deploy_key || sudo ssh-keygen -q -t ed25519 -N '' -C ${title} -f /etc/bivouac/deploy_key; sudo cat /etc/bivouac/deploy_key.pub`).trim();
     if (!/^ssh-ed25519 [A-Za-z0-9+/=]+ /.test(key)) throw new RebuildError("the server gave no public deploy key");
-    const added = await deps.github().addDeployKey(title, key);
-    state.deployKeyId = added.id;
+    await how.deployKey(remote, title, key);
   });
   await step(deps, state, "age key", async () => {
     const key = deps.ageKey();
@@ -400,6 +421,27 @@ async function restore(deps: RebuildDependencies, state: TestState, options: Tes
       return expected.every((name) => new RegExp(`^${name} Up`, "m").test(names)) && !/\(health: starting\)|\(unhealthy\)/.test(names);
     });
   });
+}
+
+/** The test's own steps around the shared ones. */
+async function restore(deps: RebuildDependencies, state: TestState, options: TestOptions): Promise<void> {
+  const { platform, apps } = (deps.instance ?? (() => instanceOf(options.root)))();
+  const ipv4 = state.ipv4;
+  if (!ipv4) throw new RebuildError("the state file is incomplete: run --cleanup");
+  try {
+    await bringBack(deps, state, {
+      mode: "test",
+      apps,
+      deployKeyTitle: `${TEST_LABEL}-${state.run}`,
+      deployKey: async (_remote, title, key) => {
+        const added = await deps.github().addDeployKey(title, key);
+        state.deployKeyId = added.id;
+      },
+    });
+  } catch (error) {
+    if (error instanceof RebuildError && !/--cleanup/.test(error.message)) throw new RebuildError(`${error.message}\nThe test server can be deleted with --cleanup.`);
+    throw error;
+  }
   await step(deps, state, "checks against the real platform", async () => {
     const auth = `${AUTH_SUBDOMAIN}.${platform.domain}`;
     const jwks = "/.well-known/jwks.json";
