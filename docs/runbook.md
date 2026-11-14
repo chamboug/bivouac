@@ -399,6 +399,29 @@ ssh "${O[@]}" core@<ipv4> '<command>'
    `/var/lib/bivouac/reconciler/image.env`, exits and comes back on the new
    image.
 
+   **Moving to a new version**: CI publishes `sha-<commit>`; write
+   `ghcr.io/<owner>/bivouac-reconciler:sha-<commit>@sha256:<digest>`, with
+   the digest of the index from
+   `docker buildx imagetools inspect ghcr.io/<owner>/bivouac-reconciler:sha-<commit>`
+   (`bivy validate` refuses a tag alone). The new version is **on trial**
+   (`reconciler/trial.env`) until its first pass; `journalctl -u
+   bivouac-reconciler` shows "on trial: start n of 3" from
+   `/opt/bivouac/reconciler-trial`. If it fails three starts, the fourth goes
+   back to the previous version, which logs "crashed at start: rolled back"
+   and alerts until `platform.yml` names another version (`refused.env`).
+   **By hand** (never delete `image.env`: the unit's own version can be
+   months old): `sudo sh -c 'umask 077; echo BIVOUAC_RECONCILER_IMAGE=<image>
+   > /var/lib/bivouac/reconciler/image.env; rm -f
+   /var/lib/bivouac/reconciler/trial.env'`, then `sudo systemctl restart
+   bivouac-reconciler`.
+
+   **A server installed before D61's fallback** (14 November 2026) gets the
+   script and the drop-in by hand, as the Butane writes them: `/opt/bivouac/reconciler-trial`
+   (root, 0700) and
+   `/etc/systemd/system/bivouac-reconciler.service.d/20-bivouac-trial.conf`,
+   then `sudo systemctl daemon-reload` (no restart needed: it applies at the
+   next start). Way back: remove both, `daemon-reload`.
+
 ## 9. DNS (consent)
 
 Through the OVH API: `POST /domain/zone/<zone>/record` with

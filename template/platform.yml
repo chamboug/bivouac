@@ -8,6 +8,6 @@ repository: git@github.com:example/bivouac-platform.git
 
 # Exact version of the reconciler the server runs. A new server starts this
 # one (Ignition); afterwards the reconciler moves itself to the version
-# written here (D50). Never a moving tag such as ':main'.
+# written here (D50). Pinned by digest: a tag can be pushed again (D61).
 reconciler:
-  image: ghcr.io/chamboug/bivouac-reconciler:sha-49b0479
+  image: ghcr.io/chamboug/bivouac-reconciler:sha-d44cf3b@sha256:a52d03792b72a3bbe2546115bd6d302895daf12392929958ad4c3379f1629799

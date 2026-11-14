@@ -75,7 +75,7 @@ export function redact(text: string): string {
     .slice(0, 900);
 }
 
-export type Category = "pass" | "app" | "platform" | "disk" | "backup";
+export type Category = "pass" | "app" | "platform" | "disk" | "backup" | "reconciler";
 
 export interface Incident {
   /** `<category>:<what>`: the same problem keeps the same key from one pass to the next. */

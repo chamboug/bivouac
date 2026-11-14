@@ -115,6 +115,61 @@ storage:
           done
           echo "the list kept changing while it was applied: the next run will catch up"
           exit 1
+    # Rolls the reconciler back when a new version keeps failing (D61).
+    - path: /opt/bivouac/reconciler-trial
+      mode: 0700
+      overwrite: true
+      contents:
+        inline: |
+          #!/bin/sh
+          # Run by systemd before each start of bivouac-reconciler (D61). Before
+          # moving to a new version, the reconciler writes trial.env (the new
+          # version and the last one that proved itself); it removes it after
+          # its first pass that does not crash. At the fourth start of a version still on
+          # trial, this writes the previous version back to image.env and the
+          # failed one to refused.env, which the previous version reads: it does
+          # not move again until platform.yml names another version. It never
+          # fails the start, never sources a file (values are matched first),
+          # and removes a leftover *.new before writing (a symlink there is
+          # not followed).
+          set -u
+          LC_ALL=C
+          export LC_ALL
+          dir=/var/lib/bivouac/reconciler
+          trial=$dir/trial.env
+          starts=$dir/trial.starts
+          image_env=$dir/image.env
+          pattern='^ghcr\.io/[a-z0-9][a-z0-9-]*/bivouac-reconciler(:sha-[0-9a-f]{7,40}(@sha256:[0-9a-f]{64})?|@sha256:[0-9a-f]{64})$'
+          value() { sed -n "s/^$1=//p" "$2" 2>/dev/null | head -n 1; }
+          valid() { printf '%s\n' "$1" | grep -Eqx "$pattern"; }
+          [ -f "$trial" ] || exit 0
+          candidate=$(value BIVOUAC_TRIAL_IMAGE "$trial")
+          previous=$(value BIVOUAC_PREVIOUS_IMAGE "$trial")
+          running=$(value BIVOUAC_RECONCILER_IMAGE "$image_env")
+          if [ -z "$candidate" ] || [ "$candidate" != "$running" ]; then
+            echo "the trial does not name the version being started: forgotten"
+            rm -f "$trial" "$starts"
+            exit 0
+          fi
+          count=$(cat "$starts" 2>/dev/null || true)
+          case $count in '' | *[!0-9]*) count=0 ;; esac
+          count=$((count + 1))
+          umask 077
+          if [ "$count" -le 3 ]; then
+            echo "$candidate is on trial: start $count of 3"
+            rm -f "$starts.new"
+            printf '%s\n' "$count" > "$starts.new" && mv "$starts.new" "$starts"
+            exit 0
+          fi
+          if ! valid "$candidate" || ! valid "$previous"; then
+            echo "$candidate failed 3 starts, but the trial file is not as expected: left as is"
+            exit 0
+          fi
+          rm -f "$dir/refused.env.new" "$image_env.new"
+          printf 'BIVOUAC_REFUSED_IMAGE=%s\n' "$candidate" > "$dir/refused.env.new" && mv "$dir/refused.env.new" "$dir/refused.env"
+          printf 'BIVOUAC_RECONCILER_IMAGE=%s\n' "$previous" > "$image_env.new" && mv "$image_env.new" "$image_env"
+          rm -f "$trial" "$starts"
+          echo "$candidate failed 3 starts: back to $previous"
   directories:
     # Age key and deploy key, placed over SSH (D7, D30).
     - path: /etc/bivouac
@@ -209,7 +264,9 @@ systemd:
         # The version installed with the server. Once platform.yml names
         # another one, the reconciler writes it to image.env and exits;
         # systemd restarts it on that version (EnvironmentFile= overrides
-        # Environment=, D50). To go back by hand: delete image.env.
+        # Environment=, D50). A new version that fails 3 starts is rolled
+        # back by the drop-in below (D61). By hand: write the version wanted
+        # to image.env.
         Environment=BIVOUAC_RECONCILER_IMAGE=@@RECONCILER_IMAGE@@
         EnvironmentFile=-/var/lib/bivouac/reconciler/image.env
         Restart=always
@@ -234,3 +291,12 @@ systemd:
 
         [Install]
         WantedBy=multi-user.target
+      # Counts the starts of a version on trial, and goes back to the
+      # previous one after three (D61). A drop-in, so a server installed
+      # before it gets the very same file. EnvironmentFile= is read again
+      # for ExecStart=, after this has run (systemd.exec man page).
+      dropins:
+        - name: 20-bivouac-trial.conf
+          contents: |
+            [Service]
+            ExecStartPre=-/opt/bivouac/reconciler-trial

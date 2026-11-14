@@ -3,7 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Docker } from "./docker.js";
-import { IMAGE_ENV_FILE, SelfUpdater, imageRepository, readDesiredImage } from "./self-update.js";
+import { mkdirSync } from "node:fs";
+import {
+  IMAGE_ENV_FILE,
+  REFUSED_FILE,
+  SelfUpdater,
+  TRIAL_FILE,
+  TRIAL_STARTS_FILE,
+  imageRepository,
+  readDesiredImage,
+} from "./self-update.js";
 
 const CURRENT = "ghcr.io/example/bivouac-reconciler:sha-1111111";
 const NEXT = "ghcr.io/example/bivouac-reconciler:sha-2222222";
@@ -36,8 +45,10 @@ function fakeDocker(exitCode: number, calls: string[]): Docker {
   } as unknown as Docker;
 }
 
-function updater(exitCode: number, calls: string[] = [], logs: string[] = []) {
+function updater(exitCode: number, calls: string[] = [], logs: string[] = [], refused?: string) {
   const stateDir = directory();
+  mkdirSync(join(stateDir, "reconciler"));
+  if (refused) writeFileSync(join(stateDir, REFUSED_FILE), `BIVOUAC_REFUSED_IMAGE=${refused}\n`);
   const self = new SelfUpdater({
     docker: fakeDocker(exitCode, calls),
     stateDir,
@@ -45,7 +56,7 @@ function updater(exitCode: number, calls: string[] = [], logs: string[] = []) {
     pull: async (image) => void calls.push(`pull ${image}`),
     log: (message) => void logs.push(message),
   });
-  return { self, envFile: join(stateDir, IMAGE_ENV_FILE) };
+  return { self, stateDir, envFile: join(stateDir, IMAGE_ENV_FILE) };
 }
 
 describe("self-update", () => {
@@ -105,5 +116,92 @@ describe("self-update", () => {
     expect(calls.filter((call) => call.startsWith("create"))).toHaveLength(1);
     expect(logs).toEqual(["moving to a new reconciler version", "new reconciler version refused: staying on the current one"]);
     expect(existsSync(envFile)).toBe(false);
+  });
+
+  it("puts the new version on trial, with the one it leaves, before moving to it", async () => {
+    const { self, stateDir } = updater(0);
+    writeFileSync(join(stateDir, TRIAL_STARTS_FILE), "3\n");
+    expect(await self.check(checkout(NEXT))).toBe(NEXT);
+    expect(readFileSync(join(stateDir, TRIAL_FILE), "utf8")).toBe(`BIVOUAC_TRIAL_IMAGE=${NEXT}\nBIVOUAC_PREVIOUS_IMAGE=${CURRENT}\n`);
+    expect(statSync(join(stateDir, TRIAL_FILE)).mode & 0o777).toBe(0o600);
+    // A count left from an earlier trial never carries over.
+    expect(existsSync(join(stateDir, TRIAL_STARTS_FILE))).toBe(false);
+  });
+
+  it("ends the trial once a pass has applied", () => {
+    const logs: string[] = [];
+    const { self, stateDir } = updater(0, [], logs);
+    writeFileSync(join(stateDir, TRIAL_FILE), `BIVOUAC_TRIAL_IMAGE=${CURRENT}\nBIVOUAC_PREVIOUS_IMAGE=${NEXT}\n`);
+    writeFileSync(join(stateDir, TRIAL_STARTS_FILE), "1\n");
+    self.confirm();
+    expect(existsSync(join(stateDir, TRIAL_FILE))).toBe(false);
+    expect(existsSync(join(stateDir, TRIAL_STARTS_FILE))).toBe(false);
+    expect(logs).toEqual(["new reconciler version confirmed"]);
+    self.confirm();
+    expect(logs).toHaveLength(1);
+  });
+
+  it("does not move again to a version the host rolled back from, and reports it until platform.yml changes", async () => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const { self, stateDir, envFile } = updater(0, calls, logs, NEXT);
+    expect(logs).toEqual(["a new reconciler version crashed at start: rolled back"]);
+    expect(await self.check(checkout(NEXT))).toBeUndefined();
+    expect(calls).toEqual([]);
+    expect(existsSync(envFile)).toBe(false);
+    expect(self.observation()).toEqual({
+      incidents: [{ key: `reconciler:${NEXT}`, message: expect.stringMatching(/crashed at start, and the server went back to/) }],
+      checked: ["reconciler"],
+    });
+    // Back to the running version: the incident ends, and so does the record.
+    expect(await self.check(checkout(CURRENT))).toBeUndefined();
+    expect(self.observation()).toEqual({ incidents: [], checked: ["reconciler"] });
+    expect(existsSync(join(stateDir, REFUSED_FILE))).toBe(false);
+  });
+
+  it("moves to a newer version after a rollback", async () => {
+    const { self, stateDir } = updater(0, [], [], NEXT);
+    const fixed = "ghcr.io/example/bivouac-reconciler:sha-3333333";
+    expect(await self.check(checkout(fixed))).toBe(fixed);
+    expect(existsSync(join(stateDir, REFUSED_FILE))).toBe(false);
+  });
+
+  it("reports a version that failed its self-test while platform.yml names it", async () => {
+    const { self } = updater(1);
+    await self.check(checkout(NEXT));
+    expect(self.observation().incidents).toEqual([{ key: `reconciler:${NEXT}`, message: expect.stringMatching(/self-test failed/) }]);
+  });
+
+  it("keeps the last version that proved itself when a version on trial moves on", async () => {
+    const { self, stateDir } = updater(0);
+    const proven = "ghcr.io/example/bivouac-reconciler:sha-0000000";
+    writeFileSync(join(stateDir, TRIAL_FILE), `BIVOUAC_TRIAL_IMAGE=${CURRENT}\nBIVOUAC_PREVIOUS_IMAGE=${proven}\n`);
+    expect(await self.check(checkout(NEXT))).toBe(NEXT);
+    expect(readFileSync(join(stateDir, TRIAL_FILE), "utf8")).toBe(`BIVOUAC_TRIAL_IMAGE=${NEXT}\nBIVOUAC_PREVIOUS_IMAGE=${proven}\n`);
+  });
+
+  it("forgets a rollback when the server runs that version again", () => {
+    const logs: string[] = [];
+    const { self, stateDir } = updater(0, [], logs, CURRENT);
+    expect(logs).toEqual([]);
+    expect(existsSync(join(stateDir, REFUSED_FILE))).toBe(false);
+    expect(self.observation().incidents).toEqual([]);
+  });
+
+  it("never moves from a digest back to a tag alone", async () => {
+    const pinned = `${CURRENT}@sha256:${"b".repeat(64)}`;
+    const stateDir = directory();
+    const logs: string[] = [];
+    const self = new SelfUpdater({
+      docker: fakeDocker(0, []),
+      stateDir,
+      current: pinned,
+      pull: async () => undefined,
+      log: (message) => void logs.push(message),
+    });
+    expect(await self.check(checkout(NEXT))).toBeUndefined();
+    expect(self.observation().incidents).toEqual([{ key: `reconciler:${NEXT}`, message: expect.stringMatching(/not pinned by digest/) }]);
+    const next = `${NEXT}@sha256:${"c".repeat(64)}`;
+    expect(await self.check(checkout(next))).toBe(next);
   });
 });

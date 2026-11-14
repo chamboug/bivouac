@@ -270,16 +270,24 @@ async function main(argv: string[]): Promise<number> {
         // does a restore of one app, which runs inside this container.
         process.exit(0);
       }
+      // A version on trial got through a pass without crashing: the host
+      // stops counting its starts (D61). Not only clean passes: an invalid
+      // commit or a failing app must not hold the trial open until reboots
+      // roll back a version that works.
+      if (result.status !== "restart") selfUpdater?.confirm();
       if (result.status === "applied" || result.status === "unchanged") backups.update(quiet ? undefined : result.backup);
       if (!quiet) {
         backups.tick();
-        await watch?.afterPass({ result }, [backups.observation()]);
+        await watch?.afterPass({ result }, [backups.observation(), ...(selfUpdater ? [selfUpdater.observation()] : [])]);
       }
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
+      // A pass stopped by an error (GitHub unreachable, secrets unreadable)
+      // still proves the version stays up: reported by the alerts instead.
+      selfUpdater?.confirm();
       if (!quiet) {
         backups.tick();
-        await watch?.afterPass({ error: error as Error }, [backups.observation()]);
+        await watch?.afterPass({ error: error as Error }, [backups.observation(), ...(selfUpdater ? [selfUpdater.observation()] : [])]);
       }
     }
     if (!stopping) {

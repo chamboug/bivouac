@@ -83,6 +83,7 @@ describeWithDocker("ignition", () => {
       "/etc/flatcar/update.conf": "420",
       "/etc/bivouac-metadata-block.nft": "644",
       "/opt/bivouac/sync-ssh-keys": "700",
+      "/opt/bivouac/reconciler-trial": "700",
       "/etc/bivouac": "700",
       "/var/lib/bivouac": "700",
       "/var/lib/bivouac/ssh": "700",

@@ -90,6 +90,16 @@ async function main(argv: string[]): Promise<number> {
 function validate(root: string): number {
   const instance = loadInstance(root);
   const errors = [...instance.errors];
+  // The server runs this image with the Docker socket: a tag can be pushed
+  // again by whoever can publish the package, a digest names one content
+  // (D61). Required here, at merge time, rather than in the schema, so a
+  // reconciler that reads an older platform.yml still finds its version.
+  if (instance.platform && !/@sha256:[a-f0-9]{64}$/.test(instance.platform.reconciler.image)) {
+    errors.push({
+      file: "platform.yml",
+      message: "reconciler.image must be pinned by digest (ghcr.io/<owner>/bivouac-reconciler:sha-<commit>@sha256:<digest>, D61)",
+    });
+  }
   if (instance.sshKeys && instance.platform) {
     try {
       compileButane(buildButane(root, instance.platform, instance.sshKeys, readFileSync(join(root, "butane", "server.bu"), "utf8").includes(IPV6_PLACEHOLDER) ? EXAMPLE_IPV6 : undefined));
