@@ -11,6 +11,10 @@ name: Propose deployment
 # - variable INSTANCE_REPO: the instance repo, as owner/name;
 # - secret BIVOUAC_DEPLOY: the token allowed to open PRs on it.
 # The manifest is apps/<name of this repo>.yml in the instance repo.
+#
+# Anyone who can push to this repo can read BIVOUAC_DEPLOY, and through it
+# change the whole server: only people trusted with the server may write here.
+# An outside contributor gets read access and works from a fork (D92).
 
 on:
   workflow_run:

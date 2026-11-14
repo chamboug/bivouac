@@ -1,9 +1,6 @@
 name: Test and build
 
 # Once it succeeds on main, propose.yml opens the deployment PR.
-# Anyone who can push here can read that secret, and through it change the
-# whole server: only people trusted with the server may write to this repo. An
-# outside contributor gets read access and works from a fork (D92).
 
 on:
   pull_request:
