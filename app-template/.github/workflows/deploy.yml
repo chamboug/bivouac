@@ -36,7 +36,7 @@ jobs:
       # From a job container, a service is reached by its name.
       DATABASE_URL: postgres://postgres:test@postgres:5432/postgres
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@v7
         with:
           node-version: 26
@@ -55,7 +55,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # The whole history, to compare the shared layers with the deployed version.
