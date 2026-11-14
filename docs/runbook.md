@@ -767,5 +767,50 @@ the apps and Caddy.
 not tried: passkeys are bound to `auth.<domain>`, which points to the real
 server.
 
-**A real rebuild** is not automated yet: it is a separate decision, with the
-owner's consent (rule 5). The real server is never rebuilt to try it.
+**First run** (14 November 2026, D91): about six minutes from creation to a
+checked platform, for about 5 GB of data; one started hour of a CX23. Leave
+`--keep` on to compare row counts and files with the real server (read-only on
+both), then `--cleanup`. Where a CX23 can be ordered changes by the minute.
+
+## 16. The real rebuild: `bivy rebuild` (consent, rule 5)
+
+Written and tested against fake APIs; **never run against the real server**.
+Running it erases the server's disk: a decision of its own, with the owner's
+explicit consent, never a way to try something. Claude only ever runs
+`--plan`.
+
+**Before**: the instance checkout is exactly `origin/main`, with nothing
+uncommitted; the age key at hand; the Hetzner token in
+`~/.config/bivouac/hetzner-token`; the backup provider able to serve the whole
+copy that day (B2: check the download caps, D91); a terminal where the owner
+can type.
+
+```bash
+bivy rebuild --plan <instance-dir> --ssh-key ~/.ssh/<key>   # only reads
+bivy rebuild <instance-dir> --ssh-key ~/.ssh/<key>
+```
+
+1. The plan: in place if the server `bivouac` exists, otherwise a new server
+   on the unassigned Primary IPs (`--server-type` if no CX23 can be ordered
+   there; another location means new IPs and a DNS change, by hand). It stops
+   on anything odd: DNS not pointing to the Primary IPv4, an IP with
+   `auto_delete`, no firewall, a lock or a marker on the old server.
+2. The owner types the platform's domain.
+3. A fresh backup on the old server; nothing is erased if it fails. If the old
+   server is gone: `--without-fresh-backup` (what was written since its last
+   nightly copy is lost; refused while the platform still answers).
+4. Pocket ID's signing keys recorded; protection lifted, Hetzner's `rebuild`
+   (or a new server), protection put back; the platform's `known_hosts` is
+   backed up next to it (`known_hosts.before-rebuild-<run>`).
+5. Host key swap, marker `{"mode":"rebuild"}`, then **the owner adds the
+   deploy key** it prints, at the link it gives, "Allow write access"
+   unchecked; it waits, then checks GitHub refuses any write.
+6. age key, `restore-platform`, Pocket ID and the apps; checks on the real
+   names with real certificates (same signing keys as before, each app
+   healthy); the marker removed.
+7. Afterwards: remove the **old** deploy key on GitHub (D30); check the next
+   night's backup (the first one waits for it, D74).
+
+Interrupted: run the same command again. Before the erase, it starts over
+with a new plan, confirmation and backup (`--abandon` forgets it); after,
+it carries on and never sends the rebuild twice.
