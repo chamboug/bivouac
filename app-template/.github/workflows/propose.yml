@@ -1,0 +1,98 @@
+name: Propose deployment
+
+# Opens the deployment PR on the instance repo once "Test and build" has
+# published this commit's image on main. A workflow of its own (D64): GitHub
+# scrubs from memory the secrets a workflow does not name, so the deployment
+# token, which can write to the instance repo, is never on a machine where
+# the app's dependencies run. It runs no code of the app: it only reads its
+# Git history. It assumes GitHub-hosted runners (a fresh machine per job).
+#
+# To set on the app repo:
+# - variable INSTANCE_REPO: the instance repo, as owner/name;
+# - secret BIVOUAC_DEPLOY: the token allowed to open PRs on it.
+# The manifest is apps/<name of this repo>.yml in the instance repo.
+
+on:
+  workflow_run:
+    workflows: ["Test and build"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One at a time, so an older commit's run never closes a newer one's PR.
+concurrency:
+  group: propose
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+          # The whole history, to compare the shared layers with the deployed version.
+          fetch-depth: 0
+      - name: Open the deployment PR on the instance repo
+        env:
+          GH_TOKEN: ${{ secrets.BIVOUAC_DEPLOY }}
+          INSTANCE_REPO: ${{ vars.INSTANCE_REPO }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${HEAD_SHA::7}"
+          # Only the latest commit of main is proposed: a run that finished
+          # late must not deploy an older version over a newer one.
+          tip=$(git -C "$GITHUB_WORKSPACE" rev-parse --verify --quiet refs/remotes/origin/main || true)
+          if [ -n "$tip" ] && [ "$tip" != "$HEAD_SHA" ]; then
+            echo "main has moved on to $tip: nothing to propose for $HEAD_SHA"
+            exit 0
+          fi
+          app="${GITHUB_REPOSITORY##*/}"
+          branch="deploy/$app-${HEAD_SHA::7}"
+          gh auth setup-git
+          gh repo clone "$INSTANCE_REPO" "$RUNNER_TEMP/instance" -- --depth 1
+          cd "$RUNNER_TEMP/instance"
+          # Only the image line changes; a missing manifest stops here.
+          grep -q '^image:' "apps/$app.yml"
+          # Did the shared layers (the sign-in code) change since the deployed
+          # version? The instance repo merges the PR by itself only when they
+          # did not; otherwise, or when this cannot tell, the owner merges (D86).
+          deployed=$(sed -n 's/^image: *.*:sha-\([0-9a-f]\{7,40\}\)$/\1/p' "apps/$app.yml")
+          layers_at() { git -C "$GITHUB_WORKSPACE" show "$1:nuxt.config.ts" 2>/dev/null | grep -m1 '^const layersCommit' || true; }
+          layers="Shared layers: unknown. The owner merges."
+          if [ -n "$deployed" ] && git -C "$GITHUB_WORKSPACE" rev-parse --verify --quiet "$deployed^{commit}" >/dev/null; then
+            before=$(layers_at "$deployed")
+            now=$(layers_at "$HEAD_SHA")
+            if [ -z "$now" ] || [ -z "$before" ]; then :
+            elif [ "$before" = "$now" ]; then layers="Shared layers: unchanged"
+            else layers="Shared layers: CHANGED since the deployed version (sign-in code). The owner merges."
+            fi
+          fi
+          sed -i "s|^image:.*|image: $IMAGE|" "apps/$app.yml"
+          git config user.name "bivouac-deploy"
+          git config user.email "bivouac-deploy@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "Deploy $app: $IMAGE"
+          git push origin "$branch"
+          gh pr create --repo "$INSTANCE_REPO" --head "$branch" \
+            --title "Deploy $app (${HEAD_SHA::7})" \
+            --body "New version of $app, built from ${GITHUB_REPOSITORY}@${HEAD_SHA}. Risk: low. To roll back: put the previous image tag back in apps/$app.yml.
+
+          $layers"
+          # An older deployment PR of this app is superseded: close it, so it
+          # cannot be merged after this one.
+          gh pr list --repo "$INSTANCE_REPO" --state open --limit 100 --json number,headRefName \
+            --jq ".[] | select((.headRefName | startswith(\"deploy/$app-\")) and (.headRefName | length) == ${#branch}) | select(.headRefName != \"$branch\") | .number" |
+            while read -r older; do
+              gh pr close "$older" --repo "$INSTANCE_REPO" --delete-branch --comment "Superseded by $branch."
+            done

@@ -1,9 +1,6 @@
-name: Test, build and propose deployment
+name: Test and build
 
-# To set on the app repo:
-# - variable INSTANCE_REPO: the instance repo, as owner/name;
-# - secret BIVOUAC_DEPLOY: the token allowed to open PRs on it.
-# The manifest is apps/<name of this repo>.yml in the instance repo.
+# Once it succeeds on main, propose.yml opens the deployment PR.
 
 on:
   pull_request:
@@ -46,7 +43,10 @@ jobs:
       - run: npm run build
       - run: npm run test:e2e
 
-  deploy:
+  # Builds and publishes the image. The Dockerfile installs the app's
+  # dependencies, so code from npm runs here. This workflow never names the
+  # deployment token: propose.yml opens the deployment PR (D64).
+  image:
     if: github.event_name == 'push'
     needs: test
     runs-on: ubuntu-latest
@@ -73,49 +73,4 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.image.outputs.name }}
-      - name: Open the deployment PR on the instance repo
-        env:
-          GH_TOKEN: ${{ secrets.BIVOUAC_DEPLOY }}
-          INSTANCE_REPO: ${{ vars.INSTANCE_REPO }}
-          IMAGE: ${{ steps.image.outputs.name }}
-        run: |
-          set -euo pipefail
-          app="${GITHUB_REPOSITORY##*/}"
-          branch="deploy/$app-${GITHUB_SHA::7}"
-          gh auth setup-git
-          gh repo clone "$INSTANCE_REPO" instance -- --depth 1
-          cd instance
-          # Only the image line changes; a missing manifest stops here.
-          grep -q '^image:' "apps/$app.yml"
-          # Did the shared layers (the sign-in code) change since the deployed
-          # version? The instance repo merges the PR by itself only when they
-          # did not; otherwise, or when this cannot tell, the owner merges (D86).
-          deployed=$(sed -n 's/^image: *.*:sha-\([0-9a-f]\{7,40\}\)$/\1/p' "apps/$app.yml")
-          layers_at() { git -C "$GITHUB_WORKSPACE" show "$1:nuxt.config.ts" 2>/dev/null | grep -m1 '^const layersCommit' || true; }
-          layers="Shared layers: unknown. The owner merges."
-          if [ -n "$deployed" ] && git -C "$GITHUB_WORKSPACE" rev-parse --verify --quiet "$deployed^{commit}" >/dev/null; then
-            before=$(layers_at "$deployed")
-            now=$(layers_at "$GITHUB_SHA")
-            if [ -z "$now" ] || [ -z "$before" ]; then :
-            elif [ "$before" = "$now" ]; then layers="Shared layers: unchanged"
-            else layers="Shared layers: CHANGED since the deployed version (sign-in code). The owner merges."
-            fi
-          fi
-          sed -i "s|^image:.*|image: $IMAGE|" "apps/$app.yml"
-          git config user.name "bivouac-deploy"
-          git config user.email "bivouac-deploy@users.noreply.github.com"
-          git switch -c "$branch"
-          git commit -am "Deploy $app: $IMAGE"
-          git push origin "$branch"
-          gh pr create --repo "$INSTANCE_REPO" --head "$branch" \
-            --title "Deploy $app (${GITHUB_SHA::7})" \
-            --body "New version of $app, built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}. Risk: low. To roll back: put the previous image tag back in apps/$app.yml.
 
-          $layers"
-          # An older deployment PR of this app is superseded: close it, so it
-          # cannot be merged after this one.
-          gh pr list --repo "$INSTANCE_REPO" --state open --limit 100 --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"deploy/$app-\")) | select(.headRefName != \"$branch\") | .number" |
-            while read -r older; do
-              gh pr close "$older" --repo "$INSTANCE_REPO" --delete-branch --comment "Superseded by $branch."
-            done
