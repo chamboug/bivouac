@@ -132,6 +132,8 @@ export async function ensureBase(
     networks: both,
     inputs: postgresInputs,
     env: { POSTGRES_PASSWORD_FILE: `${SECRETS_TARGET}/superuser_password` },
+    // Time to finish a checkpoint when replaced, rather than a crash recovery at the next start.
+    stopTimeoutSeconds: 90,
     mounts: [
       { type: "volume", source: "bivouac-postgres-data", target: "/var/lib/postgresql" },
       { type: "bind", source: postgresSecrets, target: SECRETS_TARGET, readOnly: true },

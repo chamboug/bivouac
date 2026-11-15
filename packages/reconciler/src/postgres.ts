@@ -5,6 +5,8 @@ export interface DatabaseSpec {
   name: string;
   password: string;
   extensions: string[];
+  /** At most this many sessions at once (apps): one app cannot use up Postgres's 100 for everyone. */
+  connectionLimit?: number;
 }
 
 export interface PostgresServer {
@@ -28,10 +30,15 @@ export async function ensureDatabase(server: PostgresServer, spec: DatabaseSpec)
   const changes: string[] = [];
   const role = pg.escapeIdentifier(spec.name);
   await withClient(server, "postgres", "postgres", server.superuserPassword, async (admin) => {
-    const roles = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [spec.name]);
+    const roles = await admin.query<{ rolconnlimit: number }>("SELECT rolconnlimit FROM pg_roles WHERE rolname = $1", [spec.name]);
+    const limit = spec.connectionLimit ?? -1;
+    if (!Number.isInteger(limit) || limit < -1) throw new Error(`invalid connection limit for ${spec.name}`);
     if (roles.rowCount === 0) {
-      await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD ${pg.escapeLiteral(spec.password)}`);
+      await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD ${pg.escapeLiteral(spec.password)} CONNECTION LIMIT ${limit}`);
       changes.push(`role ${spec.name}`);
+    } else if (roles.rows[0]!.rolconnlimit !== limit) {
+      await admin.query(`ALTER ROLE ${role} CONNECTION LIMIT ${limit}`);
+      changes.push(`connection limit of ${spec.name}`);
     }
     const databases = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [spec.name]);
     if (databases.rowCount === 0) {

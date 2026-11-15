@@ -171,7 +171,8 @@ export class Docker {
   }
 
   async stopContainer(name: string, timeoutSeconds = 30): Promise<void> {
-    await this.expect("POST", `/containers/${encodeURIComponent(name)}/stop?t=${timeoutSeconds}`, [204, 304]);
+    // The call itself lasts as long as the stop: its own time limit leaves room for it.
+    await this.expect("POST", `/containers/${encodeURIComponent(name)}/stop?t=${timeoutSeconds}`, [204, 304], undefined, undefined, (timeoutSeconds + 30) * 1000);
   }
 
   /** `anonymousVolumes` also removes the unnamed volumes an image declares; named ones always stay. */

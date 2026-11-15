@@ -2,8 +2,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statfsSync, wr
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { ALLOWED_EXTENSIONS, PLATFORM_IMAGES, type AppManifest } from "@bivouac/manifest";
-import { REBUILD_CONTAINERS, checked, dumpsFit, lastLine, runOneOff, runRestic, type BackupPlan } from "./backup.js";
+import { POCKET_ID_USERS_IS_TABLE, REBUILD_CONTAINERS, checked, dumpsFit, lastLine, runOneOff, runRestic, type BackupPlan } from "./backup.js";
 import { POCKET_ID_DATABASE, joinPlatformNetworks, postgresServer, type Runtime } from "./base.js";
+import { APP_CONNECTION_LIMIT } from "./apps.js";
 import { acquireLock, releaseLock } from "./lock.js";
 import { countIn, databaseName, ensureDatabase } from "./postgres.js";
 import { listSnapshots, loadDump, volumeNames, type Snapshot } from "./restore.js";
@@ -138,7 +139,6 @@ const OWN_RELATIONS = `SELECT count(*) AS count FROM pg_catalog.pg_class c
  * role controls: only if \`users\` is a plain table, which runs no code of
  * that role when read (a view could call its functions, D75).
  */
-const POCKET_ID_USERS_IS_TABLE = "SELECT count(*) AS count FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'users' AND c.relkind = 'r'";
 const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
 const MINUTE = 60_000;
 const TIMEOUT = 110 * MINUTE;
@@ -273,7 +273,8 @@ export async function restorePlatform(context: PlatformRestoreContext, options: 
       const app = apps.find((entry) => databaseName(entry.name) === database);
       const password = deriveSecret(secrets.master_secret, `db:${database}`);
       const extensions = [...new Set([...(app?.database?.extensions ?? []), ...(await dumpExtensions(runtime, dumpDir, database))])];
-      await ensureDatabase(server, { name: database, password, extensions });
+      // Apps get their session cap at once (APP_CONNECTION_LIMIT), Pocket ID none, as on a pass.
+      await ensureDatabase(server, { name: database, password, extensions, ...(app ? { connectionLimit: APP_CONNECTION_LIMIT } : {}) });
       // Never into a database that holds data: this only fills empty ones. A
       // database this restore started is loaded in one transaction, so it is
       // either whole (done) or still empty (to load again).

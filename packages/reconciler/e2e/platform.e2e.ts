@@ -62,7 +62,7 @@ auth: public
 
 interface ContainerState {
   Id: string;
-  HostConfig: { CapDrop: string[] | null; SecurityOpt: string[] | null };
+  HostConfig: { CapDrop: string[] | null; SecurityOpt: string[] | null; Memory: number; MemorySwap: number; PidsLimit: number | null };
   State: { Running: boolean; Status: string; Health?: { Status: string } };
   Config: { Env: string[] };
   NetworkSettings: { Networks: Record<string, { IPAddress: string }> };
@@ -285,6 +285,15 @@ describe("e. app containers", () => {
     expect(env).toContain("TEST_CLIENT_ID=recettes");
     expect(env).toContain(`MCP_RESOURCE=https://recettes.${DOMAIN}/mcp`);
     expect(JSON.parse(throughCaddy(`biblio.${DOMAIN}`, "/env").body)).toEqual(["PORT"]);
+  });
+
+  it("caps each app's memory, processes and Postgres sessions, and leaves the base services uncapped", () => {
+    const app = inspect<ContainerState>("bivouac-app-recettes").HostConfig;
+    expect([app.Memory, app.MemorySwap, app.PidsLimit]).toEqual([1024 ** 3, 1024 ** 3, 512]);
+    expect(inspect<ContainerState>("bivouac-postgres").HostConfig.Memory).toBe(0);
+    const superuser = derive(platform.masterSecret, "postgres:superuser");
+    expect(psql("postgres", superuser, "postgres", "SELECT rolname, rolconnlimit FROM pg_roles WHERE rolname IN ('recettes', 'bivouac_pocket_id') ORDER BY 1").stdout.trim())
+      .toBe("bivouac_pocket_id|-1\nrecettes|20");
   });
 
   it("mounts the declared volumes", () => {
@@ -705,6 +714,19 @@ describe("k. restoring one app's data (runbook section 14)", () => {
     expect(readStateFile(platform, "backup/restore-interrupted-recettes.json")).toBeUndefined();
     expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
     expect(runOnce(platform).status).toBe(0);
+  });
+
+  it("a restore of part of the data does not complete an interrupted one", () => {
+    docker("stop", "bivouac-app-recettes");
+    writeStateFile(platform, "backup/restore-interrupted-recettes.json", JSON.stringify({ job: "restore", app: "recettes", startedAt: Date.now() }));
+    const partial = restore("recettes", "--only", "database", "--yes");
+    expect(JSON.stringify(partial.logs)).toContain("stays stopped until a restore of all its data completes");
+    expect(partial.status).toBe(0);
+    expect(readStateFile(platform, "backup/restore-interrupted-recettes.json")).toBeDefined();
+    expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(false);
+    expect(restore("recettes", "--yes").status).toBe(0);
+    expect(readStateFile(platform, "backup/restore-interrupted-recettes.json")).toBeUndefined();
+    expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
   });
 });
 

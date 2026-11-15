@@ -35,6 +35,16 @@ export interface AppContext {
  * does not, it is stopped and stays stopped until its manifest changes
  * (D21). Rolling back to the previous image comes in layer 6.
  */
+/**
+ * Every app's ceilings, so that one app (a leak, a runaway job, an attack)
+ * cannot take the 4 GB server, Postgres or Pocket ID down with it: 1 GiB of
+ * memory, 512 processes. Fixed for now; a manifest field when an app needs more.
+ */
+export const APP_LIMITS = { memoryBytes: 1024 ** 3, pids: 512 };
+
+/** Sessions one app may hold in Postgres (the shared layer opens at most 5). */
+export const APP_CONNECTION_LIMIT = 20;
+
 export async function ensureApp(context: AppContext, app: AppManifest): Promise<AppResult> {
   const changes: string[] = [];
   const { runtime } = context;
@@ -54,6 +64,7 @@ export async function ensureApp(context: AppContext, app: AppManifest): Promise<
       image: app.image,
       networks: { [PLATFORM_NETWORKS.apps.name]: null },
       env: appEnvironment(app, values),
+      limits: APP_LIMITS,
       mounts: Object.entries(app.volumes).map(([volume, target]) => ({
         type: "volume" as const,
         // `_` appears in neither an app nor a volume name: two apps can
@@ -108,6 +119,7 @@ async function appValues(context: AppContext, app: AppManifest, changes: string[
       name: databaseName(app.name),
       password: deriveSecret(secrets.master_secret, `db:${databaseName(app.name)}`),
       extensions: app.database.extensions,
+      connectionLimit: APP_CONNECTION_LIMIT,
     };
     changes.push(...(await ensureDatabase(postgres, database)));
     values["db.url"] = connectionString(postgres, database);

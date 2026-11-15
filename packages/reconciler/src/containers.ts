@@ -35,6 +35,14 @@ export interface ContainerSpec {
    * they change, the container is recreated so it reads them again.
    */
   inputs?: string;
+  /**
+   * Ceilings for a container that must not take the server down with it
+   * (apps): memory in bytes, with no swap beyond it, and processes. Over
+   * its memory, the kernel stops that container alone, and Docker restarts it.
+   */
+  limits?: { memoryBytes: number; pids: number };
+  /** Seconds a replaced container gets to stop on its own before Docker kills it (default 30). */
+  stopTimeoutSeconds?: number;
 }
 
 /**
@@ -79,6 +87,7 @@ export function createBody(spec: ContainerSpec): Record<string, unknown> {
       PortBindings: bindings,
       CapDrop: ["NET_RAW"],
       SecurityOpt: ["no-new-privileges:true"],
+      ...(spec.limits ? { Memory: spec.limits.memoryBytes, MemorySwap: spec.limits.memoryBytes, PidsLimit: spec.limits.pids } : {}),
     },
     NetworkingConfig: {
       EndpointsConfig: Object.fromEntries(
@@ -139,6 +148,9 @@ export async function ensureContainer(
     await pull(spec.image);
   }
   if (current) {
+    // Stopped before it is removed: removing a running container kills it, which
+    // cuts Postgres short and leaves Pocket ID's registration behind for 90 s (D68).
+    if (current.State.Running) await docker.stopContainer(spec.name, spec.stopTimeoutSeconds ?? 30);
     await docker.removeContainer(spec.name);
   }
   await docker.createContainer(spec.name, body);
