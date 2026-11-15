@@ -4,3 +4,4 @@ dist/
 # never commit an age private key
 keys.txt
 *.agekey
+.DS_Store
