@@ -35,7 +35,7 @@ A Nuxt app hosted on a Bivouac platform. The platform runs this image and provid
 - A route receiving a part refuses the request **before** reading its body when `content-length` is missing or above `MAX_PART_SIZE` (answer 411 or 413): otherwise a client could send gigabytes into memory.
 - A failed `completeUpload` is not retried: start a new upload.
 - Call `cleanupUploads(24 * 60 * 60 * 1000)` now and then (when an upload starts, for example), and limit how much each user may store: a full disk stops the database of every app.
-- Files are served through an app route (`server/api/files/`). If files are not meant for every signed-in user, check access there.
+- Files are served through an app route (`server/api/files/`), which refuses every file until the app writes `mayRead` there: decide from the app's own records (who uploaded it, who it is shared with), never from the request. Return true only for files meant for every signed-in user.
 - The directory must be declared as a volume in the manifest: `volumes: { uploads: /app/uploads }`. Anything written elsewhere is lost at the next deployment and is not backed up.
 
 ## Interface

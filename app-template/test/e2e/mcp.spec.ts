@@ -72,4 +72,8 @@ test("the session cookie alone does not open /mcp", async ({ page }) => {
   await page.goto("/");
   const reply = await page.request.post("/mcp", { data: BODY, headers: { origin: "http://localhost:3100" } });
   expect(reply.status()).toBe(401);
+  // Nor an encoded spelling the router reads as /mcp.
+  for (const path of ["/%6dcp", "/%6Dcp/"]) {
+    expect((await page.request.post(path, { data: BODY, headers: { origin: "http://localhost:3100" } })).status()).toBe(401);
+  }
 });

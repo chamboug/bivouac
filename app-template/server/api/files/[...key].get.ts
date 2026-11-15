@@ -1,13 +1,27 @@
 import { pipeline } from "node:stream/promises";
-import { createError, defineEventHandler, getRouterParam, setResponseHeaders } from "h3";
+import { createError, defineEventHandler, getRouterParam, setResponseHeaders, type H3Event } from "h3";
 import { StorageError, useStorageFiles, type StoredFile } from "../../utils/storage";
 
-// Files are served through a route, behind sign-in. An app whose files are
-// not visible to every signed-in user adds its own access check here.
+/**
+ * Who may download a file: **the app decides**, from its own records (who
+ * uploaded it, which shared list it belongs to...), never from the request.
+ * Refused by default, so a new app cannot serve every member's files to every
+ * other member by forgetting this. For files truly meant for everyone signed
+ * in, return true.
+ */
+function mayRead(_event: H3Event, _key: string): boolean | Promise<boolean> {
+  // The template's own end-to-end tests only (playwright.config.ts): the platform never sets it.
+  return process.env.TEMPLATE_TEST_FILES_OPEN === "1";
+}
+
+// Files are served through a route, behind sign-in, and only after mayRead.
 export default defineEventHandler(async (event) => {
+  const key = getRouterParam(event, "key", { decode: true }) ?? "";
+  // The same answer as a missing file: a refusal says nothing about what exists.
+  if (!(await mayRead(event, key))) throw createError({ statusCode: 404, statusMessage: "Not found" });
   let file: StoredFile | null;
   try {
-    file = await useStorageFiles().open(getRouterParam(event, "key", { decode: true }) ?? "");
+    file = await useStorageFiles().open(key);
   } catch (error) {
     // Only a bad key is the visitor's fault; anything else is a real failure, logged as such.
     if (error instanceof StorageError && error.code === "invalid-key") throw createError({ statusCode: 404, statusMessage: "Not found" });

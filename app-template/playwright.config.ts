@@ -22,6 +22,8 @@ export default defineConfig({
         OIDC_CLIENT_SECRET: "test-secret-test-secret-test-secret",
         STORAGE_DIR: storageDir,
         MCP_RESOURCE: `http://localhost:${appPort}/mcp`,
+        // Lets the file route's tests download; a real app writes its own mayRead.
+        TEMPLATE_TEST_FILES_OPEN: "1",
       },
     },
   ],

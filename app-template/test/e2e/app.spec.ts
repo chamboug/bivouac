@@ -39,6 +39,11 @@ test("a path with dot segments is refused, even when it ends on a public one", a
   expect(await status("/secret/%2E%2E/auth/login")).toBe(400);
   expect(await status("/secret/../auth/login")).toBe(400);
   expect(await status("/secret/..%2fauth/login")).toBe(400);
+  // Paths the router reads differently from URL parsing: a backslash, an empty segment.
+  expect(await status("//_nuxt/secret")).toBe(400);
+  expect(await status("/_nuxt\\secret")).toBe(400);
+  expect(await status("/_nuxt%5Csecret")).toBe(400);
+  expect(await status("/some//page")).toBe(400);
   // Dots elsewhere are fine: still the usual answer for a signed-out visitor.
   expect(await status("/a..b/page?next=/../x")).toBe(302);
 });

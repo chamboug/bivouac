@@ -24,6 +24,12 @@ function isPublic(path: string): boolean {
 // contains one, so they are refused outright.
 const DOT_SEGMENT = /(^|\/|\\|%2f|%5c)(\.|%2e){1,2}(\/|\\|%2f|%5c|$)/i;
 
+// The same reason for a backslash and an empty segment: URL parsing (used for
+// the list of public paths) turns `\` into `/` and `//_nuxt/x` into
+// `/_nuxt/x`, while the router keeps them, so `//_nuxt/secret` would be judged
+// public and served by the page renderer. No real link contains one either.
+const ODD_SEGMENT = /\\|%5c|\/\//i;
+
 // All apps share one registrable domain, so browsers send the cookie on
 // requests coming from a sibling app: SameSite does not separate them.
 function isSameOrigin(fetchSite: string | undefined, origin: string | undefined, host: string | undefined): boolean {
@@ -48,13 +54,16 @@ const WELL_KNOWN = "/.well-known/oauth-protected-resource";
 
 export default defineEventHandler(async (event) => {
   const rawPath = (event.node.req.url ?? "").split("?")[0]!;
-  if (DOT_SEGMENT.test(rawPath)) {
+  // Every decision below reads the path as the router does (h3 decodes it,
+  // `%2F` aside): `/%6dcp` is the router's `/mcp`, and must be treated as such.
+  const routedPath = event.path.split("?")[0]!;
+  if (DOT_SEGMENT.test(rawPath) || ODD_SEGMENT.test(rawPath) || DOT_SEGMENT.test(routedPath) || ODD_SEGMENT.test(routedPath)) {
     throw createError({ statusCode: 400, statusMessage: "Invalid path" });
   }
 
   // Claude's way in (D85): an access token, never the cookie, so a page on
   // another site cannot act through it, and no origin check is needed.
-  const path = rawPath.replace(/\/+$/, "") || "/";
+  const path = routedPath.replace(/\/+$/, "") || "/";
   if (path.toLowerCase() === MCP_PATH || path.toLowerCase() === `${WELL_KNOWN}${MCP_PATH}` || path.toLowerCase() === WELL_KNOWN) {
     const resource = mcpResource();
     if (!resource) throw createError({ statusCode: 404, statusMessage: "Not found" });
@@ -76,7 +85,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const url = getRequestURL(event);
-  if (isPublic(url.pathname)) return;
+  if (isPublic(routedPath)) return;
 
   const session = await getSession<{ user?: SessionUser }>(event, sessionConfig());
   if (session.data.user) {
@@ -84,7 +93,7 @@ export default defineEventHandler(async (event) => {
     return;
   }
 
-  if (url.pathname.startsWith("/api/") || event.method !== "GET") {
+  if (routedPath.startsWith("/api/") || event.method !== "GET") {
     throw createError({ statusCode: 401, statusMessage: "Sign-in required" });
   }
   const returnTo = encodeURIComponent(url.pathname + url.search);
