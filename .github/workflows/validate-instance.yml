@@ -19,24 +19,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the instance repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: instance
           persist-credentials: false
       - name: Check out Bivouac
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: chamboug/bivouac
           ref: ${{ inputs.bivouac-ref }}
           path: bivouac
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: bivouac/.nvmrc
           cache: npm
           cache-dependency-path: bivouac/package-lock.json
       - name: Build the bivy CLI
         working-directory: bivouac
-        run: npm ci && npm run build
+        # No install scripts: this job has the private instance repo on disk.
+        run: npm ci --ignore-scripts && npm run build
       - name: Validate manifests, SSH keys, secrets and Butane
         run: node bivouac/packages/bivy/dist/cli.js validate instance

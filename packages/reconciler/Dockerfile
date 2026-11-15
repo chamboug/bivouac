@@ -5,7 +5,9 @@
 FROM node:26-alpine AS build
 WORKDIR /src
 COPY . .
-RUN npm ci && npx tsc -b packages/reconciler
+# No install scripts: a dependency's own script could rewrite the compiled
+# code that goes into the image, which holds the Docker socket on the server.
+RUN npm ci --ignore-scripts && npx tsc -b packages/reconciler
 
 # Production dependencies only. Workspace packages are symlinks into
 # packages/, so the final image keeps the same layout.
@@ -15,7 +17,7 @@ COPY package.json package-lock.json ./
 COPY packages/manifest/package.json packages/manifest/
 COPY packages/bivy/package.json packages/bivy/
 COPY packages/reconciler/package.json packages/reconciler/
-RUN npm ci --omit=dev --workspace @bivouac/reconciler
+RUN npm ci --ignore-scripts --omit=dev --workspace @bivouac/reconciler
 
 # sops decrypts the instance's secrets. Its official image ships a static
 # binary, which runs as is on Alpine (verified, v3.13.3, D47).

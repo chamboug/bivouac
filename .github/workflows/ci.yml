@@ -119,7 +119,10 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      # Pinned by commit, and the token not left in .git/config: this job can publish the image.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Build and push ghcr.io/${{ github.repository_owner }}/bivouac-reconciler
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -132,4 +135,9 @@ jobs:
             --label "org.opencontainers.image.licenses=MIT" \
             --tag "$image" .
           docker push "$image"
+          # The digest this run pushed, to compare with the one written in platform.yml (D61):
+          # a tag can be pushed again by someone else, a digest cannot change.
+          # Read as the runbook does (D61): the top-level digest the registry serves for this tag.
+          digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
