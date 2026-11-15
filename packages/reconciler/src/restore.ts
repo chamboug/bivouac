@@ -300,7 +300,15 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
         log("volume restored", { volume });
       }
     }
-    rmSync(interruptedFile(stateDir, app.name), { force: true });
+    // An interrupted restore is only completed by one that covers all the app's data:
+    // `--only database` after a volume was cut short must not start the app on half its files.
+    const covered = (wantDatabase || !database) && (wantFiles || volumes.length === 0);
+    if (covered) {
+      rmSync(interruptedFile(stateDir, app.name), { force: true });
+    } else if (resuming) {
+      start = false;
+      log("an earlier restore of this app was interrupted: it stays stopped until a restore of all its data completes", { app: app.name });
+    }
   } catch (error) {
     if (changing || resuming) {
       // Half restored: the app must not run on it. Passes report it until a restore completes.

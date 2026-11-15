@@ -167,7 +167,11 @@ async function ensureRepository(runtime: Runtime, plan: BackupPlan, timeout: num
   }
 }
 
-/** pg_dump without compression: restic compresses, and deduplicates only what it can compare. */
+/**
+ * pg_dump without compression: restic compresses, and deduplicates only what it can compare.
+ * It waits at most 5 minutes for a table lock: an app holding one must not cost every other
+ * app its copy of the night (the copy is then `incomplete`).
+ */
 export async function dumpDatabase(runtime: Runtime, database: string, directory: string, timeout: number, name = `${CONTAINER}-dump`): Promise<void> {
   await checked(`pg_dump of ${database}`, runOneOff(runtime, {
     name,
@@ -175,7 +179,7 @@ export async function dumpDatabase(runtime: Runtime, database: string, directory
     cmd: [
       "sh", "-c",
       // Under a temporary name: a dump cut short must never pass for a whole one.
-      `export PGPASSWORD="$(cat ${SECRETS_TARGET}/superuser_password)"; pg_dump --host ${PLATFORM_CONTAINERS.postgres} --username postgres --format custom --compress 0 --file "/dumps/$1.tmp" "$1" && mv "/dumps/$1.tmp" "/dumps/$1.dump" || { rm -f "/dumps/$1.tmp"; exit 1; }`,
+      `export PGPASSWORD="$(cat ${SECRETS_TARGET}/superuser_password)"; pg_dump --host ${PLATFORM_CONTAINERS.postgres} --username postgres --lock-wait-timeout=300000 --format custom --compress 0 --file "/dumps/$1.tmp" "$1" && mv "/dumps/$1.tmp" "/dumps/$1.dump" || { rm -f "/dumps/$1.tmp"; exit 1; }`,
       "sh", database,
     ],
     mounts: [
@@ -328,6 +332,8 @@ export const REBUILD_CONTAINERS = ["bivouac-rebuild-read", "bivouac-rebuild-rest
 const RESTORE_STUCK_AFTER = 3 * HOUR;
 const USER_TABLES = "SELECT count(*) AS count FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
 const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
+export const POCKET_ID_USERS_IS_TABLE =
+  "SELECT count(*) AS count FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'users' AND c.relkind = 'r'";
 /** A restore needs room for the dumps and for the database rebuilt from them. */
 const RESTORE_SPACE_FACTOR = 2;
 
@@ -416,6 +422,11 @@ export async function runRestoreTest(runtime: Runtime, plan: BackupPlan, log: (m
       const count = await sql(database, USER_TABLES);
       if (count === 0 && (await countIn(plan.postgres, database, USER_TABLES)) > 0) throw new Error(`${database} came back with no table`);
       tables += count;
+    }
+    // `users` is read as superuser on the live Postgres only once the catalog says it is a
+    // plain table: Pocket ID owns its database, and a view could run its own code as superuser.
+    if (plan.databases.includes(POCKET_ID_DATABASE)) {
+      if ((await countIn(plan.postgres, POCKET_ID_DATABASE, POCKET_ID_USERS_IS_TABLE)) !== 1) throw new Error("Pocket ID's users is not a plain table on the live server");
     }
     if (plan.databases.includes(POCKET_ID_DATABASE) && (await countIn(plan.postgres, POCKET_ID_DATABASE, POCKET_ID_USERS)) > 0) {
       if ((await sql(POCKET_ID_DATABASE, POCKET_ID_USERS)) === 0) throw new Error("Pocket ID came back with no account");
