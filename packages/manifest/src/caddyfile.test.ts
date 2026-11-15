@@ -10,6 +10,8 @@ const platform = {
 const app = (fields: Record<string, unknown>) =>
   appManifestSchema.parse({ image: "ghcr.io/example/app:sha-abc123", groups: ["family"], ...fields });
 
+const HEADERS = '\theader Strict-Transport-Security "max-age=31536000"\n\theader X-Content-Type-Options nosniff\n';
+
 describe("caddyfile", () => {
   it("routes each app to its container by name, on its subdomain and custom domains", () => {
     const { caddyfile, errors } = generateCaddyfile(
@@ -19,9 +21,9 @@ describe("caddyfile", () => {
     );
     expect(errors).toEqual([]);
     expect(caddyfile).toContain(
-      "recipes.apps.example.com, recipes.example.org {\n\treverse_proxy bivouac-app-recipes:8080\n}",
+      "recipes.apps.example.com, recipes.example.org {\n" + HEADERS + "\treverse_proxy bivouac-app-recipes:8080\n}",
     );
-    expect(caddyfile).toContain("library.apps.example.com {\n\treverse_proxy bivouac-app-library:3000\n}");
+    expect(caddyfile).toContain("library.apps.example.com {\n" + HEADERS + "\treverse_proxy bivouac-app-library:3000\n}");
   });
 
   it("keeps the admin API inside Caddy's container", () => {
@@ -39,6 +41,7 @@ describe("caddyfile", () => {
       "auth.apps.example.com {\n" +
         "\t@setup path /setup /setup/* /api/signup/setup /api/signup/setup/*\n" +
         "\trespond @setup 403\n" +
+        HEADERS +
         "\treverse_proxy bivouac-pocket-id:1411\n" +
         "}",
     );

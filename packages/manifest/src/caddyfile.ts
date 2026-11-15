@@ -68,7 +68,7 @@ export function generateCaddyfile(
     }
     // oidc, local and public look the same to Caddy: the app handles login.
     const hosts = [`${app.name}.${platform.domain}`, ...app.domains];
-    blocks.push(block(hosts.join(", "), [`reverse_proxy ${appContainerName(app.name)}:${app.port}`]));
+    blocks.push(block(hosts.join(", "), [...SECURITY_HEADERS, `reverse_proxy ${appContainerName(app.name)}:${app.port}`]));
   }
 
   for (const site of sites) {
@@ -77,6 +77,13 @@ export function generateCaddyfile(
 
   return { caddyfile: `${blocks.join("\n\n")}\n`, errors };
 }
+
+/**
+ * Sent on every public answer: browsers keep to HTTPS for a year once they
+ * have seen it (HSTS; only for the names served, not the parent domain, and
+ * no preload list, so it can be dropped), and never guess a content type.
+ */
+const SECURITY_HEADERS = ['header Strict-Transport-Security "max-age=31536000"', "header X-Content-Type-Options nosniff"];
 
 function authBlock(platform: PlatformConfig): string {
   const upstream = `${PLATFORM_CONTAINERS.pocketId}:${POCKET_ID_PORT}`;
@@ -92,6 +99,7 @@ function authBlock(platform: PlatformConfig): string {
   return block(`${AUTH_SUBDOMAIN}.${platform.domain}`, [
     ...matcher,
     "respond @setup 403",
+    ...SECURITY_HEADERS,
     `reverse_proxy ${upstream}`,
   ]);
 }
