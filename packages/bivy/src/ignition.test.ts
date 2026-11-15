@@ -80,7 +80,8 @@ describeWithDocker("ignition", () => {
     // Regression: `0600` must stay octal (YAML 1.1), not become decimal 600.
     expect(modes).toEqual({
       "/etc/ssh/sshd_config.d/10-bivouac.conf": "600",
-      "/etc/flatcar/update.conf": "420",
+      "/etc/flatcar/update.conf": "644",
+      "/etc/systemd/zram-generator.conf": "644",
       "/etc/bivouac-metadata-block.nft": "644",
       "/opt/bivouac/sync-ssh-keys": "700",
       "/opt/bivouac/reconciler-trial": "700",

@@ -20,13 +20,24 @@ storage:
           AllowUsers core
     # Reboot after an OS update only between 04:00 and 05:00 (server time, UTC).
     - path: /etc/flatcar/update.conf
-      mode: 0420
+      mode: 0644
       overwrite: true
       contents:
         inline: |
           REBOOT_STRATEGY=reboot
           LOCKSMITHD_REBOOT_WINDOW_START=04:00
           LOCKSMITHD_REBOOT_WINDOW_LENGTH=1h
+    # Swap in compressed memory (zram, D94): softens a memory peak of the
+    # whole server; each app is capped on its own anyway. Read by Flatcar's
+    # zram-generator at boot ("Managing swap space" in Flatcar's docs);
+    # the size is in MiB.
+    - path: /etc/systemd/zram-generator.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [zram0]
+          zram-size = 2048
     # Containers must not read the metadata service: it serves this
     # file's compiled form (user-data) and other details of the server
     # (D7). A table of our own, which Docker never touches, so the rule
