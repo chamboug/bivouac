@@ -474,6 +474,13 @@ then:
    and registers at least two passkeys that do not depend on the same vault.
    For a phone: in the admin's user list, **Login Code** gives a one-time link
    or QR code; open it on the phone, then **Add Passkey** in the account page.
+   The same **Login Code** link is how anyone who lost their passkeys gets
+   back in: the admin sends it through any messaging app; there is no email
+   login code (D37). **If the admin lost every passkey**:
+   `docker exec bivouac-pocket-id /app/pocket-id one-time-access-token <username or email>`
+   over SSH prints a sign-in link valid one hour (Pocket ID v2.19.2 source;
+   not yet tried). It is a credential: the owner runs it and opens the link,
+   then adds a passkey at once.
 3. **(consent)** Remove `setupFrom`. Check 403 for everyone, the owner included,
    and exactly one user (`users` in database `bivouac_pocket_id`).
 4. Mail (D70). Add `mail` to `platform.yml` (`host`, `from`, `user`). Have the
@@ -739,6 +746,13 @@ other than to read. Cost: a CX23 is about €0.01 an hour, plus a temporary IPv4
 creation link: one day, "Administration: write", only the instance repo).
 That permission can also delete the repo: delete the token as soon as the test
 is over. The test's deploy key is deleted with it (GitHub docs).
+
+**Apps that act on their own** run on the test server too, on a copy of
+02:00 (D91's note of 15 November 2026). Before a test, look in each app for
+timers or scheduled jobs that send something (notifications, mail, calls to
+outside services). A test server cannot turn them off yet (D91's open
+point): warn the people they reach. The instance's operations log lists the
+known ones.
 
 ```bash
 bivy rebuild --test <instance-dir> --ssh-key ~/.ssh/<key>
