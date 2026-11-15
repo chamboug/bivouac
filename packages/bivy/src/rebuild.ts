@@ -362,9 +362,15 @@ export async function bringBack(deps: CommonDependencies, state: RunState, how: 
     deps.log("  the server replaced its provisional host key");
   });
   await step(deps, state, "first-boot checks", async () => {
-    const out = must(remote, "first-boot checks", "grep -E '^(ID|VERSION)=' /etc/os-release; sudo test -d /etc/bivouac && echo bivouac-dir; systemctl is-active bivouac-reconciler; sudo nft list table inet bivouac_metadata >/dev/null && echo metadata-block");
+    const out = must(remote, "first-boot checks", "grep -E '^(ID|VERSION)=' /etc/os-release; sudo test -d /etc/bivouac && echo bivouac-dir; systemctl is-active bivouac-reconciler; sudo nft list table inet bivouac_metadata >/dev/null && echo metadata-block; sudo sshd -T | grep -Ei '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|allowusers) '");
     // os-release quotes its values (`ID="flatcar"`, seen on the first real run).
     const lines = out.split("\n").map((line) => line.trim().replace(/^(ID|VERSION)="(.*)"$/, "$1=$2"));
+    // sshd's own settings as it applies them: a new Flatcar that stopped reading our drop-in
+    // would otherwise leave port 22, open to all on the real server, less strict without a word.
+    const ssh = lines.map((line) => line.toLowerCase());
+    for (const expected of ["permitrootlogin no", "passwordauthentication no", "kbdinteractiveauthentication no", "allowusers core"]) {
+      if (!ssh.includes(expected)) throw new RebuildError(`first-boot check: sshd does not apply '${expected}'`);
+    }
     for (const expected of ["ID=flatcar", "bivouac-dir", "metadata-block"]) {
       if (!lines.includes(expected)) throw new RebuildError(`first-boot check: '${expected}' missing`);
     }

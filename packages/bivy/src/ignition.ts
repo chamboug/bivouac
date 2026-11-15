@@ -9,7 +9,10 @@ import { MAX_USER_DATA_BYTES, secretsIn } from "./hostkey.js";
  * Butane runs in its official container: the CLI depends on Docker, not on a
  * Butane binary (D31). Version verified on 5 November 2026 (latest release).
  */
-export const BUTANE_IMAGE = "quay.io/coreos/butane:v0.29.0";
+// Pinned by digest (verified 15 November 2026, the multi-architecture index):
+// its output becomes the server's first-boot config, so a tag pushed again
+// must not change it (D65 pins hcloud-upload-image the same way).
+export const BUTANE_IMAGE = "quay.io/coreos/butane:v0.29.0@sha256:13fec166cb47a8e053dcc23256c0ca41aaa1c61cab39793832aaf8894ca78c8f";
 
 export class IgnitionError extends Error {}
 
@@ -103,7 +106,7 @@ export function buildButane(root: string, platform: PlatformConfig, sshKeys: Ssh
 
 /** Compiles Butane to Ignition JSON with `butane --strict` (warnings fail). */
 export function compileButane(butane: string): string {
-  const result = spawnSync("docker", ["run", "--rm", "--interactive", BUTANE_IMAGE, "--strict"], {
+  const result = spawnSync("docker", ["run", "--rm", "--interactive", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", BUTANE_IMAGE, "--strict"], {
     input: butane,
     encoding: "utf8",
   });

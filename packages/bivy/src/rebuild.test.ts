@@ -138,7 +138,7 @@ class FakeServer implements Remote {
       return ok("");
     }
     if (command === "sudo test -e /etc/bivouac/age.key") return { status: 1, stdout: "", stderr: "" };
-    if (command.startsWith("grep -E")) return ok('ID="flatcar"\nVERSION="4757.2.3"\nbivouac-dir\nactive\nmetadata-block\n');
+    if (command.startsWith("grep -E")) return ok(firstBoot);
     if (command === "sudo cat /etc/bivouac/rebuild.json") return ok('{"mode":"test"}\n');
     if (command.includes("deploy_key.pub")) return ok("ssh-ed25519 AAAAtest bivouac-rebuild-test\n");
     if (command.includes("sha256sum /etc/bivouac/age.key")) return ok("0c1f4ca1e4fb5d6b5b2b31f7c0ab4ab9f0b4b65e2f3f6d0ed0aa8ac6fbc2f2b9  /etc/bivouac/age.key\n");
@@ -214,6 +214,8 @@ function ageKeyArrives(server: FakeServer): void {
     return result.status === 0 && command.includes("sha256sum") ? { status: 0, stdout: `${hash}  /etc/bivouac/age.key\n`, stderr: "" } : result;
   };
 }
+
+let firstBoot = 'ID="flatcar"\nVERSION="4757.2.3"\nbivouac-dir\nactive\nmetadata-block\npermitrootlogin no\npasswordauthentication no\nkbdinteractiveauthentication no\nallowusers core\n';
 
 describe("bivy rebuild --test (D91)", () => {
   it("creates a labelled server, open to this Mac only, with a provisional host key as the only secret of its user-data", async () => {
@@ -327,6 +329,18 @@ describe("bivy rebuild --test (D91)", () => {
     expect(state.done).toContain("checks against the real platform");
     expect(logs).toContain("  the server replaced its provisional host key");
     expect(logs).toContain("  Pocket ID publishes the same signing keys as the real server");
+  });
+
+  it("stops before the marker when sshd would accept passwords", async () => {
+    const saved = firstBoot;
+    firstBoot = saved.replace("passwordauthentication no", "passwordauthentication yes");
+    try {
+      const { deps, server } = setup();
+      ageKeyArrives(server);
+      await expect(rebuildTest(deps, options)).rejects.toThrow(/sshd does not apply 'passwordauthentication no'/);
+    } finally {
+      firstBoot = saved;
+    }
   });
 
   it("refuses a Pocket ID that does not publish the real signing keys", async () => {
