@@ -663,7 +663,12 @@ r=(docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-
 ```
 
 Without `--yes`, nothing is changed. It is a data operation: the owner's
-consent first, saying which copy and what will be lost. Run it without `--yes`
+consent first, saying which copy and what will be lost. **Check the free disk
+first** (`df -h /`): the command does not (D94). It needs about three times
+the database's size (safety dump, restored dump, the new database beside the
+live one), and the replaced database is kept for good. After an interrupted
+restore, only a restore of **all** the app's data (no `--only`) starts it
+again (D94). Run it without `--yes`
 first, then with `--yes` **and `--snapshot <id>`** of the copy it named: a
 nightly copy finishing in between would otherwise change the choice. Do not
 interrupt it (no `-t`, no Ctrl-C): if it is cut short anyway, restart the
