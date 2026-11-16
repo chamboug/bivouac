@@ -426,8 +426,8 @@ ssh "${O[@]}" core@<ipv4> '<command>'
 
 Through the OVH API: `POST /domain/zone/<zone>/record` with
 `{"fieldType": "A", "subDomain": "*.<sub>", "target": "<ipv4>", "ttl": 3600}`,
-then `POST /domain/zone/<zone>/refresh`. No `AAAA` record yet (D67): over
-IPv6, Caddy would not see the visitor's address.
+then `POST /domain/zone/<zone>/refresh`. No `AAAA` record (D67, IPv4 only for
+visitors, accepted): over IPv6, Caddy would not see the visitor's address.
 Requests are signed (`X-Ovh-Application`, `X-Ovh-Consumer`, `X-Ovh-Timestamp`,
 `X-Ovh-Signature`). Read the zone first; never add a second SPF record: modify
 the existing one (Brevo, later in this layer).
@@ -629,7 +629,8 @@ reconciler alert comes after 3 passes, its end after 3 clean ones:
 
 **Recovering a hidden file** (from memory, not tried yet): deleting a file's
 hide marker with `b2_delete_file_version` and a key holding `deleteFiles`
-makes the previous version visible again, within 30 days. To try before prod.
+makes the previous version visible again, within 30 days. Left untried by
+the owner's choice (D73, 16 November 2026).
 
 ## 13. App check, at each `bivy rebuild --test` (every 3 months)
 
@@ -755,8 +756,8 @@ is over. The test's deploy key is deleted with it (GitHub docs).
 **Apps that act on their own** run on the test server too, on a copy of
 02:00 (D91's note of 15 November 2026). Before a test, look in each app for
 timers or scheduled jobs that send something (notifications, mail, calls to
-outside services). A test server cannot turn them off yet (D91's open
-point): warn the people they reach. The instance's operations log lists the
+outside services). A test server cannot turn them off (D91, accepted): warn
+the people they reach before the test. The instance's operations log lists the
 known ones.
 
 ```bash
