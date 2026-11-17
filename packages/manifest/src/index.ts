@@ -3,3 +3,4 @@ export * from "./secrets.js";
 export * from "./instance.js";
 export * from "./caddyfile.js";
 export * from "./platform.js";
+export * from "./status.js";

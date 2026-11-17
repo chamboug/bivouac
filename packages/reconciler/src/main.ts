@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Watch, loadAlertCredentials, sendPushover } from "./alerts.js";
-import { loadInstance } from "@bivouac/manifest";
+import { Api } from "./api.js";
+import { API_PORT, loadInstance } from "@bivouac/manifest";
 import { BackupScheduler, backupPlan, runBackup, runMaintenance, runRestoreTest } from "./backup.js";
 import { appBeingRestored } from "./lock.js";
 import { parseRestoreArgs, restoreApp } from "./restore.js";
@@ -44,6 +45,8 @@ import { SelfUpdater } from "./self-update.js";
  *                             not update itself (D50)
  *   BIVOUAC_REBUILD_MARKER    where `bivy rebuild` places its marker
  *                             (default: /etc/bivouac/rebuild.json, D91)
+ *   BIVOUAC_API_PORT          port of the internal API read by the status
+ *                             page (default: 8080), or `off` (D8)
  *   /etc/bivouac/deploy_key   read-only deploy key (D30)
  *   /etc/bivouac/age.key      age key decrypting the secrets (D7)
  *
@@ -233,10 +236,26 @@ async function main(argv: string[]): Promise<number> {
   const watch = process.env.BIVOUAC_ALERTS === "off" ? undefined : new Watch({ stateDir: config.runtime.stateDir, log });
   const backups = new BackupScheduler({ runtime: config.runtime, log });
   let stopping = false;
+  let running = false;
   let timer: NodeJS.Timeout | undefined;
+  const api = new Api({
+    runtime: config.runtime,
+    log,
+    ...(config.image ? { image: config.image } : {}),
+    // A pass now, unless one is running (D3): the next one is then rescheduled from it.
+    sync: () => {
+      if (running || stopping) return false;
+      clearTimeout(timer);
+      void loop();
+      return true;
+    },
+  });
+  const apiPort = process.env.BIVOUAC_API_PORT ?? String(API_PORT);
+  const server = apiPort === "off" ? undefined : api.listen(Number(apiPort));
   const stop = () => {
     stopping = true;
     clearTimeout(timer);
+    server?.close();
     log("stopping");
   };
   process.on("SIGTERM", stop);
@@ -258,11 +277,18 @@ async function main(argv: string[]): Promise<number> {
   };
 
   const loop = async () => {
+    running = true;
     const quiet = testServer();
     try {
       await backups.recover();
       const result = await runPass(config, config.runtime, selfUpdater);
       report(result);
+      if (result.status === "applied" || result.status === "unchanged") {
+        if (result.apiToken) api.setToken(result.apiToken);
+        api.recordPass({ status: result.status, commit: result.commit, changes: result.changes, failures: result.failures });
+      } else if (result.status === "invalid") {
+        api.recordPass({ status: "invalid", commit: result.commit, changes: [], failures: result.errors.map((error) => ({ app: error.file, message: error.message })) });
+      }
       if (result.status === "restart" && !backups.busy && !appBeingRestored(config.runtime.stateDir)) {
         // systemd starts the reconciler again, on the image now named in
         // image.env (Restart=always). During a backup, this waits for a
@@ -282,6 +308,7 @@ async function main(argv: string[]): Promise<number> {
       }
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
+      api.recordPass({ status: "failed", changes: [], failures: [{ app: "(platform)", message: (error as Error).message }] });
       // A pass stopped by an error (GitHub unreachable, secrets unreadable)
       // still proves the version stays up: reported by the alerts instead.
       selfUpdater?.confirm();
@@ -290,7 +317,9 @@ async function main(argv: string[]): Promise<number> {
         await watch?.afterPass({ error: error as Error }, [backups.observation(), ...(selfUpdater ? [selfUpdater.observation()] : [])]);
       }
     }
+    running = false;
     if (!stopping) {
+      clearTimeout(timer);
       timer = setTimeout(() => void loop(), config.interval * 1000);
     }
   };

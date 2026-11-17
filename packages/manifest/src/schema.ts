@@ -243,31 +243,54 @@ function checkGroups(auth: AuthMode, groups: string[], ctx: z.RefinementCtx): vo
 }
 
 /**
+ * An image the monorepo's CI publishes for one commit:
+ * `ghcr.io/<owner>/bivouac-<name>:sha-<commit>`, optionally with its digest.
+ * Only these are accepted where the platform runs its own code (D50).
+ */
+function platformImageSchema(component: string, description: string) {
+  const pattern = new RegExp(`^ghcr\\.io\\/[a-z0-9]([a-z0-9-]*[a-z0-9])?\\/bivouac-${component}$`);
+  const schema = imageSchema.superRefine((image, ctx) => {
+    const digest = /@sha256:[a-f0-9]{64}$/.exec(image);
+    const withoutDigest = digest ? image.slice(0, digest.index) : image;
+    const tag = /:([^/:]*)$/.exec(withoutDigest)?.[1];
+    const name = tag === undefined ? withoutDigest : withoutDigest.slice(0, -tag.length - 1);
+    if (!pattern.test(name)) {
+      ctx.addIssue({ code: "custom", message: `must be ${description} (ghcr.io/<owner>/bivouac-${component})` });
+      return;
+    }
+    // Only the tags CI publishes for one commit: a tag such as ':main' moves,
+    // and the server would keep whatever it pulled first.
+    if (tag !== undefined && !/^sha-[0-9a-f]{7,40}$/.test(tag)) {
+      ctx.addIssue({ code: "custom", message: "must name one commit's image (':sha-<commit>') or a digest, never a moving tag" });
+    }
+  });
+  return { pattern, schema };
+}
+
+const reconcilerImage = platformImageSchema("reconciler", "a Bivouac reconciler image");
+
+/**
  * Name of the reconciler image, whoever publishes it: the CI of a Bivouac
  * monorepo publishes `ghcr.io/<owner>/bivouac-reconciler:sha-<commit>`.
  */
-export const RECONCILER_IMAGE_NAME = /^ghcr\.io\/[a-z0-9]([a-z0-9-]*[a-z0-9])?\/bivouac-reconciler$/;
+export const RECONCILER_IMAGE_NAME = reconcilerImage.pattern;
 
 /**
  * The reconciler's image. It runs with the Docker socket, so it can do
  * anything on the server: only an exact version of a Bivouac reconciler
  * image is accepted, never another image (D50).
  */
-export const reconcilerImageSchema = imageSchema.superRefine((image, ctx) => {
-  const digest = /@sha256:[a-f0-9]{64}$/.exec(image);
-  const withoutDigest = digest ? image.slice(0, digest.index) : image;
-  const tag = /:([^/:]*)$/.exec(withoutDigest)?.[1];
-  const name = tag === undefined ? withoutDigest : withoutDigest.slice(0, -tag.length - 1);
-  if (!RECONCILER_IMAGE_NAME.test(name)) {
-    ctx.addIssue({ code: "custom", message: "must be a Bivouac reconciler image (ghcr.io/<owner>/bivouac-reconciler)" });
-    return;
-  }
-  // Only the tags CI publishes for one commit: a tag such as ':main' moves,
-  // and the server would keep whatever it pulled first.
-  if (tag !== undefined && !/^sha-[0-9a-f]{7,40}$/.test(tag)) {
-    ctx.addIssue({ code: "custom", message: "must name one commit's image (':sha-<commit>') or a digest, never a moving tag" });
-  }
-});
+export const reconcilerImageSchema = reconcilerImage.schema;
+
+/**
+ * The status page's image (D8). It holds the token of the reconciler's
+ * read-only API, which shows every container's logs: only the platform's own
+ * status page image is accepted, at an exact version.
+ */
+export const statusImageSchema = platformImageSchema("status", "the Bivouac status page image").schema;
+
+/** `ghcr.io/<owner>/…` → `<owner>`. */
+const imageOwner = (image: string) => image.split("/")[1];
 
 /**
  * Address of the instance repo, read by the server with its deploy key.
@@ -291,6 +314,12 @@ export const platformConfigSchema = z.strictObject({
    * here (D50).
    */
   reconciler: z.strictObject({ image: reconcilerImageSchema }),
+  /**
+   * The status page (D8), on `status.<domain>`, behind the identity provider
+   * and restricted to these groups (the admins). Optional: without it, the
+   * reconciler's API is still served, to nobody.
+   */
+  status: z.strictObject({ image: statusImageSchema, groups: z.array(groupSchema).min(1, "must name at least one group (the admins)") }).optional(),
   auth: z
     .strictObject({
       /**
@@ -331,6 +360,12 @@ export const platformConfigSchema = z.strictObject({
       ),
     })
     .optional(),
+}).superRefine((platform, ctx) => {
+  // Its token opens the logs of every container: only the publisher of the
+  // reconciler itself may provide the page that holds it.
+  if (platform.status && imageOwner(platform.status.image) !== imageOwner(platform.reconciler.image)) {
+    ctx.addIssue({ code: "custom", path: ["status", "image"], message: "must come from the same publisher as reconciler.image" });
+  }
 });
 
 /**

@@ -33,7 +33,8 @@ export interface ContainerInfo {
   Id: string;
   Name: string;
   Config: { Labels: Record<string, string> | null; Image: string };
-  State: { Status: string; Running: boolean; Health?: { Status: string } };
+  State: { Status: string; Running: boolean; Health?: { Status: string }; StartedAt?: string; OOMKilled?: boolean };
+  RestartCount?: number;
   Mounts: { Type: string; Source: string; Destination: string }[];
   NetworkSettings: { Networks: Record<string, { IPAddress: string }> };
 }
@@ -186,9 +187,33 @@ export class Docker {
     return (JSON.parse(response.body.toString()) as { StatusCode: number }).StatusCode;
   }
 
+  /** Names of the containers carrying a label, running or not. */
+  async listContainers(label: string): Promise<string[]> {
+    const filters = encodeURIComponent(JSON.stringify({ label: [label] }));
+    const response = await this.expect("GET", `/containers/json?all=1&filters=${filters}`, [200]);
+    const entries = JSON.parse(response.body.toString()) as { Names: string[] }[];
+    return entries.flatMap((entry) => entry.Names.map((name) => name.replace(/^\//, "")));
+  }
+
+  /**
+   * Memory a running container uses, as `docker stats` counts it: its usage
+   * minus the file cache the kernel can drop at once (`inactive_file`, cgroup
+   * v2; observed on Docker 29). Undefined for a stopped container.
+   */
+  async memory(name: string): Promise<{ usedBytes: number; limitBytes: number } | undefined> {
+    const response = await this.expect("GET", `/containers/${encodeURIComponent(name)}/stats?stream=false&one-shot=true`, [200], undefined, undefined, 10_000);
+    const stats = JSON.parse(response.body.toString()) as {
+      memory_stats?: { usage?: number; limit?: number; stats?: { inactive_file?: number } };
+    };
+    const memory = stats.memory_stats;
+    if (!memory?.usage || !memory.limit) return undefined;
+    return { usedBytes: Math.max(0, memory.usage - (memory.stats?.inactive_file ?? 0)), limitBytes: memory.limit };
+  }
+
   /** A stopped or running container's output, stdout and stderr together. */
-  async logs(name: string): Promise<string> {
-    const response = await this.expect("GET", `/containers/${encodeURIComponent(name)}/logs?stdout=1&stderr=1&tail=20`, [200]);
+  async logs(name: string, options: { lines?: number; timestamps?: boolean } = {}): Promise<string> {
+    const query = `stdout=1&stderr=1&tail=${options.lines ?? 20}${options.timestamps ? "&timestamps=1" : ""}`;
+    const response = await this.expect("GET", `/containers/${encodeURIComponent(name)}/logs?${query}`, [200]);
     const { stdout, stderr } = demultiplex(response.body);
     return `${stdout}${stderr}`;
   }

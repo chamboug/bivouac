@@ -224,6 +224,20 @@ describe("platform config", () => {
   const messages = (changes: Record<string, unknown>) =>
     parse(changes).error?.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`) ?? [];
 
+  it("accepts only the platform's own status page image, at one commit, for named groups", () => {
+    const image = `ghcr.io/example/bivouac-status:sha-abc1234@sha256:${"0".repeat(64)}`;
+    expect(parse({ status: { image, groups: ["admins"] } }).success).toBe(true);
+    expect(parse({ status: { image: "ghcr.io/example/bivouac-status:sha-abc1234", groups: ["admins"] } }).success).toBe(true);
+    expect(messages({ status: { image: image.replace("example", "someone-else"), groups: ["admins"] } })).toEqual([
+      "status.image: must come from the same publisher as reconciler.image",
+    ]);
+    expect(messages({ status: { image, groups: [] } })).toEqual(["status.groups: must name at least one group (the admins)"]);
+    expect(parse({ status: { image: "ghcr.io/example/bivouac-status:main", groups: ["admins"] } }).success).toBe(false);
+    expect(parse({ status: { image: "ghcr.io/example/bivouac-reconciler:sha-abc1234", groups: ["admins"] } }).success).toBe(false);
+    expect(parse({ status: { image: "ghcr.io/example/my-status:sha-abc1234", groups: ["admins"] } }).success).toBe(false);
+    expect(parse({ status: { image, groups: ["admins"], port: 80 } }).success).toBe(false);
+  });
+
   it("accepts an IPv4 or IPv6 address for the first-admin page, and nothing else", () => {
     expect(parse({ auth: { setupFrom: "203.0.113.7" } }).success).toBe(true);
     expect(parse({ auth: { setupFrom: "2001:db8::1" } }).success).toBe(true);

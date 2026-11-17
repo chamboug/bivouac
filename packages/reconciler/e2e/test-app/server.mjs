@@ -2,14 +2,20 @@ import { createServer } from "node:http";
 
 // GET /api/health: 200, or 500 when TEST_FAIL_HEALTH is set (to test a
 // failed deployment). GET /env: the names of the variables the platform
-// injected, never their values.
+// injected, never their values. GET /probe-api: the status code the
+// reconciler's API gives this container with its token (the status page).
 const injected = Object.keys(process.env).filter((name) =>
-  /^(PORT|DATABASE_URL|OIDC_|MCP_|SMTP_|TEST_)/.test(name),
+  /^(PORT|DATABASE_URL|OIDC_|MCP_|SMTP_|TEST_|BIVOUAC_)/.test(name),
 );
 
 createServer((request, response) => {
   if (request.url === "/api/health") {
     response.writeHead(process.env.TEST_FAIL_HEALTH ? 500 : 200).end();
+  } else if (request.url === "/probe-api") {
+    fetch(`${process.env.BIVOUAC_API_URL}/v1/state`, { headers: { authorization: `Bearer ${process.env.BIVOUAC_API_TOKEN}` } }).then(
+      (answer) => response.writeHead(200).end(String(answer.status)),
+      (error) => response.writeHead(200).end(`unreachable: ${error.cause?.message ?? error.message}`),
+    );
   } else if (request.url === "/env") {
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(injected.sort()));
   } else {

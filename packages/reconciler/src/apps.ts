@@ -45,7 +45,16 @@ export const APP_LIMITS = { memoryBytes: 1024 ** 3, pids: 512 };
 /** Sessions one app may hold in Postgres (the shared layer opens at most 5). */
 export const APP_CONNECTION_LIMIT = 20;
 
-export async function ensureApp(context: AppContext, app: AppManifest): Promise<AppResult> {
+/**
+ * What only the platform's own apps get: the status page lives on the
+ * internal network, out of the apps' reach, and receives the API token.
+ */
+export interface PlatformAppOptions {
+  networks: string[];
+  env: Record<string, string>;
+}
+
+export async function ensureApp(context: AppContext, app: AppManifest, platformApp?: PlatformAppOptions): Promise<AppResult> {
   const changes: string[] = [];
   const { runtime } = context;
   if (runtime.pausedApps.has(app.name)) return { name: app.name, routed: true, changes };
@@ -62,8 +71,8 @@ export async function ensureApp(context: AppContext, app: AppManifest): Promise<
     {
       name: container,
       image: app.image,
-      networks: { [PLATFORM_NETWORKS.apps.name]: null },
-      env: appEnvironment(app, values),
+      networks: Object.fromEntries((platformApp?.networks ?? [PLATFORM_NETWORKS.apps.name]).map((network) => [network, null])),
+      env: { ...appEnvironment(app, values), ...platformApp?.env },
       limits: APP_LIMITS,
       mounts: Object.entries(app.volumes).map(([volume, target]) => ({
         type: "volume" as const,

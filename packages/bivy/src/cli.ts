@@ -3,7 +3,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { generateCaddyfile, loadInstance } from "@bivouac/manifest";
+import { generateCaddyfile, loadInstance, withStatusApp } from "@bivouac/manifest";
 import { CaddyError, validateCaddyfile } from "./caddy.js";
 import { EXAMPLE_IPV6, IPV6_PLACEHOLDER, IgnitionError, buildButane, compileButane } from "./ignition.js";
 import { GitHub, repositoryPath } from "./github.js";
@@ -100,6 +100,14 @@ function validate(root: string): number {
       message: "reconciler.image must be pinned by digest (ghcr.io/<owner>/bivouac-reconciler:sha-<commit>@sha256:<digest>, D61)",
     });
   }
+  // The status page holds the token of the reconciler's API: the same rule.
+  const status = instance.platform?.status;
+  if (status && !/@sha256:[a-f0-9]{64}$/.test(status.image)) {
+    errors.push({
+      file: "platform.yml",
+      message: "status.image must be pinned by digest (ghcr.io/<owner>/bivouac-status:sha-<commit>@sha256:<digest>)",
+    });
+  }
   if (instance.sshKeys && instance.platform) {
     try {
       compileButane(buildButane(root, instance.platform, instance.sshKeys, readFileSync(join(root, "butane", "server.bu"), "utf8").includes(IPV6_PLACEHOLDER) ? EXAMPLE_IPV6 : undefined));
@@ -111,7 +119,7 @@ function validate(root: string): number {
   // Only check the Caddyfile when the manifests themselves are valid: an
   // invalid manifest is left out of the instance and would hide its route.
   if (instance.platform && errors.length === 0) {
-    const generated = generateCaddyfile(instance.platform, instance.apps, instance.sites);
+    const generated = generateCaddyfile(instance.platform, withStatusApp(instance.platform, instance.apps), instance.sites);
     errors.push(...generated.errors);
     if (generated.errors.length === 0) {
       try {

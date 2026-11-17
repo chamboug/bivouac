@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { generateCaddyfile } from "./caddyfile.js";
 import { appManifestSchema, siteManifestSchema } from "./schema.js";
+import { statusApp, withStatusApp } from "./status.js";
 
 const platform = {
   domain: "apps.example.com",
@@ -24,6 +25,16 @@ describe("caddyfile", () => {
       "recipes.apps.example.com, recipes.example.org {\n" + HEADERS + "\treverse_proxy bivouac-app-recipes:8080\n}",
     );
     expect(caddyfile).toContain("library.apps.example.com {\n" + HEADERS + "\treverse_proxy bivouac-app-library:3000\n}");
+  });
+
+  it("routes the status page on its reserved name, only when platform.yml names one (D8)", () => {
+    expect(withStatusApp(platform, [app({ name: "library" })]).map((entry) => entry.name)).toEqual(["library"]);
+    const withStatus = { ...platform, status: { image: `ghcr.io/example/bivouac-status:sha-abc1234@sha256:${"0".repeat(64)}`, groups: ["admins"] } };
+    expect(statusApp(withStatus)).toMatchObject({ name: "status", auth: "oidc", groups: ["admins"], volumes: {} });
+    expect(statusApp(withStatus)?.database).toBeUndefined();
+    const { caddyfile, errors } = generateCaddyfile(withStatus, withStatusApp(withStatus, []), []);
+    expect(errors).toEqual([]);
+    expect(caddyfile).toContain("status.apps.example.com {\n" + HEADERS + "\treverse_proxy bivouac-app-status:3000\n}");
   });
 
   it("keeps the admin API inside Caddy's container", () => {

@@ -31,6 +31,8 @@ export const RECONCILER_RUNNING = "ghcr.io/example/bivouac-reconciler:sha-e2e000
 export const RECONCILER_NEWER = "ghcr.io/example/bivouac-reconciler:sha-e2e0001";
 export const RECONCILER_BROKEN = "ghcr.io/example/bivouac-reconciler:sha-e2ebad0";
 export const TEST_APP_IMAGE = "bivouac-test-app:dev";
+/** The test app, standing in for the status page (only a `bivouac-status` image is accepted there). */
+export const STATUS_IMAGE = "ghcr.io/example/bivouac-status:sha-e2e0000";
 export const DOMAIN = "apps.bivouac.localhost";
 /** Caddy's fixed address on the internal network (see PLATFORM_NETWORKS). */
 export const CADDY_ADDRESS = "10.209.1.10";
@@ -64,6 +66,7 @@ export function buildImages(): void {
   docker("tag", RECONCILER_IMAGE, RECONCILER_RUNNING);
   docker("tag", RECONCILER_IMAGE, RECONCILER_NEWER);
   docker("tag", TEST_APP_IMAGE, RECONCILER_BROKEN);
+  docker("tag", TEST_APP_IMAGE, STATUS_IMAGE);
 }
 
 /**
@@ -284,6 +287,15 @@ export function psql(user: string, password: string, database: string, sql: stri
   return run("docker", ["exec", "--env", `PGPASSWORD=${password}`, "bivouac-postgres",
     "psql", "--host", "bivouac-postgres", "--username", user, "--dbname", database,
     "--no-align", "--tuples-only", "--command", sql]);
+}
+
+/** A request to the reconciler's internal API from a throwaway container on `network`. */
+export function callApi(network: string, method: string, path: string, token?: string): { status: number; body: string } {
+  const result = run("docker", ["run", "--rm", "--network", network, CURL_IMAGE,
+    "--silent", "--max-time", "10", "--write-out", "\n%{http_code}", "--request", method,
+    ...(token ? ["--header", `Authorization: Bearer ${token}`] : []), `http://bivouac-reconciler:8080${path}`]);
+  const lines = result.stdout.split("\n");
+  return { status: Number(lines.pop()), body: lines.join("\n") };
 }
 
 /** Whether a container on the apps network can open a connection to `url`. */

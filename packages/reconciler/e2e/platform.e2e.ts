@@ -4,7 +4,7 @@
  * like passes on a real server.
  */
 import { createHash, createHmac } from "node:crypto";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -26,6 +26,9 @@ import {
   RECONCILER_BROKEN,
   RECONCILER_NEWER,
   RECONCILER_RUNNING,
+  STATUS_IMAGE,
+  callApi,
+  startReconciler,
   readStateFile,
   removeStateFile,
   run,
@@ -742,6 +745,74 @@ describe("z. turning an app's MCP off (D85)", () => {
   });
 });
 
+describe("m. the status page and the reconciler's internal API (D8)", () => {
+  let token: string;
+  // Added to platform.yml as the earlier steps left it (its backup destination included), then taken out.
+  let previous: string;
+
+  beforeAll(() => {
+    token = derive(platform.masterSecret, "api:status");
+    previous = readFileSync(join(platform.repo, "platform.yml"), "utf8");
+    platform.commit({ "platform.yml": `${previous}status:\n  image: ${STATUS_IMAGE}\n  groups: [admins]\n` }, "status page");
+    // A reconciler that keeps running, as on the server: the API lives in its loop.
+    startReconciler(platform, "");
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline && !docker("logs", "bivouac-reconciler").includes('"message":"pass ')) {
+      run("sleep", ["2"]);
+    }
+  }, 200_000);
+
+  afterAll(() => {
+    run("docker", ["rm", "--force", "bivouac-reconciler", "bivouac-app-status"]);
+    platform.commit({ "platform.yml": previous }, "no status page");
+  });
+
+  it("runs the status page on the internal network only, with its own client and route", () => {
+    const status = inspect<ContainerState>("bivouac-app-status");
+    expect(status.State.Running).toBe(true);
+    expect(Object.keys(status.NetworkSettings.Networks)).toEqual(["bivouac-internal"]);
+    expect(status.Config.Env).toContain(`BIVOUAC_API_TOKEN=${token}`);
+    expect(status.Config.Env).toContain("BIVOUAC_API_URL=http://bivouac-reconciler:8080");
+    expect(status.Config.Env).toContain("BIVOUAC_STATUS_GROUPS=admins");
+    const client = pocketIdApi(platform, "GET", "/api/oidc/clients/status").body as { allowedUserGroups: { name: string }[] };
+    expect(client.allowedUserGroups.map((group) => group.name)).toEqual(["admins"]);
+    expect(throughCaddy(`status.${DOMAIN}`, "/api/health").status).toBe(200);
+  });
+
+  it("answers the status page, with its token", () => {
+    expect(throughCaddy(`status.${DOMAIN}`, "/probe-api").body).toBe("200");
+    const state = callApi("bivouac-internal", "GET", "/v1/state", token);
+    expect(state.status).toBe(200);
+    const body = JSON.parse(state.body) as { containers: { name: string }[]; lastPass: { status: string } };
+    expect(body.containers.map((entry) => entry.name)).toEqual(expect.arrayContaining(["bivouac-postgres", "bivouac-app-recettes", "bivouac-reconciler"]));
+    expect(body.lastPass.status).toMatch(/applied|unchanged/);
+    expect(state.body).not.toContain(platform.masterSecret);
+    expect(state.body).not.toContain(MAIL_PASSWORD);
+  });
+
+  it("refuses a request without the token, and closes any connection from the apps' network", () => {
+    expect(callApi("bivouac-internal", "GET", "/v1/state").status).toBe(401);
+    expect(callApi("bivouac-internal", "GET", "/v1/state", "x".repeat(64)).status).toBe(401);
+    // Closed before a byte is read: curl gets no answer at all (code 000).
+    expect(callApi("bivouac", "GET", "/v1/state", token).status).toBe(0);
+  });
+
+  it("shows the logs of the platform's containers only", () => {
+    const logs = callApi("bivouac-internal", "GET", "/v1/logs/bivouac-reconciler?lines=5", token);
+    expect(logs.status).toBe(200);
+    expect(logs.body.trim().split("\n").length).toBeLessThanOrEqual(5);
+    expect(callApi("bivouac-internal", "GET", "/v1/logs/bivouac-test-elsewhere", token).status).toBe(404);
+    // Postgres can write a failed statement, a role's password included, to its logs.
+    expect(callApi("bivouac-internal", "GET", "/v1/logs/bivouac-postgres", token).status).toBe(404);
+  });
+
+  it("syncs on demand, at most once every 10 seconds (D3)", () => {
+    const first = callApi("bivouac-internal", "POST", "/v1/sync", token);
+    expect(first.status).toBe(202);
+    expect(callApi("bivouac-internal", "POST", "/v1/sync", token).status).toBe(429);
+  });
+});
+
 describe("l. rebuilding the platform from a copy, in test mode (D91)", () => {
   const owner = (sql: string) => psql("recettes", derive(platform.masterSecret, "db:recettes"), "recettes", sql);
   const superuser = (database: string, sql: string) => psql("postgres", derive(platform.masterSecret, "postgres:superuser"), database, sql);
@@ -761,7 +832,7 @@ describe("l. rebuilding the platform from a copy, in test mode (D91)", () => {
   beforeAll(() => {
     const repository = `${platform.state}/restic-repo`;
     const backup = runOnce(platform, { args: ["--backup"], env: { BIVOUAC_BACKUP_REPOSITORY: repository } });
-    expect(backup.status).toBe(0);
+    expect(backup.status, JSON.stringify(backup.logs.slice(-3))).toBe(0);
     before.titles = titles();
     before.uploads = uploads();
     before.users = pocketIdUsers();

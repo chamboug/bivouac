@@ -9,8 +9,12 @@ import {
   loadInstance,
   type Instance,
   type ValidationError,
+  API_PORT,
+  statusApp,
+  withStatusApp,
 } from "@bivouac/manifest";
 import { saveAlertCredentials } from "./alerts.js";
+import { apiToken } from "./api.js";
 import { ensureApp, type AppResult } from "./apps.js";
 import { backupPlan, type BackupPlan } from "./backup.js";
 import { ensureBase, ensureService, pocketIdUrl, postgresServer, writeIfChanged, type Runtime } from "./base.js";
@@ -47,6 +51,8 @@ export type PassResult =
       backup?: BackupPlan;
       /** On a server being rebuilt (D91). */
       rebuild?: RebuildState;
+      /** The status page's token for the internal API, from the secrets of this pass. */
+      apiToken?: string;
     }
   | { status: "invalid"; commit: string; errors: ValidationError[] }
   /** platform.yml names a new reconciler version, ready to run: exit so systemd restarts on it. */
@@ -65,7 +71,7 @@ export function prepare(config: Pick<PassConfig, "source" | "checkout">): Prepar
   if (!instance.platform) {
     return { status: "invalid", commit, errors };
   }
-  errors.push(...generateCaddyfile(instance.platform, instance.apps, instance.sites).errors);
+  errors.push(...generateCaddyfile(instance.platform, withStatusApp(instance.platform, instance.apps), instance.sites).errors);
   if (errors.length > 0) {
     return { status: "invalid", commit, errors };
   }
@@ -132,9 +138,26 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
       results.push({ name: app.name, routed: false, changes: [], failure: (error as Error).message });
     }
   }
+  const status = statusApp(instance.platform);
+  if (status) {
+    try {
+      results.push(
+        await ensureApp(context, status, {
+          networks: [PLATFORM_NETWORKS.internal.name],
+          env: {
+            BIVOUAC_API_URL: `http://${runtime.self ?? "bivouac-reconciler"}:${API_PORT}`,
+            BIVOUAC_API_TOKEN: apiToken(secrets),
+            BIVOUAC_STATUS_GROUPS: status.groups.join(","),
+          },
+        }),
+      );
+    } catch (error) {
+      results.push({ name: status.name, routed: false, changes: [], failure: (error as Error).message });
+    }
+  }
   for (const result of results) changes.push(...result.changes);
 
-  const routed = instance.apps.filter((app) => results.find((result) => result.name === app.name)?.routed);
+  const routed = withStatusApp(instance.platform, instance.apps).filter((app) => results.find((result) => result.name === app.name)?.routed);
   const { caddyfile } = generateCaddyfile(instance.platform, routed, instance.sites, { localCerts: test });
   await ensureCaddy(runtime, caddyfile, changes);
 
@@ -152,6 +175,7 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
     failures,
     ...(backup ? { backup } : {}),
     ...(rebuild ? { rebuild } : {}),
+    apiToken: apiToken(secrets),
   };
 }
 
