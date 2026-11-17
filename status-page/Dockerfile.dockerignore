@@ -1,0 +1,11 @@
+# Used instead of the root .dockerignore for this Dockerfile (BuildKit).
+**/node_modules
+**/.nuxt
+**/.output
+**/.layers
+**/*.tsbuildinfo
+.git
+docs
+template
+app-template
+packages

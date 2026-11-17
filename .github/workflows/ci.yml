@@ -108,6 +108,26 @@ jobs:
       - run: npm run build
       - run: npm run test:e2e
 
+  # The status page (D8): its admin check, its build, and its image, built
+  # from the monorepo's root with the oidc layer of this commit.
+  status-page:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: status-page
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: status-page/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npm run build
+      - run: docker build --file Dockerfile --tag status-page-check ..
+
   # Publishes the reconciler image after the tests pass on main, tagged with
   # the exact commit (`sha-<7 characters>`): servers name an exact version,
   # never a moving tag, so a rollback is always possible (D21, D48).
@@ -138,6 +158,37 @@ jobs:
           # The digest this run pushed, to compare with the one written in platform.yml (D61):
           # a tag can be pushed again by someone else, a digest cannot change.
           # Read as the runbook does (D61): the top-level digest the registry serves for this tag.
+          digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Publishes the status page image after the tests pass on main, like the
+  # reconciler: one commit's tag, and the digest it pushed, to write in
+  # platform.yml (status.image).
+  publish-status-page:
+    needs: [test, e2e, status-page]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and push ghcr.io/${{ github.repository_owner }}/bivouac-status
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/bivouac-status:sha-${GITHUB_SHA::7}"
+          echo "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker build --file status-page/Dockerfile \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --tag "$image" .
+          docker push "$image"
           digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
           echo "Digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
