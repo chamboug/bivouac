@@ -857,3 +857,42 @@ bivy rebuild <instance-dir> --ssh-key ~/.ssh/<key>
 Interrupted: run the same command again. Before the erase, it starts over
 with a new plan, confirmation and backup (`--abandon` forgets it); after,
 it carries on and never sends the rebuild twice.
+
+## 17. The status page (D96)
+
+`status.<domain>`, for the admins only: what runs, versions, health, memory,
+restarts, the last pass, the last backup and restore test, open incidents, the
+host's disk and memory, the latest logs of a container (not Postgres's), and a
+"Sync now" button. It reads the reconciler's internal API; it has no Docker
+socket and no database.
+
+**Turning it on** (no DNS change: the wildcard covers the name):
+
+1. CI on the monorepo's `main` publishes both images for the commit; each
+   job's summary gives the digest. Check them as for the reconciler (D61):
+   `docker buildx imagetools inspect ghcr.io/<owner>/bivouac-status:sha-<commit>`.
+2. Move the reconciler first (`reconciler.image` in `platform.yml`, with its
+   digest), and check that it passed: the API comes with it, and nothing
+   else changes for the apps.
+3. Then add to `platform.yml`:
+
+   ```yaml
+   status:
+     image: ghcr.io/<owner>/bivouac-status:sha-<commit>@sha256:<digest>
+     groups: [admins]
+   ```
+
+   The next pass creates the `admins` group and the `status` client in
+   Pocket ID, starts the page on the internal network and routes it. Caddy
+   asks for its certificate on the first visit.
+4. **The owner adds themself to `admins`** in Pocket ID's admin screen
+   (Users → their account → groups). Nobody else.
+
+**Checks**: the page answers 200 on `/api/health` through Caddy; a member of
+another group is refused by Pocket ID; from an app container, the reconciler's
+port 8080 closes the connection.
+
+**Turning it off**: remove the `status` block. The next pass drops its
+route; the container keeps running, unreachable, until removed by hand
+(`docker rm -f bivouac-app-status`), like a removed app (D18). Its Pocket ID
+client stays, harmless without the page.
