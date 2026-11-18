@@ -174,7 +174,10 @@ export function createPlatform(): Platform {
   const commit = (files: Record<string, string | null>, message: string) => {
     for (const [file, content] of Object.entries(files)) {
       if (content === null) rmSync(join(repo, file), { force: true });
-      else writeFileSync(join(repo, file), content);
+      else {
+        mkdirSync(dirname(join(repo, file)), { recursive: true });
+        writeFileSync(join(repo, file), content);
+      }
     }
     git("add", "--all");
     git("commit", "--quiet", "--allow-empty", "--message", message);
@@ -250,12 +253,26 @@ export function startReconciler(platform: Platform, ports: string): void {
  * Caddy serves `*.localhost` names with its own local certificate authority
  * (verified, Caddy 2.11.9), hence `--insecure`.
  */
-export function throughCaddy(host: string, path: string, method = "GET"): { status: number; body: string } {
+export function throughCaddy(host: string, path: string, method = "GET", headers: string[] = []): { status: number; body: string } {
   const result = run("docker", ["run", "--rm", "--network", INTERNAL_NETWORK, CURL_IMAGE,
     "--silent", "--insecure", "--path-as-is", "--max-time", "10", "--write-out", "\n%{http_code}",
+    ...headers.flatMap((header) => ["--header", header]),
     "--request", method, "--resolve", `${host}:443:${CADDY_ADDRESS}`, `https://${host}${path}`]);
   const lines = result.stdout.split("\n");
   return { status: Number(lines.pop()), body: lines.join("\n") };
+}
+
+/** YAML encrypted with SOPS for the platform's age key, like `sops encrypt` on the owner's Mac. */
+export function encryptForPlatform(platform: Platform, yaml: string): string {
+  const recipient = /age1[0-9a-z]+/.exec(readFileSync(join(platform.repo, ".sops.yaml"), "utf8"))?.[0];
+  if (!recipient) throw new Error("no age recipient in .sops.yaml");
+  const work = mkdtempSync(join(platform.root, "sops-"));
+  writeFileSync(join(work, "plain.yaml"), yaml);
+  const encrypted = run("docker", ["run", "--rm", "--volume", `${work}:/work`, "--workdir", "/work", SOPS_IMAGE,
+    "encrypt", "--age", recipient, "--input-type", "yaml", "--output-type", "yaml", "plain.yaml"]);
+  rmSync(work, { recursive: true, force: true });
+  if (encrypted.status !== 0) throw new Error(`sops encrypt failed: ${encrypted.stderr}`);
+  return encrypted.stdout;
 }
 
 /** A call to Pocket ID's API, straight to its container (not through Caddy). */

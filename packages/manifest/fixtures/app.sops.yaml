@@ -1,0 +1,17 @@
+MAIL_SMTP_PASSWORD: ENC[AES256_GCM,data:0NmMR6LNEoiKhEuPBzgncYT/Q7K715w=,iv:AVTbajqhWdhOFCTab07xPWO5tzyUbMT8L7MYthSNsCQ=,tag:iZK+E+dsnau7P32ffhH9qw==,type:str]
+OTHER_TOKEN: ENC[AES256_GCM,data:17kNZOX3wa7/EW+lXgvjZ/f/k2o=,iv:ti3wbqqmpfK0MxUmd5aqVH9Mt97AFR7zR+1H9lOqcaU=,tag:l5ZihBUtLxqSr8X0c/msNQ==,type:str]
+sops:
+    age:
+        - enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBTaVJCQ2czNzRjNjl3L09F
+            TFlDMnpyVEFJSWhHSVp3YStwUHRLU0g4SnprClM0MkZOM25OTGZ1ZWg4NTV3aVlP
+            WGxCaFRXS0tuUlVQNjM0ZWFJVWw2ZHcKLS0tIEVJQis5Q3RpUWxnMFoybS9BUWdE
+            a0pkeFBqUk5YRDBuaDg1Q0MyMU5UbnMKDsNDUFaoji/nSsiHv/IBvRs6lEhCp8I0
+            K5+LWerqoJoGQRNVBZAvhvkCewOzZziBiQFhZsAw1Zvbhp1AvvpL4Q==
+            -----END AGE ENCRYPTED FILE-----
+          recipient: age1nc65xzejv2j8890a68t6676dst3jvkk3wamf5smthxrrmeuawdvq2qaq5w
+    lastmodified: "2026-11-18T06:13:31Z"
+    mac: ENC[AES256_GCM,data:BZ8+qW7krXckhRsFM5dzvJNMP36D0Tzjmg7GPBcN2EdtrzEDvlKgpYMsUVwk9EQ2dNPF+C4P2bJASQqyrQABV5xnafEJPTloX47iVWO9xmNuMZoPtWFtoe6pXiFp3lpR/pGjCgmQc1WQFTnirZbC948xeoVf+hQoX5qZfaG25VA=,iv:JOQhp+BLcCn+eM5OPBFa1ajYIFpFS5bxU+477vOLCF0=,tag:HyFOtsruxOhsjuw0jcVDCg==,type:str]
+    unencrypted_suffix: _unencrypted
+    version: 3.13.3

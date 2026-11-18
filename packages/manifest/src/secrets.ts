@@ -70,6 +70,22 @@ export function checkEncryptedFile(content: string): SecretsCheck {
   return { errors, recipients };
 }
 
+/**
+ * The top-level names of a SOPS file (the `sops` section aside), with the
+ * type SOPS recorded for each value. Names are not encrypted, and types are
+ * written in the clear inside each `ENC[...]`: nothing is decrypted.
+ */
+export function encryptedEntries(content: string): { name: string; nested: boolean; type: string | undefined }[] {
+  const document: unknown = parse(content);
+  if (!isMap(document)) return [];
+  const { sops: _metadata, ...data } = document;
+  return Object.entries(data).map(([name, value]) => ({
+    name,
+    nested: typeof value === "object" && value !== null,
+    type: typeof value === "string" ? /,type:([a-z]+)\]$/.exec(value)?.[1] : undefined,
+  }));
+}
+
 /** Reads the age recipients from the instance's `.sops.yaml`. */
 export function readSopsConfigRecipients(content: string): { errors: string[]; recipients: string[] } {
   let config: unknown;

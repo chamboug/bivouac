@@ -36,6 +36,7 @@ import {
   runOnce,
   reachableFromApps,
   throughCaddy,
+  encryptForPlatform,
   tokenAnswer,
   type PassOutput,
   type Platform,
@@ -320,6 +321,51 @@ describe("e. app containers", () => {
     platform.commit({ "apps/biblio.yml": BIBLIO }, "fixed biblio");
     expect(runOnce(platform).status).toBe(0);
     expect(throughCaddy(`biblio.${DOMAIN}`, "/api/health").status).toBe(200);
+  });
+});
+
+describe("e2. an app that signs its own users in (D97)", () => {
+  const CARNET = `name: carnet\nimage: ${TEST_APP_IMAGE}\nauth: local\n`;
+  let secretsFile: string;
+
+  beforeAll(() => {
+    secretsFile = encryptForPlatform(platform, 'APP_SECRET_MAIL: "fake-mail-password"\n');
+    platform.commit({ "apps/carnet.yml": CARNET, "secrets/apps/carnet.sops.yaml": secretsFile }, "an app with its own secrets");
+    expect(runOnce(platform).status).toBe(0);
+  });
+
+  it("gives it its own secrets and a session key derived from the master secret", () => {
+    expect(JSON.parse(throughCaddy(`carnet.${DOMAIN}`, "/env").body)).toEqual(["APP_SECRET_MAIL", "PORT", "SESSION_SECRET"]);
+    const env = inspect<ContainerState>("bivouac-app-carnet").Config.Env;
+    expect(env).toContain("APP_SECRET_MAIL=fake-mail-password");
+    expect(env).toContain(`SESSION_SECRET=${derive(platform.masterSecret, "session:carnet")}`);
+  });
+
+  it("gives other apps neither its secrets nor a session key", () => {
+    expect(JSON.parse(throughCaddy(`biblio.${DOMAIN}`, "/env").body)).toEqual(["PORT"]);
+  });
+
+  it("keeps a working app on line when its secrets cannot be read, and says so", () => {
+    const started = inspect<ContainerState>("bivouac-app-carnet").Id;
+    // Still a well-formed SOPS file (the instance check passes), but its integrity code no longer matches.
+    const damaged = secretsFile.replace(/data:([A-Za-z0-9+/]{4})/, (_, start: string) => `data:${start === "AAAA" ? "BBBB" : "AAAA"}`);
+    platform.commit({ "secrets/apps/carnet.sops.yaml": damaged }, "damaged secrets");
+    const pass = runOnce(platform);
+    expect(pass.status).toBe(1);
+    expect(pass.logs).toContainEqual(expect.objectContaining({
+      message: "app failed", app: "carnet", error: expect.stringContaining("could not decrypt secrets/apps/carnet.sops.yaml"),
+    }));
+    expect(JSON.stringify(pass.logs)).not.toContain("fake-mail-password");
+    expect(inspect<ContainerState>("bivouac-app-carnet").Id).toBe(started);
+    expect(throughCaddy(`carnet.${DOMAIN}`, "/api/health").status).toBe(200);
+    platform.commit({ "secrets/apps/carnet.sops.yaml": secretsFile }, "secrets repaired");
+    expect(runOnce(platform).status).toBe(0);
+  });
+
+  it("only sees the client address Caddy saw, never one the client claims", () => {
+    const forwarded = throughCaddy(`carnet.${DOMAIN}`, "/forwarded-for", "GET", ["X-Forwarded-For: 198.51.100.7"]).body;
+    expect(forwarded).not.toContain("198.51.100.7");
+    expect(forwarded).toMatch(/^\d+\.\d+\.\d+\.\d+$/);
   });
 });
 

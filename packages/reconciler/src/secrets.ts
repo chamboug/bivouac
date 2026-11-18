@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
+import { join } from "node:path";
+import { appSecretNameProblem, appSecretsFile, type AppManifest } from "@bivouac/manifest";
 import { z } from "zod";
 
 /** The platform's secrets file in the instance repo, encrypted with SOPS. */
@@ -58,8 +60,55 @@ export class SecretsError extends Error {}
  * in the files given to the containers that need them.
  */
 export function decryptSecrets(file: string, ageKeyFile: string): PlatformSecrets {
+  const document = decryptSopsFile(file, PLATFORM_SECRETS_FILE, ageKeyFile);
+  const parsed = platformSecretsSchema.safeParse(document);
+  if (!parsed.success) {
+    const problems = parsed.error.issues.map((issue) => `'${issue.path.join(".")}' ${issue.message}`);
+    throw new SecretsError(`${PLATFORM_SECRETS_FILE} is incomplete: ${problems.join("; ")}`);
+  }
+  return parsed.data;
+}
+
+/**
+ * An app's own secrets (D97), as environment variables, or none when the
+ * app has no file. The instance check already refused names the platform
+ * provides, values that are not text and nested maps; this checks again.
+ */
+export function decryptAppSecrets(checkout: string, app: AppManifest, ageKeyFile: string): Record<string, string> {
+  const relative = appSecretsFile(app.name);
+  const file = join(checkout, relative);
+  if (!existsSync(file) && !isLink(file)) return {};
+  // A link could hand one app another's secrets: CI only reads plain files.
+  if (!lstatSync(file).isFile()) throw new SecretsError(`${relative} must be a plain file, not a link`);
+  const document = decryptSopsFile(file, relative, ageKeyFile);
+  const parsed = z.record(z.string(), z.string()).safeParse(document);
+  if (!parsed.success) throw new SecretsError(`${relative} must hold one text value per name`);
+  for (const [name, value] of Object.entries(parsed.data)) {
+    // Docker would refuse the container, after the running one is removed.
+    if (value.includes("\0") || Buffer.byteLength(value) > MAX_APP_SECRET_BYTES) {
+      throw new SecretsError(`${relative}: '${name}' holds a value an environment variable cannot carry (a NUL byte, or over 32 KiB)`);
+    }
+  }
+  for (const name of Object.keys(parsed.data)) {
+    const problem = appSecretNameProblem(name, app);
+    if (problem) throw new SecretsError(`${relative}: '${name}' ${problem}`);
+  }
+  return parsed.data;
+}
+
+const MAX_APP_SECRET_BYTES = 32 * 1024;
+
+function isLink(file: string): boolean {
+  try {
+    return lstatSync(file).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function decryptSopsFile(file: string, label: string, ageKeyFile: string): unknown {
   if (!existsSync(file)) {
-    throw new SecretsError(`${PLATFORM_SECRETS_FILE} is missing from the instance repo`);
+    throw new SecretsError(`${label} is missing from the instance repo`);
   }
   if (!existsSync(ageKeyFile)) {
     throw new SecretsError(`the age key is missing (${ageKeyFile}): it is placed over SSH by bivy`);
@@ -72,21 +121,14 @@ export function decryptSecrets(file: string, ageKeyFile: string): PlatformSecret
   if (result.error) throw new SecretsError(`could not run sops: ${result.error.message}`);
   if (result.status !== 0) {
     // sops' message names the problem (wrong key, damaged file) but never a value.
-    throw new SecretsError(`could not decrypt ${PLATFORM_SECRETS_FILE}: ${result.stderr.trim().split("\n").pop()}`);
+    throw new SecretsError(`could not decrypt ${label}: ${result.stderr.trim().split("\n").pop()}`);
   }
-  let document: unknown;
   try {
-    document = JSON.parse(result.stdout);
+    return JSON.parse(result.stdout);
   } catch {
     // Never quote the parse error: it would show part of the decrypted text.
-    throw new SecretsError(`${PLATFORM_SECRETS_FILE} did not decrypt to a readable document`);
+    throw new SecretsError(`${label} did not decrypt to a readable document`);
   }
-  const parsed = platformSecretsSchema.safeParse(document);
-  if (!parsed.success) {
-    const problems = parsed.error.issues.map((issue) => `'${issue.path.join(".")}' ${issue.message}`);
-    throw new SecretsError(`${PLATFORM_SECRETS_FILE} is incomplete: ${problems.join("; ")}`);
-  }
-  return parsed.data;
 }
 
 /**
@@ -95,7 +137,8 @@ export function decryptSecrets(file: string, ageKeyFile: string): PlatformSecret
  * same master secret always gives the same value, so nothing generated has
  * to be stored or backed up (D14).
  *
- * Purposes in use: `postgres:superuser`, `db:<database>`, `oidc:<app>`.
+ * Purposes in use: `postgres:superuser`, `db:<database>`, `oidc:<app>`,
+ * `session:<app>` (D97), `api:status` (D96).
  */
 export function deriveSecret(master: string, purpose: string): string {
   return createHmac("sha256", master).update(purpose).digest("hex");

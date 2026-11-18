@@ -4,7 +4,7 @@ import { ensureContainer, waitFor } from "./containers.js";
 import { appBeingRestored, interruptedRestore } from "./lock.js";
 import { PocketId } from "./pocket-id.js";
 import { connectionString, databaseName, ensureDatabase, type PostgresServer } from "./postgres.js";
-import { deriveSecret, registryLogin, type PlatformSecrets } from "./secrets.js";
+import { decryptAppSecrets, deriveSecret, registryLogin, type PlatformSecrets } from "./secrets.js";
 
 /**
  * Where an `oidc` app receives the user back from Pocket ID, on each of its
@@ -27,6 +27,9 @@ export interface AppContext {
   domain: string;
   postgres: PostgresServer;
   pocketId: PocketId;
+  /** The instance repo and the age key, for the apps' own secrets (D97). */
+  checkout: string;
+  ageKey: string;
 }
 
 /**
@@ -63,6 +66,15 @@ export async function ensureApp(context: AppContext, app: AppManifest, platformA
   if (interruptedRestore(runtime.stateDir, app.name)) {
     return { name: app.name, routed: false, changes, failure: "a restore of its data was interrupted: it stays stopped until it is restored again (runbook section 14)" };
   }
+  let appSecrets: Record<string, string>;
+  try {
+    appSecrets = decryptAppSecrets(context.checkout, app, context.ageKey);
+  } catch (error) {
+    // Its running version keeps its route: a secret that cannot be read
+    // must not take a working app off line. Reported, and nothing changes.
+    const running = (await runtime.docker.inspectContainer(appContainerName(app.name)))?.State?.Running === true;
+    return { name: app.name, routed: running, changes, failure: (error as Error).message };
+  }
   const values = await appValues(context, app, changes);
   const container = appContainerName(app.name);
 
@@ -72,7 +84,9 @@ export async function ensureApp(context: AppContext, app: AppManifest, platformA
       name: container,
       image: app.image,
       networks: Object.fromEntries((platformApp?.networks ?? [PLATFORM_NETWORKS.apps.name]).map((network) => [network, null])),
-      env: { ...appEnvironment(app, values), ...platformApp?.env },
+      // The app's own secrets first: they cannot use the platform's names
+      // (checked twice), and the platform's values would win anyway.
+      env: { ...appSecrets, ...appEnvironment(app, values), ...platformApp?.env },
       limits: APP_LIMITS,
       mounts: Object.entries(app.volumes).map(([volume, target]) => ({
         type: "volume" as const,
@@ -150,6 +164,10 @@ async function appValues(context: AppContext, app: AppManifest, changes: string[
     values["oidc.clientSecret"] = secret;
   }
 
+  // An app that signs its own users in keeps its sessions with this key
+  // (D97): derived, so it survives a rebuild and nobody has to store it.
+  if (app.auth === "local") values["session.secret"] = deriveSecret(secrets.master_secret, `session:${app.name}`);
+
   // Claude's client for the app's MCP (D85), or none. Only oidc apps can
   // have one: other apps never call the identity provider.
   const mcpClient = `${app.name}-mcp`;
@@ -177,6 +195,7 @@ export function appEnvironment(app: AppManifest, values: Record<string, string>)
     env.OIDC_CLIENT_SECRET = values["oidc.clientSecret"] ?? "";
   }
   if (values["mcp.resource"]) env.MCP_RESOURCE = values["mcp.resource"];
+  if (values["session.secret"]) env.SESSION_SECRET = values["session.secret"];
   for (const [key, template] of Object.entries(app.env)) {
     for (const reference of envReferences(template)) {
       if (values[reference] === undefined) {

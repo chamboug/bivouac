@@ -896,3 +896,40 @@ port 8080 closes the connection.
 route; the container keeps running, unreachable, until removed by hand
 (`docker rm -f bivouac-app-status`), like a removed app (D18). Its Pocket ID
 client stays, harmless without the page.
+
+## 18. An app's own secrets (D97)
+
+For a value only one app needs and the platform cannot derive: a token for an
+outside service, the password of a mail account the app sends through. It
+becomes one of the app's environment variables. Never a value the platform
+already gives (`DATABASE_URL`, `SESSION_SECRET`, `OIDC_*`, `SMTP_*`…): CI and
+the reconciler refuse those names.
+
+**Adding or changing one**, on the owner's Mac, at the root of the instance
+repo (the age key is in `~/.config/sops/age/keys.txt`):
+
+1. The value goes from the password manager or the service's page straight
+   into the encrypted file, never into the chat or a plain file in the repo:
+
+   ```bash
+   sops edit secrets/apps/<app>.sops.yaml
+   ```
+
+   One line per variable, upper case, value in quotes:
+   `MAIL_SMTP_PASSWORD: "…"`. `sops` encrypts on save.
+2. Check: `bivy validate` (or the instance CI) must be green. It reads the names, never
+   the values.
+3. Commit and push. The next pass recreates the app with the new value; the
+   change list says "container bivouac-app-<app> recreated".
+
+**If the file cannot be decrypted** (wrong key, damaged file), the app keeps
+its running version and its route, the pass reports
+"could not decrypt secrets/apps/<app>.sops.yaml", and the owner gets an alert.
+Fix the file; nothing else changes meanwhile.
+
+**Removing the app**: remove its secrets file in the same commit, or CI
+refuses the orphan.
+
+The values sit in the container's environment, like `DATABASE_URL`: visible to
+whoever runs `docker inspect` on the server (root already), never shown by the
+status page (D96) or in the reconciler's logs.

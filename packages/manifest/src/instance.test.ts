@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ const template = join(here, "..", "..", "..", "template");
 const SSH_KEY = readFileSync(join(fixtures, "ssh-key.pub"), "utf8").trim();
 const RECIPIENT = readFileSync(join(fixtures, "age-recipient.txt"), "utf8").trim();
 const ENCRYPTED = readFileSync(join(fixtures, "platform.sops.yaml"), "utf8");
+const APP_SECRETS = readFileSync(join(fixtures, "app.sops.yaml"), "utf8");
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -125,7 +126,69 @@ describe("instance repo", () => {
   it("refuses secrets outside secrets/", () => {
     const root = makeInstance();
     write(root, "db.sops.yaml", ENCRYPTED);
-    expect(errorsOf(root)).toEqual([expect.stringContaining("secrets must be YAML files in 'secrets/'")]);
+    expect(errorsOf(root)).toEqual([expect.stringContaining("secrets must be YAML files named '<name>.sops.yaml', in 'secrets/'")]);
+  });
+
+  describe("an app's own secrets (D97)", () => {
+    const LOCAL_APP = "name: recettes\nimage: ghcr.io/someone/recettes:sha-abc123\nauth: local\n";
+
+    it("accepts them next to their app", () => {
+      const root = makeInstance();
+      write(root, "apps/recettes.yml", LOCAL_APP);
+      write(root, "secrets/apps/recettes.sops.yaml", APP_SECRETS);
+      expect(errorsOf(root)).toEqual([]);
+    });
+
+    it("refuses them without the app", () => {
+      const root = makeInstance();
+      write(root, "secrets/apps/recettes.sops.yaml", APP_SECRETS);
+      expect(errorsOf(root)).toEqual([expect.stringContaining("secrets/apps/recettes.sops.yaml: has no app 'apps/recettes.yml'")]);
+    });
+
+    it("refuses a name the platform provides or keeps", () => {
+      const root = makeInstance();
+      write(root, "apps/recettes.yml", LOCAL_APP);
+      for (const name of ["DATABASE_URL", "SESSION_SECRET", "SMTP_PASSWORD", "OIDC_ANYTHING", "BIVOUAC_API_TOKEN"]) {
+        write(root, "secrets/apps/recettes.sops.yaml", APP_SECRETS.replace(/^OTHER_TOKEN:/m, `${name}:`));
+        expect(errorsOf(root)).toEqual([`secrets/apps/recettes.sops.yaml: '${name}' is a name the platform provides or keeps for itself`]);
+      }
+    });
+
+    it("refuses a name in lower case, or also set in the manifest", () => {
+      const root = makeInstance();
+      write(root, "apps/recettes.yml", `${LOCAL_APP}env: { OTHER_TOKEN: plain }\n`);
+      write(root, "secrets/apps/recettes.sops.yaml", APP_SECRETS.replace(/^MAIL_SMTP_PASSWORD:/m, "mail_password:"));
+      expect(errorsOf(root)).toEqual([
+        expect.stringContaining("'mail_password' is not a valid name"),
+        expect.stringContaining("'OTHER_TOKEN' is also set in the manifest's env block"),
+      ]);
+    });
+
+    it("refuses a value that is not text, or not a single value", () => {
+      const root = makeInstance();
+      write(root, "apps/recettes.yml", LOCAL_APP);
+      const value = /^OTHER_TOKEN: (.*)$/m.exec(APP_SECRETS)?.[1] ?? "";
+      write(root, "secrets/apps/recettes.sops.yaml", APP_SECRETS.replace(/^OTHER_TOKEN: .*$/m, `OTHER_TOKEN: ${value.replace("type:str", "type:int")}\nNESTED:\n    inner: ${value}`));
+      expect(errorsOf(root)).toEqual([
+        "secrets/apps/recettes.sops.yaml: 'OTHER_TOKEN' must be text: quote it before encrypting, so that the app receives exactly what was written",
+        "secrets/apps/recettes.sops.yaml: 'NESTED' must hold one value, not a list or a map: each name becomes one environment variable",
+      ]);
+    });
+
+    it("refuses a link, which would hand an app another one's secrets", () => {
+      const root = makeInstance();
+      write(root, "apps/recettes.yml", LOCAL_APP);
+      write(root, "apps/other.yml", LOCAL_APP.replace("recettes", "other").replace("recettes", "other"));
+      write(root, "secrets/apps/recettes.sops.yaml", APP_SECRETS);
+      symlinkSync("recettes.sops.yaml", join(root, "secrets/apps/other.sops.yaml"));
+      expect(errorsOf(root)).toEqual(["secrets/apps/other.sops.yaml: must be a plain file: links and other special files are refused here"]);
+    });
+
+    it("refuses them deeper than secrets/apps/", () => {
+      const root = makeInstance();
+      write(root, "secrets/apps/more/recettes.sops.yaml", APP_SECRETS);
+      expect(errorsOf(root)).toEqual([expect.stringContaining("secrets must be YAML files named '<name>.sops.yaml'")]);
+    });
   });
 
   it("finds private keys anywhere in the repo", () => {

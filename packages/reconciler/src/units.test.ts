@@ -99,6 +99,14 @@ describe("app environment (D19)", () => {
     });
   });
 
+  it("gives an app that signs its own users in its session key (D97)", () => {
+    const app = appManifestSchema.parse({ name: "recettes", image: "example/recettes:1.0.0", auth: "local" });
+    expect(appEnvironment(app, { "app.url": "https://recettes.apps.example.com", "session.secret": "k".repeat(64) })).toEqual({
+      PORT: "3000",
+      SESSION_SECRET: "k".repeat(64),
+    });
+  });
+
   it("refuses SMTP values, not provided yet", () => {
     const app = appManifestSchema.parse({
       name: "mailer",

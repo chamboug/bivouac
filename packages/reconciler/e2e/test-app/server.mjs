@@ -4,8 +4,9 @@ import { createServer } from "node:http";
 // failed deployment). GET /env: the names of the variables the platform
 // injected, never their values. GET /probe-api: the status code the
 // reconciler's API gives this container with its token (the status page).
+// GET /forwarded-for: the X-Forwarded-For header as the app received it.
 const injected = Object.keys(process.env).filter((name) =>
-  /^(PORT|DATABASE_URL|OIDC_|MCP_|SMTP_|TEST_|BIVOUAC_)/.test(name),
+  /^(PORT|DATABASE_URL|OIDC_|MCP_|SMTP_|TEST_|BIVOUAC_|SESSION_|APP_SECRET_)/.test(name),
 );
 
 createServer((request, response) => {
@@ -16,6 +17,8 @@ createServer((request, response) => {
       (answer) => response.writeHead(200).end(String(answer.status)),
       (error) => response.writeHead(200).end(`unreachable: ${error.cause?.message ?? error.message}`),
     );
+  } else if (request.url === "/forwarded-for") {
+    response.writeHead(200).end(String(request.headers["x-forwarded-for"] ?? ""));
   } else if (request.url === "/env") {
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(injected.sort()));
   } else {

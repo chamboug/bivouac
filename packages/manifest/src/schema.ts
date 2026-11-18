@@ -19,12 +19,41 @@ export const INJECTED_ENV = [
   "OIDC_CLIENT_ID",
   "OIDC_CLIENT_SECRET",
   "MCP_RESOURCE",
+  "SESSION_SECRET",
   "SMTP_HOST",
   "SMTP_PORT",
   "SMTP_USER",
   "SMTP_PASSWORD",
   "SMTP_FROM",
 ] as const;
+
+/**
+ * An app's own secrets (D97): `secrets/apps/<name>.sops.yaml`, a flat map of
+ * environment variable names to values, encrypted with SOPS like the
+ * platform's secrets. SOPS leaves the names readable, so CI checks them
+ * without decrypting anything (D35).
+ */
+export const APP_SECRETS_DIRECTORY = "secrets/apps";
+
+export function appSecretsFile(app: string): string {
+  return `${APP_SECRETS_DIRECTORY}/${app}.sops.yaml`;
+}
+
+/** Names the platform keeps for itself, now or later: an app secret may not use them. */
+const RESERVED_ENV_PREFIXES = ["BIVOUAC_", "OIDC_", "SMTP_"] as const;
+
+/**
+ * Why an app secret may not have this name, or undefined if it may. Upper
+ * case only, so that a secret is easy to tell from the manifest's aliases.
+ */
+export function appSecretNameProblem(name: string, app: Pick<AppManifest, "env"> | undefined): string | undefined {
+  if (!/^[A-Z][A-Z0-9_]*$/.test(name)) return "is not a valid name (upper case letters, digits and '_', starting with a letter)";
+  if ((INJECTED_ENV as readonly string[]).includes(name) || RESERVED_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))) {
+    return "is a name the platform provides or keeps for itself";
+  }
+  if (app && name in app.env) return "is also set in the manifest's env block: keep it in one place";
+  return undefined;
+}
 
 /**
  * Values an `env` entry may reference with `${...}`, and what each one needs

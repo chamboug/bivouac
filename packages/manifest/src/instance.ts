@@ -3,7 +3,9 @@ import { join, relative } from "node:path";
 import { parse } from "yaml";
 import type { z } from "zod";
 import {
+  APP_SECRETS_DIRECTORY,
   appManifestSchema,
+  appSecretNameProblem,
   platformConfigSchema,
   siteManifestSchema,
   sshKeysSchema,
@@ -12,7 +14,7 @@ import {
   type SiteManifest,
   type SshKeys,
 } from "./schema.js";
-import { FORBIDDEN_CONTENT, checkEncryptedFile, readSopsConfigRecipients } from "./secrets.js";
+import { FORBIDDEN_CONTENT, checkEncryptedFile, encryptedEntries, readSopsConfigRecipients } from "./secrets.js";
 
 /**
  * Layout of an instance repo (created from `template/`):
@@ -23,6 +25,7 @@ import { FORBIDDEN_CONTENT, checkEncryptedFile, readSopsConfigRecipients } from 
  *   sites/<name>.yml      one manifest per static site…
  *   sites/<name>/         …and its files
  *   secrets/*.sops.yaml   SOPS-encrypted secrets
+ *   secrets/apps/<name>.sops.yaml   an app's own secrets, as environment variables
  *   .sops.yaml            SOPS config (age recipients)
  *   butane/server.bu      Butane base, keys are added from ssh-keys.yml
  */
@@ -53,7 +56,8 @@ export function loadInstance(root: string): Instance {
 
   checkSiteDirectories(root, sites, report);
   checkUniqueHosts(apps, sites, platform, report);
-  checkSecrets(root, report);
+  checkSecrets(root, apps, report);
+  checkLinks(root, "secrets", report);
   checkForbiddenContent(root, report);
 
   return { platform, sshKeys, apps, sites, errors };
@@ -180,7 +184,7 @@ function checkUniqueHosts(
   }
 }
 
-function checkSecrets(root: string, report: (file: string, message: string) => void): void {
+function checkSecrets(root: string, apps: AppManifest[], report: (file: string, message: string) => void): void {
   const files = walk(root).filter(
     (file) =>
       file !== ".sops.yaml" && (file.startsWith("secrets/") || /\.sops\.(ya?ml|json|env)$/.test(file)),
@@ -200,18 +204,64 @@ function checkSecrets(root: string, report: (file: string, message: string) => v
   }
 
   for (const file of files) {
-    if (!file.startsWith("secrets/") || !file.endsWith(".sops.yaml")) {
-      report(file, "secrets must be YAML files in 'secrets/' named '<name>.sops.yaml'");
+    const appSecrets = new RegExp(`^${APP_SECRETS_DIRECTORY}/([^/]+)\\.sops\\.yaml$`).exec(file);
+    if (!appSecrets && !/^secrets\/[^/]+\.sops\.yaml$/.test(file)) {
+      report(file, `secrets must be YAML files named '<name>.sops.yaml', in 'secrets/' or, for an app's own, in '${APP_SECRETS_DIRECTORY}/'`);
       continue;
     }
-    const result = checkEncryptedFile(readFileSync(join(root, file), "utf8"));
+    const content = readFileSync(join(root, file), "utf8");
+    const result = checkEncryptedFile(content);
     result.errors.forEach((message) => report(file, message));
+    if (appSecrets && result.errors.length === 0) {
+      checkAppSecrets(file, content, apps.find((app) => app.name === appSecrets[1]), appSecrets[1] ?? "", report);
+    }
     if (expected && result.errors.length === 0) {
       const actual = [...result.recipients].sort().join(",");
       if (actual !== [...expected].sort().join(",")) {
         report(file, "is not encrypted for exactly the age keys listed in .sops.yaml: re-encrypt it (sops updatekeys)");
       }
     }
+  }
+}
+
+/**
+ * An app's secrets become its environment variables: one level of names,
+ * each a string, none the platform provides, and the app must exist.
+ */
+function checkAppSecrets(
+  file: string,
+  content: string,
+  app: AppManifest | undefined,
+  name: string,
+  report: (file: string, message: string) => void,
+): void {
+  if (!app) {
+    report(file, `has no app 'apps/${name}.yml': remove it with the app, or name it after one`);
+  }
+  for (const entry of encryptedEntries(content)) {
+    if (entry.nested) {
+      report(file, `'${entry.name}' must hold one value, not a list or a map: each name becomes one environment variable`);
+      continue;
+    }
+    if (entry.type !== "str") {
+      report(file, `'${entry.name}' must be text: quote it before encrypting, so that the app receives exactly what was written`);
+    }
+    const problem = appSecretNameProblem(entry.name, app);
+    if (problem) report(file, `'${entry.name}' ${problem}`);
+  }
+}
+
+/**
+ * The checks here only read plain files, and the reconciler would follow a
+ * link: under `secrets/`, a link could give one app another's secrets.
+ */
+function checkLinks(root: string, directory: string, report: (file: string, message: string) => void): void {
+  const path = join(root, directory);
+  if (!existsSync(path)) return;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const file = `${directory}/${entry.name}`;
+    if (entry.isDirectory()) checkLinks(root, file, report);
+    else if (!entry.isFile()) report(file, "must be a plain file: links and other special files are refused here");
   }
 }
 

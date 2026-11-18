@@ -129,6 +129,8 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
     domain,
     postgres: postgresServer(secrets),
     pocketId: new PocketId(pocketIdUrl(), secrets.pocket_id.static_api_key),
+    checkout: config.checkout,
+    ageKey: config.ageKey,
   };
   const results: AppResult[] = [];
   for (const app of instance.apps) {
