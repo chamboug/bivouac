@@ -404,7 +404,8 @@ function writeKnownHosts(deps: CommonDependencies, state: RunState, key: string)
 
 /** How a test and a real rebuild differ while the platform comes back. */
 export interface BringBack {
-  mode: "test" | "rebuild";
+  /** "init": a new platform, no data to bring back (bivy init): no marker, no restore. */
+  mode: "test" | "rebuild" | "init";
   apps: AppManifest[];
   /** Makes the server's deploy key readable by GitHub: through the API for a test, by the owner for a real rebuild. */
   deployKey: (remote: Remote, title: string, publicKey: string) => Promise<void>;
@@ -469,7 +470,7 @@ export async function bringBack(deps: CommonDependencies, state: RunState, how: 
     }
   });
   const marker = JSON.stringify({ mode: how.mode });
-  await step(deps, state, `rebuild marker (${how.mode} mode)`, async () => {
+  if (how.mode !== "init") await step(deps, state, `rebuild marker (${how.mode} mode)`, async () => {
     // Before the deploy key and the age key: the first pass that can read Git must see it.
     must(remote, "placing the marker", "sudo sh -c 'umask 077; cat > /etc/bivouac/rebuild.json.tmp && mv /etc/bivouac/rebuild.json.tmp /etc/bivouac/rebuild.json'", { input: `${marker}\n` });
     if (must(remote, "reading the marker", "sudo cat /etc/bivouac/rebuild.json").trim() !== marker) throw new RebuildError("the marker did not arrive intact");
@@ -496,12 +497,12 @@ export async function bringBack(deps: CommonDependencies, state: RunState, how: 
       throw new RebuildError("the age key on the server differs from this one: removed");
     }
   });
-  await step(deps, state, "Postgres, alone", async () => {
+  if (how.mode !== "init") await step(deps, state, "Postgres, alone", async () => {
     await waitUntil(deps, "Postgres", 10 * 60_000, () => remote.run("docker inspect -f '{{.State.Health.Status}}' bivouac-postgres").stdout.trim() === "healthy");
     const others = remote.run("docker ps --format '{{.Names}}' --filter label=bivouac.managed=true").stdout.split("\n").filter(Boolean);
     if (others.some((name) => name !== "bivouac-postgres")) throw new RebuildError(`containers started before the data was back: ${others.join(", ")}`);
   });
-  await step(deps, state, "restore the latest nightly copy", async () => {
+  if (how.mode !== "init") await step(deps, state, "restore the latest nightly copy", async () => {
     if (!state.snapshot && state.olderCopy) {
       if (!deps.guide) throw new RebuildError("an older copy was asked for, and nobody is at a terminal to choose it: run again in a terminal, or with --snapshot <id>");
       const choices = copyChoices(jsonLines(must(remote, "listing the backup copies", `${RECONCILER} restore-platform --list`, { timeoutMs: 10 * 60_000 })));

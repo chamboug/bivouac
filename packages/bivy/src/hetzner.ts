@@ -47,6 +47,7 @@ export interface Firewall {
   name: string;
   labels: Labels;
   applied_to: { server?: { id: number } }[];
+  rules?: FirewallRule[];
 }
 
 export interface Image {
@@ -161,6 +162,20 @@ export class Hetzner {
 
   async createPrimaryIpv6(name: string, location: string, labels: Labels): Promise<PrimaryIp> {
     return (await this.call<{ primary_ip: PrimaryIp }>("POST", "/primary_ips", { name, type: "ipv6", location, auto_delete: true, labels })).primary_ip;
+  }
+
+  /** A Primary IP that outlives any server (`auto_delete: false`), for the platform itself (bivy init). */
+  async createKeptPrimaryIp(type: "ipv4" | "ipv6", name: string, location: string): Promise<PrimaryIp> {
+    return (await this.call<{ primary_ip: PrimaryIp }>("POST", "/primary_ips", { name, type, location, auto_delete: false, labels: {} })).primary_ip;
+  }
+
+  async protectPrimaryIp(id: number): Promise<Action> {
+    return (await this.call<{ action: Action }>("POST", `/primary_ips/${id}/actions/change_protection`, { delete: true })).action;
+  }
+
+  /** SSH keys of the project (the snapshot tool's leftovers are looked for there). */
+  async sshKeys(labelSelector: string): Promise<{ id: number; name: string }[]> {
+    return (await this.call<{ ssh_keys: { id: number; name: string }[] }>("GET", `/ssh_keys?label_selector=${encodeURIComponent(labelSelector)}`)).ssh_keys;
   }
 
   async labelPrimaryIp(id: number, labels: Labels): Promise<void> {

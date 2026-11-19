@@ -300,7 +300,7 @@ const SAFE_IMAGE = /^[a-z0-9.-]+(\/[a-z0-9._-]+)+(:[A-Za-z0-9._-]+)?(@sha256:[0-
  * with a temporary token would go away with that token. Waits until the
  * server can read the repo, and checks GitHub refuses it any write.
  */
-async function ownerAddsDeployKey(deps: RealDependencies, platform: PlatformConfig, remote: Remote, title: string, key: string): Promise<void> {
+export async function ownerAddsDeployKey(deps: Pick<RealDependencies, "log" | "sleep" | "now">, platform: PlatformConfig, remote: Remote, title: string, key: string): Promise<void> {
   const repository = repositoryPath(platform.repository);
   const image = platform.reconciler.image;
   if (!SAFE_IMAGE.test(image)) throw new RebuildError(`odd reconciler image '${image}'`);
@@ -396,7 +396,7 @@ async function refusedOrSent<T>(deps: RealDependencies, state: RealState, send: 
 }
 
 /** One run at a time: two terminals must never act on the same rebuild. */
-async function withLock<T>(path: string, work: () => Promise<T>): Promise<T> {
+export async function withLock<T>(path: string, work: () => Promise<T>): Promise<T> {
   let fd: number;
   try {
     fd = openSync(path, "wx", 0o600);

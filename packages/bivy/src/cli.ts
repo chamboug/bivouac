@@ -12,6 +12,7 @@ import { SshError, execCommand, serverAddress, splitAtDoubleDash, sshArguments }
 import * as prompts from "@clack/prompts";
 import { type AskSecret, CredentialError, credential } from "./credentials.js";
 import { resolve4 } from "node:dns/promises";
+import { INIT_USAGE, initCli } from "./init-cli.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -54,9 +55,13 @@ Commands:
       --hetzner-token <file>  default ~/.config/bivouac/hetzner-token
       --github-token <file>   default ~/.config/bivouac/github-rebuild-token
 
+${INIT_USAGE}
+
 [dir] defaults to the current directory.`;
 
 async function main(argv: string[]): Promise<number> {
+  // init and configure parse their own flags (init-cli.ts).
+  if (argv[0] === "init" || argv[0] === "configure") return initCli(argv);
   // What follows `--` belongs to the command run in a container, never to bivy.
   const { own, command: inner } = splitAtDoubleDash(argv);
   const { positionals, values } = parseArgs({

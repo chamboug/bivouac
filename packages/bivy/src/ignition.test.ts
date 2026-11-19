@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { IgnitionError, MAX_IGNITION_BYTES, buildButane, compileButane, firstAddress } from "./ignition.js";
+import { EXAMPLE_IPV6, IgnitionError, MAX_IGNITION_BYTES, buildButane, compileButane, firstAddress } from "./ignition.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const template = join(here, "..", "..", "..", "template");
@@ -35,40 +35,42 @@ const describeWithDocker = hasDocker || process.env.CI ? describe : describe.ski
 describe("butane", () => {
   it("fills the values of platform.yml and appends the keys, without rewriting the rest", () => {
     const base = readFileSync(join(template, "butane", "server.bu"), "utf8");
-    const butane = buildButane(template, platform, sshKeys);
+    const butane = buildButane(template, platform, sshKeys, EXAMPLE_IPV6);
     const filled = base
       .split("@@REPOSITORY@@").join(platform.repository)
-      .split("@@RECONCILER_IMAGE@@").join(platform.reconciler.image);
+      .split("@@RECONCILER_IMAGE@@").join(platform.reconciler.image)
+      .split("@@IPV6_ADDRESS@@").join(EXAMPLE_IPV6);
     expect(butane.startsWith(filled)).toBe(true);
     expect(butane).not.toContain("@@");
     expect(butane).toContain(key);
   });
 
   it("fills the server's IPv6 from the Primary IPv6 it is created with (D91)", () => {
-    const base = readFileSync(join(template, "butane", "server.bu"), "utf8");
-    const root = withButane(`${base}# Address=@@IPV6_ADDRESS@@\n`);
-    expect(buildButane(root, platform, sshKeys, firstAddress("2a01:4f8:c0:1::/64"))).toContain("# Address=2a01:4f8:c0:1::1/64\n");
+    // The template configures it (bivy init creates the server with a Primary IPv6).
+    const root = template;
+    expect(buildButane(root, platform, sshKeys, firstAddress("2a01:4f8:c0:1::/64"))).toContain("Address=2a01:4f8:c0:1::1/64\n");
     expect(() => buildButane(root, platform, sshKeys)).toThrow(/give its address/);
     expect(() => buildButane(root, platform, sshKeys, "2a01:4f8:c0:1::1")).toThrow(/not an IPv6 address/);
     expect(() => buildButane(root, platform, sshKeys, "2a01::1/64\nX=1")).toThrow(/not an IPv6 address/);
     expect(() => firstAddress("203.0.113.10")).toThrow(/not an IPv6/);
     // A server created by bivy never takes an address written in the file.
-    expect(() => buildButane(withButane(`${base}# Address=2a01:4f8:c0:1::1/64\n`), platform, sshKeys, "2a01:4f8:c0:2::1/64")).toThrow(/not a fixed address/);
+    const base = readFileSync(join(template, "butane", "server.bu"), "utf8");
+    expect(() => buildButane(withButane(base.replace("@@IPV6_ADDRESS@@", "2a01:4f8:c0:1::1/64")), platform, sshKeys, "2a01:4f8:c0:2::1/64")).toThrow(/not a fixed address/);
   });
 
   it("refuses a Butane file without a placeholder, or with an unknown one", () => {
     const base = readFileSync(join(template, "butane", "server.bu"), "utf8");
     const missing = withButane(base.replace("@@RECONCILER_IMAGE@@", "ghcr.io/example/bivouac-reconciler:main"));
-    expect(() => buildButane(missing, platform, sshKeys)).toThrow(IgnitionError);
-    expect(() => buildButane(missing, platform, sshKeys)).toThrow(/must contain @@RECONCILER_IMAGE@@/);
+    expect(() => buildButane(missing, platform, sshKeys, EXAMPLE_IPV6)).toThrow(IgnitionError);
+    expect(() => buildButane(missing, platform, sshKeys, EXAMPLE_IPV6)).toThrow(/must contain @@RECONCILER_IMAGE@@/);
     const unknown = withButane(`${base}# @@DOMAIN@@\n`);
-    expect(() => buildButane(unknown, platform, sshKeys)).toThrow(/unknown placeholder @@DOMAIN@@/);
+    expect(() => buildButane(unknown, platform, sshKeys, EXAMPLE_IPV6)).toThrow(/unknown placeholder @@DOMAIN@@/);
   });
 });
 
 describeWithDocker("ignition", () => {
   it("compiles the template with the exact file modes, the keys and the reconciler unit", () => {
-    const json = compileButane(buildButane(template, platform, sshKeys));
+    const json = compileButane(buildButane(template, platform, sshKeys, EXAMPLE_IPV6));
     expect(Buffer.byteLength(json)).toBeLessThan(MAX_IGNITION_BYTES);
     const ignition = JSON.parse(json);
     const modes = Object.fromEntries(
@@ -81,6 +83,7 @@ describeWithDocker("ignition", () => {
     expect(modes).toEqual({
       "/etc/ssh/sshd_config.d/10-bivouac.conf": "600",
       "/etc/flatcar/update.conf": "644",
+      "/etc/systemd/network/zz-default.network.d/10-bivouac-ipv6.conf": "644",
       "/etc/systemd/zram-generator.conf": "644",
       "/etc/bivouac-metadata-block.nft": "644",
       "/opt/bivouac/sync-ssh-keys": "700",

@@ -1,9 +1,11 @@
 # Runbook: installing a Bivouac server by hand
 
 This is the manual procedure for installing the base of a Bivouac server
-(layer 2 of the build order). `bivy init` and `bivy rebuild` will automate it
-later (layer 5); until then, it is followed step by step, and every step
-that changes something outside the Mac is announced first.
+(layer 2 of the build order). `bivy init` now automates sections 2 to 10 for
+a new platform in an empty Hetzner project (section 19), and `bivy rebuild`
+brings an existing one back (sections 15 and 16). The manual steps stay
+here: they say what bivy does, and they are the way back when it cannot.
+Every step that changes something outside the Mac is announced first.
 
 Steps marked **(consent)** are irreversible or sensitive (rule 5 of the brief):
 they are only run after the platform owner's explicit agreement, given at the
@@ -969,3 +971,68 @@ refuses the orphan.
 The values sit in the container's environment, like `DATABASE_URL`: visible to
 whoever runs `docker inspect` on the server (root already), never shown by the
 status page (D96) or in the reconciler's logs.
+
+## 19. A new platform: `bivy init` (D99)
+
+From an empty Hetzner project and a domain to a running platform, in one
+command run in a terminal. It never erases anything: if the project already
+has a server `bivouac`, it stops and points to `bivy rebuild`. It refuses to
+run on a machine that already reaches a platform
+(`~/.config/bivouac/known_hosts`): bivy keeps one platform's credentials per
+machine user.
+
+**Before**: Docker running; an empty Hetzner project and a Read & Write
+token for it; a domain whose DNS you can change (OVH, or any provider by
+hand); a GitHub account whose SSH key works with `git` on this machine; for
+the parts set up now, the accounts of section 12 (backups, alerts) and the
+SMTP account (section 10).
+
+```bash
+bivy init
+```
+
+1. **Questions** (nothing is created): the folder, the domain and the
+   platform's part of it (`auth.<that>` is final, D40), the Hetzner token,
+   the location and server type (arrow-key lists, with prices), the DNS
+   provider, the SSH key (a new one for this machine by default), the empty
+   private repo to create at the link shown, then backups, alerts and mail,
+   now or later. Each answer is checked against the real service (the S3
+   bucket is listed, the SMTP account logs in, the healthchecks.io checks
+   are created). Every question also has a flag (`bivy init --help`).
+2. **Cost, typed confirmation** (the platform domain).
+3. **The configuration**: written from `template/`, secrets generated and
+   encrypted for a new age key, appended to `~/.config/sops/age/keys.txt`.
+   The age key and the restic password are shown **once**; type `stored`
+   once they are in the password manager. Then pushed with your git; the
+   credential files of the parts are deleted (the values now live in the
+   encrypted file only).
+4. **Hetzner**: the Flatcar snapshot if missing (section 4; a temporary
+   token, to delete right after), the Primary IPv4 and IPv6
+   (`bivouac-ipv4`, `bivouac-ipv6`, `auto_delete=false`, protected), the
+   firewall `bivouac` (section 6), the server `bivouac` (protected), with a
+   provisional host key replaced at the first connection (D91, no console).
+5. **The server**: first-boot checks; the deploy key it makes, which you add
+   at the link shown, "Allow write access" unchecked (bivy checks GitHub
+   refuses it any write); the age key; Postgres, Pocket ID and Caddy.
+6. **DNS, typed consent** (section 9): the wildcard, and a DMARC `p=none`
+   when the zone has none. It stops first on a name already pointing
+   elsewhere, an `AAAA`, or a CAA record without Let's Encrypt. Manual DNS:
+   create the records it prints; it waits for public DNS.
+7. **First admin** (section 10): `/setup` opened for this machine's public
+   IPv4 only (pushed in `platform.yml`), you create the account and two
+   passkeys, then it is closed again and bivy checks there is exactly one
+   account. Interrupted while open: run again, it closes it.
+8. If alerts were set up, a test message.
+
+**Interrupted**: run the same command again. Answers and steps done are in
+`~/.config/bivouac/init.json` (no secret); delete it to start over (what was
+already created at Hetzner stays, and is found again by name).
+
+**Later parts**: `bivy configure backups`, `bivy configure alerts`,
+`bivy configure mail`, from the instance repo, exactly `origin/main`. Each
+adds a part the platform does not have yet; a part already set up is
+changed by hand (sections 10 and 12).
+
+**Not yet run against real infrastructure** (19 November 2026): tested
+against fake APIs and a local Git repo only. A first real run is a decision
+of the owner's (an empty project, a test domain, a few cents).

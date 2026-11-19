@@ -27,6 +27,20 @@ storage:
           REBOOT_STRATEGY=reboot
           LOCKSMITHD_REBOOT_WINDOW_START=04:00
           LOCKSMITHD_REBOOT_WINDOW_LENGTH=1h
+    # IPv6 (D26). Hetzner gives it as a static address (metadata service,
+    # network-config) and Flatcar only configures DHCPv4, so it is written
+    # here. A drop-in for Flatcar's own default network file, which keeps
+    # its DHCPv4 settings; that file matches eth0 and skips Docker's bridges
+    # and veths. `bivy` fills the address from the Primary IPv6 the server is
+    # created with (bivouac-ipv6, or a rebuild test's own, D91).
+    - path: /etc/systemd/network/zz-default.network.d/10-bivouac-ipv6.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          [Network]
+          Address=@@IPV6_ADDRESS@@
+          Gateway=fe80::1
     # Swap in compressed memory (zram, D94): softens a memory peak of the
     # whole server; each app is capped on its own anyway. Read by Flatcar's
     # zram-generator at boot ("Managing swap space" in Flatcar's docs);
