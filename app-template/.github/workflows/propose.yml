@@ -7,7 +7,8 @@ name: Propose deployment
 # the app's dependencies run. It runs no code of the app: it only reads its
 # Git history. It assumes GitHub-hosted runners (a fresh machine per job).
 #
-# To set on the app repo:
+# To set on the app repo, by the platform's admin (without them this workflow
+# does nothing and the admin deploys each version by hand):
 # - variable INSTANCE_REPO: the instance repo, as owner/name;
 # - secret BIVOUAC_DEPLOY: the token allowed to open PRs on it.
 # The manifest is apps/<name of this repo>.yml in the instance repo.
@@ -53,6 +54,16 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # Without them, the platform's admin deploys each version by hand.
+          if [ -z "$GH_TOKEN" ] && [ -z "$INSTANCE_REPO" ]; then
+            echo "::notice::No BIVOUAC_DEPLOY secret and no INSTANCE_REPO variable on this repo: nothing to propose. The platform's admin deploys each version by hand."
+            exit 0
+          fi
+          # Only one of the two: a broken setting, which must not pass quietly.
+          if [ -z "$GH_TOKEN" ] || [ -z "$INSTANCE_REPO" ]; then
+            echo "::error::BIVOUAC_DEPLOY and INSTANCE_REPO must be set together."
+            exit 1
+          fi
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:sha-${HEAD_SHA::7}"
           # Only the latest commit of main is proposed: a run that finished
           # late must not deploy an older version over a newer one.
@@ -66,7 +77,12 @@ jobs:
           gh auth setup-git
           gh repo clone "$INSTANCE_REPO" "$RUNNER_TEMP/instance" -- --depth 1
           cd "$RUNNER_TEMP/instance"
-          # Only the image line changes; a missing manifest stops here.
+          # A new app: the server does not know it until the admin adds its manifest.
+          if [ ! -f "apps/$app.yml" ]; then
+            echo "::warning::apps/$app.yml is not in $INSTANCE_REPO: the server does not know this app (new, renamed or removed), nothing to propose. Tell the platform's admin if the app should be online."
+            exit 0
+          fi
+          # Only the image line changes.
           grep -q '^image:' "apps/$app.yml"
           # Did the shared layers (the sign-in code) change since the deployed
           # version? The instance repo merges the PR by itself only when they

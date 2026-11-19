@@ -1,0 +1,14 @@
+{
+  "name": "bivouac",
+  "description": "Skills for building and hosting apps on a Bivouac server.",
+  "owner": {
+    "name": "Bivouac"
+  },
+  "plugins": [
+    {
+      "name": "bivouac",
+      "source": "./plugin",
+      "description": "Create and host apps on a Bivouac server."
+    }
+  ]
+}

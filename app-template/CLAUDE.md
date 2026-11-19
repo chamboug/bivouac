@@ -44,7 +44,14 @@ Nuxt UI: use the `nuxt-ui` MCP server (`.mcp.json`), or `https://ui.nuxt.com/llm
 
 ## Deployment
 
-Pushing to `main` runs the tests, builds the image and opens a PR on the instance repo changing the image in the manifest. Nothing is built on the server.
+Pushing to `main` runs the tests, builds the image and, when the repo holds the deployment token, opens a PR on the instance repo changing the image in the manifest; that PR usually merges by itself, so a push puts the version online with no one else looking. Without the token, the platform's admin changes the image by hand. Nothing is built on the server.
+
+## How a change is made
+
+1. Run `dev:local` and let the person who asked try the change in their own browser at `http://localhost:3000`; change, let them try again, until they say it is right. Your own checks (light, dark, phone width, each role) come before their try, never instead of it.
+2. Then `npm test`, `npm run build`, `npm run test:e2e`, and commit.
+3. Before a push that touches who sees or changes what, files or uploads, fetching addresses users type, or the database's structure, a fresh agent, one that did not write the change, reviews it: no one reaches another person's data (pages, API, files, MCP); the files route decides from the app's records; nothing changes on GET; no secret or personal data in the code or the bundles; no fetch reaches private addresses; migrations only add. Check its findings yourself, fix what matters, and tell the person what is left.
+4. Push only once the person has agreed.
 
 ## Working locally
 
@@ -58,4 +65,6 @@ Check changes here, never on the real server. `dev:local` needs Docker: it start
 
 Do not run `npm run build` while `dev:local` runs: it downloads the shared layers again and breaks the dev server. Stop it first, or restart it afterwards. Another app's `dev:local` at the same time needs other ports (`DEV_APP_PORT`, `DEV_PG_PORT`, `DEV_ISSUER_PORT`).
 
-`npm run test:e2e` needs `npm run build` first and a Postgres in `DATABASE_URL`.
+`npm run test:e2e` needs `npm run build` first and a Postgres in `DATABASE_URL`. With the dev Postgres, use a database of its own so the tests do not mix with your trial data: `docker exec <folder>-dev-pg createdb -U postgres e2e 2>/dev/null || true`, then `DATABASE_URL=postgres://postgres:dev@localhost:55433/e2e npm run test:e2e`.
+
+After restarting `dev:local` with other `DEV_GROUPS`, sign out or use a private window: the old session may keep the old groups.
