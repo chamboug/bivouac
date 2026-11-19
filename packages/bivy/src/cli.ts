@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -15,6 +15,7 @@ import { SshRemote, scanHostKey } from "./remote.js";
 import { checkoutProblems, rebuildReal } from "./rebuild-real.js";
 import { SshError, execCommand, serverAddress, splitAtDoubleDash, sshArguments } from "./ssh.js";
 import * as prompts from "@clack/prompts";
+import { type AskSecret, CredentialError, credential, readCredential } from "./credentials.js";
 import { resolve4 } from "node:dns/promises";
 import { createInterface } from "node:readline/promises";
 
@@ -238,18 +239,25 @@ async function ssh(root: string, app: string | null | undefined, command: string
 
 const config = (file: string) => join(homedir(), ".config", "bivouac", file);
 
-/**
- * A credential from a file of mode 600, typed by the owner in a real
- * terminal (runbook section 0). Never printed, never passed on a command line.
- */
-function secretFile(path: string, what: string): string {
-  if (!existsSync(path)) {
-    throw new RebuildError(`${what} is missing: type it into ${path} in a real terminal (runbook section 0):\n  read -rs "v?${what}: "; echo; (umask 077; printf '%s' "$v" > ${path}); unset v`);
+/** Hidden input, for a person at a terminal only: a script is never asked (D93). */
+const askSecret: AskSecret | undefined = process.stdin.isTTY && process.stdout.isTTY
+  ? async (message) => {
+      const answer = await prompts.password({ message });
+      return prompts.isCancel(answer) ? undefined : answer;
+    }
+  : undefined;
+
+const HETZNER_HINT = "bivy needs a Hetzner API token (Read & Write) of the platform's project: Hetzner Console → the project → Security → API tokens.";
+
+/** The Hetzner token, asked for the first time; undefined (after saying why) when it cannot be had. */
+async function hetznerToken(path: string | undefined): Promise<string | undefined> {
+  try {
+    return await credential({ path: path ?? config("hetzner-token"), what: "the Hetzner token", hint: HETZNER_HINT }, askSecret);
+  } catch (error) {
+    if (!(error instanceof CredentialError)) throw error;
+    console.error(`✗ ${error.message}`);
+    return undefined;
   }
-  if ((statSync(path).mode & 0o077) !== 0) throw new RebuildError(`${path} can be read by others: chmod 600 it`);
-  const value = readFileSync(path, "utf8").trim();
-  if (!value) throw new RebuildError(`${path} is empty`);
-  return value;
 }
 
 async function rebuild(root: string, values: Record<string, string | boolean | undefined>): Promise<number> {
@@ -268,8 +276,10 @@ async function rebuild(root: string, values: Record<string, string | boolean | u
   const repository = repositoryPath(instance.platform.repository);
   const knownHosts = config("known_hosts-rebuild-test");
   const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
+  const hetzner = await hetznerToken(text("hetzner-token"));
+  if (!hetzner) return 1;
   const deps = {
-    hetzner: new Hetzner(secretFile(text("hetzner-token") ?? config("hetzner-token"), "the Hetzner token")),
+    hetzner: new Hetzner(hetzner),
     github: () => {
       if (!existsSync(githubTokenPath)) {
         console.log(`A temporary GitHub token is needed, to add the test server's read-only deploy key. Create it at
@@ -277,7 +287,12 @@ async function rebuild(root: string, values: Record<string, string | boolean | u
 choosing "Only select repositories" → ${repository} (nothing else), and delete it once the test is over:
 the test's deploy key goes with it.`);
       }
-      return new GitHub(secretFile(githubTokenPath, "the temporary GitHub token"), repository);
+      try {
+        return new GitHub(readCredential({ path: githubTokenPath, what: "the temporary GitHub token" }), repository);
+      } catch (error) {
+        if (error instanceof CredentialError) throw new RebuildError(error.message);
+        throw error;
+      }
     },
     remote: (host: string) => new SshRemote(host, identity, knownHosts),
     scanHostKey,
@@ -332,8 +347,10 @@ async function realRebuild(root: string, values: Record<string, string | boolean
   }
   const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
   const knownHosts = config("known_hosts");
+  const hetzner = await hetznerToken(text("hetzner-token"));
+  if (!hetzner) return 1;
   const deps = {
-    hetzner: new Hetzner(secretFile(text("hetzner-token") ?? config("hetzner-token"), "the Hetzner token")),
+    hetzner: new Hetzner(hetzner),
     remote: (host: string) => new SshRemote(host, identity, knownHosts),
     scanHostKey,
     newHostKey: () => newHostKey(),
