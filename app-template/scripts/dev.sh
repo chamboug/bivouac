@@ -22,7 +22,8 @@ PG="$(basename "$PWD" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_.\n-' '-')-dev-pg"
 
 if ! docker inspect -f '{{.State.Running}}' "$PG" 2>/dev/null | grep -q true; then
   docker rm -f "$PG" >/dev/null 2>&1 || true
-  docker run -d --name "$PG" -e POSTGRES_PASSWORD=dev -p "127.0.0.1:$PG_PORT:5432" \
+  # The image has no arm64 build: Apple Silicon Macs run it under emulation.
+  docker run -d --platform linux/amd64 --name "$PG" -e POSTGRES_PASSWORD=dev -p "127.0.0.1:$PG_PORT:5432" \
     -v "$PG:/var/lib/postgresql" postgis/postgis:18-3.7 >/dev/null
 fi
 until docker exec "$PG" pg_isready -U postgres >/dev/null 2>&1; do sleep 1; done
