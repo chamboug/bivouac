@@ -1,4 +1,7 @@
-# Bivouac
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/bivouac-logo-nuit.svg">
+  <img src="docs/brand/bivouac-logo.svg" alt="Bivouac" height="48">
+</picture>
 
 A self-hosting platform for small apps, run as code: one server, Git as the
 source of truth, nightly off-site backups and one-command rebuilds. Its
@@ -6,7 +9,8 @@ maintenance is meant to be rare, guided and never silent.
 
 The design, and the reason behind each choice, are in [`CLAUDE.md`](CLAUDE.md)
 and the [decision log](docs/decisions.md). Installing a server by hand is
-described in the [runbook](docs/runbook.md).
+described in the [runbook](docs/runbook.md). The logo, colours and type are
+in [`docs/brand`](docs/brand/README.md).
 
 ## Layout
 

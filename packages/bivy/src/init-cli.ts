@@ -18,6 +18,7 @@ import { SshRemote, scanHostKey } from "./remote.js";
 import { HetznerProvider } from "./server-provider.js";
 import { checkSmtp } from "./smtp.js";
 import { dockerSops } from "./sops.js";
+import { printBanner } from "./banner.js";
 import { buildButane, compileButane } from "./ignition.js";
 
 /**
@@ -115,6 +116,7 @@ export async function initCli(argv: string[]): Promise<number> {
   }
   try {
     if (command === "configure") return await configure(rest, flags);
+    printBanner();
     // An answer already given wins over a flag: what was confirmed is what gets built.
     const asker = (recorded: Record<string, string>) => {
       for (const [flag, value] of Object.entries(flags)) {

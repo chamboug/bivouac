@@ -81,11 +81,14 @@ const ago = (iso: string | null | undefined) => {
 };
 // The name and version only; the full reference (registry, owner, digest) is in the tooltip.
 const shortImage = (image: string) => image.replace(/@sha256:[a-f0-9]+$/, "").split("/").pop() ?? image;
+// A state is always a word and an icon, never a colour alone (docs/brand).
+const ICONS = { success: "i-lucide-circle-check", warning: "i-lucide-triangle-alert", error: "i-lucide-circle-x" } as const;
 const status = (container: Container) => {
-  if (container.state !== "running") return { label: container.state, color: "error" as const };
-  if (container.health === "unhealthy") return { label: "unhealthy", color: "error" as const };
-  if (container.health === "starting") return { label: "starting", color: "warning" as const };
-  return { label: container.health ?? "running", color: "success" as const };
+  const of = (label: string, color: keyof typeof ICONS) => ({ label, color, icon: ICONS[color] });
+  if (container.state !== "running") return of(container.state, "error");
+  if (container.health === "unhealthy") return of("unhealthy", "error");
+  if (container.health === "starting") return of("starting", "warning");
+  return of(container.health ?? "running", "success");
 };
 
 // Postgres's logs are never served: a failed statement can hold a password.
@@ -110,6 +113,19 @@ const memory = computed(() => {
   if (!host?.totalBytes || host.availableBytes === null) return 0;
   return percent(host.totalBytes - host.availableBytes, host.totalBytes);
 });
+// The light in the tent is on while the reconciler passes; after 5 minutes without a pass, it says so.
+const passLate = computed(() => {
+  const at = state.value?.lastPass?.at;
+  return !at || Date.now() - new Date(at).getTime() > 5 * 60 * 1000;
+});
+const somethingDown = computed(
+  () => Boolean(error.value) || (state.value?.incidents.length ?? 0) > 0 || (state.value?.containers ?? []).some((entry) => status(entry).color === "error"),
+);
+useHead({
+  title: () => (somethingDown.value ? "Down · Bivouac status" : "Bivouac status"),
+  link: [{ rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
+});
+
 const backupLate = computed(() => {
   const last = state.value?.backup?.lastSuccessAt;
   return !last || Date.now() - new Date(last).getTime() > 30 * 3600 * 1000;
@@ -117,22 +133,33 @@ const backupLate = computed(() => {
 </script>
 
 <template>
+  <div>
+  <header class="border-b border-default bg-[#151c1a] text-[#f5f2eb]">
+    <UContainer class="flex h-14 items-center justify-between gap-4">
+      <img src="/bivouac-logo-nuit.svg" alt="Bivouac" class="h-6 w-auto">
+      <span v-if="state" class="flex items-center gap-2 text-sm" :class="passLate ? 'text-[#e3b23c]' : 'text-[#f5f2eb]/85'">
+        <UIcon v-if="passLate" name="i-lucide-triangle-alert" class="size-4" />
+        <span v-else class="bv-dot" aria-hidden="true" />
+        Last pass {{ ago(state.lastPass?.at) }}
+      </span>
+    </UContainer>
+  </header>
   <UContainer class="py-8 space-y-6">
-    <header class="flex flex-wrap items-center justify-between gap-4">
+    <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-semibold">Bivouac status</h1>
+        <h1 class="text-2xl font-semibold">Status</h1>
         <p class="text-sm text-muted">
           Last pass {{ ago(state?.lastPass?.at) }}<template v-if="state?.lastPass">: {{ state.lastPass.status }}</template>
-          · reconciler {{ state?.reconciler.image ? shortImage(state.reconciler.image) : "(local)" }}
+          · reconciler <span class="font-mono">{{ state?.reconciler.image ? shortImage(state.reconciler.image) : "(local)" }}</span>
         </p>
       </div>
       <div class="flex gap-2">
         <UButton icon="i-lucide-refresh-cw" :loading="syncing" @click="sync">Sync now</UButton>
         <form method="post" action="/auth/logout">
-          <UButton type="submit" variant="outline">Sign out</UButton>
+          <UButton type="submit" color="neutral" variant="outline">Sign out</UButton>
         </form>
       </div>
-    </header>
+    </div>
 
     <UAlert v-if="error" color="error" title="The status cannot be read" :description="error.message" />
 
@@ -156,12 +183,12 @@ const backupLate = computed(() => {
       <div class="grid gap-4 sm:grid-cols-3">
         <UCard>
           <p class="text-sm text-muted">Disk</p>
-          <p class="text-xl font-semibold" :class="disk >= 80 ? 'text-error' : ''">{{ disk }} %</p>
+          <p class="font-mono text-xl font-medium tabular-nums" :class="disk >= 80 ? 'text-error' : ''">{{ disk }} %</p>
           <p class="text-sm text-muted">{{ bytes(state.host.disk.availableBytes) }} free of {{ bytes(state.host.disk.totalBytes) }}</p>
         </UCard>
         <UCard>
           <p class="text-sm text-muted">Memory</p>
-          <p class="text-xl font-semibold">{{ memory }} %</p>
+          <p class="font-mono text-xl font-medium tabular-nums">{{ memory }} %</p>
           <p class="text-sm text-muted">
             {{ bytes(state.host.memory.availableBytes) }} available of {{ bytes(state.host.memory.totalBytes) }}
             <template v-if="state.host.swap.totalBytes">
@@ -171,7 +198,7 @@ const backupLate = computed(() => {
         </UCard>
         <UCard>
           <p class="text-sm text-muted">Last backup</p>
-          <p class="text-xl font-semibold" :class="backupLate ? 'text-error' : ''">{{ ago(state.backup?.lastSuccessAt) }}</p>
+          <p class="font-mono text-xl font-medium tabular-nums" :class="backupLate ? 'text-error' : ''">{{ ago(state.backup?.lastSuccessAt) }}</p>
           <p v-if="state.backup?.lastError" class="text-sm text-error">{{ state.backup.lastError }}</p>
           <p v-if="state.backup?.restoreError" class="text-sm text-error">Restore test: {{ state.backup.restoreError }}</p>
           <p v-if="state.backup?.maintenanceError" class="text-sm text-error">Clean-up: {{ state.backup.maintenanceError }}</p>
@@ -179,7 +206,7 @@ const backupLate = computed(() => {
       </div>
 
       <section v-for="group in groups" :key="group.title" class="space-y-2">
-        <h2 class="text-lg font-semibold">{{ group.title }}</h2>
+        <h2 class="text-xs font-semibold uppercase tracking-wider text-muted">{{ group.title }}</h2>
         <p v-if="group.containers.length === 0" class="text-sm text-muted">{{ group.empty }}</p>
         <UCard v-else :ui="{ body: 'p-0 sm:p-0' }">
         <div class="overflow-x-auto">
@@ -205,8 +232,8 @@ const backupLate = computed(() => {
                 </td>
                 <td class="hidden truncate p-3 font-mono text-xs sm:table-cell" :title="container.image">{{ shortImage(container.image) }}</td>
                 <td class="p-3">
-                  <UBadge :color="status(container).color" variant="subtle">{{ status(container).label }}</UBadge>
-                  <UBadge v-if="container.oomKilled" color="error" class="ml-1">out of memory</UBadge>
+                  <UBadge :color="status(container).color" :icon="status(container).icon" variant="subtle">{{ status(container).label }}</UBadge>
+                  <UBadge v-if="container.oomKilled" color="error" icon="i-lucide-circle-x" variant="subtle" class="ml-1">out of memory</UBadge>
                 </td>
                 <td class="p-3">
                   <template v-if="container.memory">
@@ -245,4 +272,5 @@ const backupLate = computed(() => {
       <p class="text-xs text-muted">Read {{ ago(state.generatedAt) }}, refreshed every 30 seconds.</p>
     </template>
   </UContainer>
+  </div>
 </template>

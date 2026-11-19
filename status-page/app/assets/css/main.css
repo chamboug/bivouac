@@ -1,2 +1,72 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+
+/* Bivouac's brand (docs/brand/README.md): IBM Plex, served by the app itself
+   (Nuxt UI's fonts module downloads it at build time). */
+@theme {
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* The brand's colours over Nuxt UI's. `:root:not(.dark)` and `:root.dark` win
+   over the values Nuxt UI declares on `:root` and `.dark`. Every text colour
+   reads at 4.5:1 or more on the page and card backgrounds, in both themes. */
+:root {
+  --bv-nuit: #151c1a;
+  --bv-neige: #f5f2eb;
+  --bv-lueur: #f5bd4f;
+  --ui-radius: 0.25rem;
+}
+:root:not(.dark) {
+  --ui-primary: #a8400f;          /* toile-ombre */
+  --ui-success: #1d6f63;          /* ok */
+  --ui-warning: #8a5d00;          /* alerte */
+  --ui-error: #b02a1f;            /* panne */
+  --ui-text-inverted: #ffffff;
+  --ui-text-highlighted: #1a221f; /* encre */
+  --ui-text: #1a221f;
+  --ui-text-toned: #4e5955;       /* encre-douce */
+  --ui-text-muted: #5f6965;       /* encre-pale */
+  --ui-text-dimmed: #5f6965;
+  --ui-bg: #f5f2eb;               /* fond */
+  --ui-bg-muted: #ece8de;
+  --ui-bg-elevated: #ffffff;      /* surface */
+  --ui-bg-accented: #e2ddd2;
+  --ui-border: #e2ddd2;           /* filet */
+  --ui-border-muted: #e2ddd2;
+  --ui-border-accented: #858c88;  /* filet-fort */
+}
+:root.dark {
+  --ui-primary: #f59466;
+  --ui-success: #4dbfac;
+  --ui-warning: #e3b23c;
+  --ui-error: #f07465;
+  --ui-text-inverted: #151c1a;
+  --ui-text-highlighted: #edf0ea;
+  --ui-text: #edf0ea;
+  --ui-text-toned: #b0b8b3;
+  --ui-text-muted: #8e9893;
+  --ui-text-dimmed: #8e9893;
+  --ui-bg: #111715;
+  --ui-bg-muted: #161e1c;
+  --ui-bg-elevated: #1a2220;
+  --ui-bg-accented: #2c3633;
+  --ui-border: #2c3633;
+  --ui-border-muted: #2c3633;
+  --ui-border-accented: #6b7672;
+}
+
+.bv-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--bv-lueur);
+  animation: bv-pulse 2s ease-out infinite;
+}
+@keyframes bv-pulse {
+  0% { box-shadow: 0 0 0 0 rgb(245 189 79 / 0.6); }
+  70%, 100% { box-shadow: 0 0 0 6px rgb(245 189 79 / 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bv-dot { animation: none; }
+}

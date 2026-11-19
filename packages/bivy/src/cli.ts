@@ -13,6 +13,7 @@ import * as prompts from "@clack/prompts";
 import { type AskSecret, CredentialError, credential } from "./credentials.js";
 import { resolve4 } from "node:dns/promises";
 import { INIT_USAGE, initCli } from "./init-cli.js";
+import { printBanner } from "./banner.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -90,6 +91,7 @@ async function main(argv: string[]): Promise<number> {
   });
   const [command, directory = "."] = positionals;
   if (values.help || !command) {
+    printBanner();
     console.log(USAGE);
     return values.help ? 0 : 1;
   }
