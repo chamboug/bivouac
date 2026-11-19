@@ -136,7 +136,7 @@ const backupLate = computed(() => {
   <div>
   <header class="border-b border-default bg-[#151c1a] text-[#f5f2eb]">
     <UContainer class="flex h-14 items-center justify-between gap-4">
-      <img src="/bivouac-logo-nuit.svg" alt="Bivouac" class="h-6 w-auto">
+      <img src="/bivouac-logo-night.svg" alt="Bivouac" class="h-6 w-auto">
       <span v-if="state" class="flex items-center gap-2 text-sm" :class="passLate ? 'text-[#e3b23c]' : 'text-[#f5f2eb]/85'">
         <UIcon v-if="passLate" name="i-lucide-triangle-alert" class="size-4" />
         <span v-else class="bv-dot" aria-hidden="true" />

@@ -1,5 +1,5 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/bivouac-logo-nuit.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/bivouac-logo-night.svg">
   <img src="docs/brand/bivouac-logo.svg" alt="Bivouac" height="48">
 </picture>
 

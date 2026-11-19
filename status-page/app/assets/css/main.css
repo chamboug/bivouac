@@ -12,29 +12,29 @@
    over the values Nuxt UI declares on `:root` and `.dark`. Every text colour
    reads at 4.5:1 or more on the page and card backgrounds, in both themes. */
 :root {
-  --bv-nuit: #151c1a;
-  --bv-neige: #f5f2eb;
-  --bv-lueur: #f5bd4f;
+  --bv-night: #151c1a;
+  --bv-snow: #f5f2eb;
+  --bv-glow: #f5bd4f;
   --ui-radius: 0.25rem;
 }
 :root:not(.dark) {
-  --ui-primary: #a8400f;          /* toile-ombre */
+  --ui-primary: #a8400f;          /* canvas-shade */
   --ui-success: #1d6f63;          /* ok */
-  --ui-warning: #8a5d00;          /* alerte */
-  --ui-error: #b02a1f;            /* panne */
+  --ui-warning: #8a5d00;          /* warning */
+  --ui-error: #b02a1f;            /* down */
   --ui-text-inverted: #ffffff;
-  --ui-text-highlighted: #1a221f; /* encre */
+  --ui-text-highlighted: #1a221f; /* ink */
   --ui-text: #1a221f;
-  --ui-text-toned: #4e5955;       /* encre-douce */
-  --ui-text-muted: #5f6965;       /* encre-pale */
+  --ui-text-toned: #4e5955;       /* ink-soft */
+  --ui-text-muted: #5f6965;       /* ink-faint */
   --ui-text-dimmed: #5f6965;
-  --ui-bg: #f5f2eb;               /* fond */
+  --ui-bg: #f5f2eb;               /* background */
   --ui-bg-muted: #ece8de;
   --ui-bg-elevated: #ffffff;      /* surface */
   --ui-bg-accented: #e2ddd2;
-  --ui-border: #e2ddd2;           /* filet */
+  --ui-border: #e2ddd2;           /* hairline */
   --ui-border-muted: #e2ddd2;
-  --ui-border-accented: #858c88;  /* filet-fort */
+  --ui-border-accented: #858c88;  /* hairline-strong */
 }
 :root.dark {
   --ui-primary: #f59466;
@@ -60,7 +60,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--bv-lueur);
+  background: var(--bv-glow);
   animation: bv-pulse 2s ease-out infinite;
 }
 @keyframes bv-pulse {

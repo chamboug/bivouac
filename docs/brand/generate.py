@@ -3,14 +3,14 @@ It writes every SVG next to this script; the PNG avatar is exported from
 bivouac-avatar.svg at 512 x 512 (for example with a headless browser)."""
 import math, os, sys
 OUT=sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
-TOILE='#d4501c'; OMBRE='#a8400f'; LUEUR='#f5bd4f'; NUIT='#151c1a'; NEIGE='#f5f2eb'; INK='#1a221f'
+CANVAS='#d4501c'; SHADE='#a8400f'; GLOW='#f5bd4f'; NIGHT='#151c1a'; SNOW='#f5f2eb'; INK='#1a221f'
 SW=2.5  # stroke width in wordmark units
 def tent(fill3=True, ink=None):
     if ink:  # single ink, door cut out
         return f'<path fill="{ink}" fill-rule="evenodd" d="M32 8 58 54H6Z M32 27 41 54H23Z"/>'
-    return (f'<path fill="{TOILE}" d="M32 8V54H6Z"/>'
-            f'<path fill="{OMBRE}" d="M32 8 58 54H32Z"/>'
-            f'<path fill="{LUEUR}" d="M32 27 41 54H23Z"/>')
+    return (f'<path fill="{CANVAS}" d="M32 8V54H6Z"/>'
+            f'<path fill="{SHADE}" d="M32 8 58 54H32Z"/>'
+            f'<path fill="{GLOW}" d="M32 27 41 54H23Z"/>')
 # wordmark: baseline 20, x-height top 10, ascender 3.5; r=5
 def word():
     x=0; parts=[]; g=3.6
@@ -42,12 +42,12 @@ S=2.5; LW=round(80+WW*S+SW*S/2+4)
 files={
  'bivouac-mark.svg': svg(64,64,tent()),
  'bivouac-mark-ink.svg': svg(64,64,tent(ink=INK)),
- 'bivouac-mark-neige.svg': svg(64,64,tent(ink=NEIGE)),
+ 'bivouac-mark-snow.svg': svg(64,64,tent(ink=SNOW)),
  'bivouac-logo.svg': svg(LW,64,tent()+wordmark(INK,80,4,S)),
- 'bivouac-logo-nuit.svg': svg(LW,64,tent()+wordmark(NEIGE,80,4,S)),
+ 'bivouac-logo-night.svg': svg(LW,64,tent()+wordmark(SNOW,80,4,S)),
  'bivouac-logo-ink.svg': svg(LW,64,tent(ink=INK)+wordmark(INK,80,4,S)),
- 'bivouac-avatar.svg': svg(512,512,f'<g transform="translate(96 100) scale(5)">{tent()}</g>',bg=NUIT),
- 'favicon.svg': svg(64,64,f'<rect width="64" height="64" rx="14" fill="{NUIT}"/><g transform="translate(5 4) scale(0.84)">{tent()}</g>'),
+ 'bivouac-avatar.svg': svg(512,512,f'<g transform="translate(96 100) scale(5)">{tent()}</g>',bg=NIGHT),
+ 'favicon.svg': svg(64,64,f'<rect width="64" height="64" rx="14" fill="{NIGHT}"/><g transform="translate(5 4) scale(0.84)">{tent()}</g>'),
 }
 for n,c in files.items(): open(os.path.join(OUT,n),'w').write(c)
 print('wordmark width', WW, 'logo width', LW)
