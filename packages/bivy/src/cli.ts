@@ -7,17 +7,11 @@ import { parseArgs } from "node:util";
 import { generateCaddyfile, loadInstance, withStatusApp } from "@bivouac/manifest";
 import { CaddyError, validateCaddyfile } from "./caddy.js";
 import { EXAMPLE_IPV6, IPV6_PLACEHOLDER, IgnitionError, buildButane, compileButane } from "./ignition.js";
-import { GitHub, repositoryPath } from "./github.js";
-import { Hetzner } from "./hetzner.js";
-import { newHostKey } from "./hostkey.js";
-import { RebuildError, cleanup, curlProbe, ignitionFor, instanceIdentity, rebuildTest } from "./rebuild.js";
-import { SshRemote, scanHostKey } from "./remote.js";
-import { checkoutProblems, rebuildReal } from "./rebuild-real.js";
+import { rebuildCommand } from "./rebuild-cli.js";
 import { SshError, execCommand, serverAddress, splitAtDoubleDash, sshArguments } from "./ssh.js";
 import * as prompts from "@clack/prompts";
-import { type AskSecret, CredentialError, credential, readCredential } from "./credentials.js";
+import { type AskSecret, CredentialError, credential } from "./credentials.js";
 import { resolve4 } from "node:dns/promises";
-import { createInterface } from "node:readline/promises";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -32,22 +26,29 @@ Commands:
       --instance <dir>        the instance repo (default: the current directory)
       --ssh-key <file>        default ~/.ssh/id_ed25519
 
-  rebuild [dir]               rebuild the real server from the latest nightly copy,
-                              on the same IPs (D91). Erases the server: a decision
-                              of its own, with a typed confirmation (rule 5)
+  rebuild [dir]               rebuild the real server from its backups, on the
+                              same IPs (D91). Erases the server: a decision of its
+                              own, with a typed confirmation (rule 5). In a
+                              terminal, it asks what the options below say.
       --plan                  only read, and say what it would do
       --server-type <type>    for a new server, when no cx23 can be ordered
       --without-fresh-backup  the old server is gone: accept losing what was
                               written since its last nightly copy
+      --snapshot <id>         bring back this backup copy, not the latest
       --abandon               forget a rebuild that stopped before erasing anything
       --ssh-key <file>        default ~/.ssh/id_ed25519
+      --age-key <file>        default ~/.config/sops/age/keys.txt (in a terminal,
+                              it can also be pasted)
 
-  rebuild --test [dir]        rebuild a temporary copy of the platform from the
-                              latest nightly copy, check it, then delete it (D91)
+  rebuild --test [dir]        rebuild a temporary copy of the platform from its
+                              backups, check it, then delete it (D91). In a
+                              terminal, it asks what the options below say.
+      --yes                   rent the test server without asking
       --keep                  leave the test server running after the checks
       --cleanup               delete what a test created (only that)
       --location, --server-type   where the test server goes (default: cx23
                               where it can be ordered)
+      --snapshot <id>         bring back this backup copy, not the latest
       --ssh-key <file>        default ~/.ssh/id_ed25519
       --age-key <file>        default ~/.config/sops/age/keys.txt
       --hetzner-token <file>  default ~/.config/bivouac/hetzner-token
@@ -77,6 +78,8 @@ async function main(argv: string[]): Promise<number> {
       "age-key": { type: "string" },
       "hetzner-token": { type: "string" },
       "github-token": { type: "string" },
+      snapshot: { type: "string" },
+      yes: { type: "boolean" },
       instance: { type: "string" },
     },
   });
@@ -93,7 +96,7 @@ async function main(argv: string[]): Promise<number> {
     case "ignition":
       return ignition(root, values.output, values.ipv6);
     case "rebuild":
-      return rebuild(root, values);
+      return rebuildCommand(root, values, hetznerToken);
     case "ssh":
       return ssh(values.instance ? resolve(values.instance) : root, undefined, [], values["ssh-key"]);
     case "exec":
@@ -257,137 +260,6 @@ async function hetznerToken(path: string | undefined): Promise<string | undefine
     if (!(error instanceof CredentialError)) throw error;
     console.error(`✗ ${error.message}`);
     return undefined;
-  }
-}
-
-async function rebuild(root: string, values: Record<string, string | boolean | undefined>): Promise<number> {
-  const text = (name: string) => (typeof values[name] === "string" ? (values[name] as string) : undefined);
-  if (!values.test) return realRebuild(root, values, text);
-  if (values.plan || values["without-fresh-backup"] || values.abandon) {
-    console.error("--plan, --without-fresh-backup and --abandon are for the real 'bivy rebuild' only.");
-    return 1;
-  }
-  const githubTokenPath = text("github-token") ?? config("github-rebuild-token");
-  const instance = loadInstance(root);
-  if (!instance.platform) {
-    console.error("platform.yml is invalid: run 'bivy validate' for details.");
-    return 1;
-  }
-  const repository = repositoryPath(instance.platform.repository);
-  const knownHosts = config("known_hosts-rebuild-test");
-  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
-  const hetzner = await hetznerToken(text("hetzner-token"));
-  if (!hetzner) return 1;
-  const deps = {
-    hetzner: new Hetzner(hetzner),
-    github: () => {
-      if (!existsSync(githubTokenPath)) {
-        console.log(`A temporary GitHub token is needed, to add the test server's read-only deploy key. Create it at
-  https://github.com/settings/personal-access-tokens/new?name=bivouac-rebuild-test&description=Deploy+key+of+a+rebuild+test&expires_in=1&administration=write
-choosing "Only select repositories" → ${repository} (nothing else), and delete it once the test is over:
-the test's deploy key goes with it.`);
-      }
-      try {
-        return new GitHub(readCredential({ path: githubTokenPath, what: "the temporary GitHub token" }), repository);
-      } catch (error) {
-        if (error instanceof CredentialError) throw new RebuildError(error.message);
-        throw error;
-      }
-    },
-    remote: (host: string) => new SshRemote(host, identity, knownHosts),
-    scanHostKey,
-    newHostKey: () => newHostKey(),
-    publicIpv4: async () => {
-      const response = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(10_000) });
-      if (!response.ok) throw new RebuildError(`api.ipify.org answered HTTP ${response.status}: cannot tell this Mac's IPv4`);
-      return (await response.text()).trim();
-    },
-    ignition: ignitionFor(root),
-    ageKey: () => instanceIdentity(readFileSync(text("age-key") ?? join(homedir(), ".config", "sops", "age", "keys.txt"), "utf8"), readFileSync(join(root, ".sops.yaml"), "utf8")),
-    probe: (host: string, address: string, path: string) => curlProbe(host, address, path, true),
-    probeReal: (host: string, path: string) => curlProbe(host, undefined, path, false),
-    stateFile: config("rebuild-test.json"),
-    knownHosts,
-    log: (message: string) => console.log(message),
-    sleep: (ms: number) => new Promise<void>((done) => setTimeout(done, ms)),
-    now: Date.now,
-  };
-  try {
-    if (!values.cleanup) {
-      const state = await rebuildTest(deps, { root, keep: values.keep === true, location: text("location"), serverType: text("server-type") });
-      const minutes = Math.round((Date.now() - Date.parse(state.startedAt)) / 60_000);
-      console.log(`\n✓ The platform came back on the test server, ${minutes} minutes after the start. Steps (seconds): ${JSON.stringify(state.timings)}`);
-      if (values.keep) {
-        console.log(`The test server is still running at ${state.ipv4} (€${state.hourly}/hour). Delete it with: bivy rebuild --test --cleanup`);
-        return 0;
-      }
-    }
-    const problems = await cleanup(deps, existsSync(githubTokenPath));
-    if (problems.length > 0) {
-      console.error(`✗ Clean-up incomplete:\n  ${problems.join("\n  ")}`);
-      return 1;
-    }
-    console.log(`✓ Everything the test created is deleted. Now delete the temporary GitHub token on GitHub
-  (Settings → Developer settings → Fine-grained tokens), then: rm ${githubTokenPath}`);
-    return 0;
-  } catch (error) {
-    console.error(`✗ ${(error as Error).message}`);
-    if (!values.cleanup && existsSync(config("rebuild-test.json"))) {
-      // The test server may hold the age key and a full copy of the data.
-      console.error("The test server may still be running, billed, with a copy of the data: run again to carry on, or delete it with\n  bivy rebuild --test --cleanup");
-    }
-    return 1;
-  }
-}
-
-async function realRebuild(root: string, values: Record<string, string | boolean | undefined>, text: (name: string) => string | undefined): Promise<number> {
-  if (values.keep || values.cleanup || text("location") || text("github-token")) {
-    console.error("--keep, --cleanup, --location and --github-token are for 'bivy rebuild --test' only.");
-    return 1;
-  }
-  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
-  const knownHosts = config("known_hosts");
-  const hetzner = await hetznerToken(text("hetzner-token"));
-  if (!hetzner) return 1;
-  const deps = {
-    hetzner: new Hetzner(hetzner),
-    remote: (host: string) => new SshRemote(host, identity, knownHosts),
-    scanHostKey,
-    newHostKey: () => newHostKey(),
-    ignition: ignitionFor(root),
-    ageKey: () => instanceIdentity(readFileSync(text("age-key") ?? join(homedir(), ".config", "sops", "age", "keys.txt"), "utf8"), readFileSync(join(root, ".sops.yaml"), "utf8")),
-    probeReal: (host: string, path: string) => curlProbe(host, undefined, path, false),
-    resolve: (name: string) => resolve4(name),
-    checkout: () => checkoutProblems(root),
-    ask: async (question: string) => {
-      // Only a person at a terminal can confirm: never a pipe or a script.
-      if (!process.stdin.isTTY) throw new RebuildError("a rebuild is confirmed by typing in a terminal: none here");
-      const terminal = createInterface({ input: process.stdin, output: process.stdout });
-      try {
-        return await terminal.question(question);
-      } finally {
-        terminal.close();
-      }
-    },
-    stateFile: config("rebuild.json"),
-    knownHosts,
-    log: (message: string) => console.log(message),
-    sleep: (ms: number) => new Promise<void>((done) => setTimeout(done, ms)),
-    now: Date.now,
-  };
-  try {
-    const result = await rebuildReal(deps, { root, plan: values.plan === true, abandon: values.abandon === true, serverType: text("server-type"), withoutFreshBackup: values["without-fresh-backup"] === true });
-    if ("problems" in result) return result.problems.length > 0 ? 1 : 0;
-    if (values.abandon) return 0;
-    console.log(`\n✓ The platform is back on ${result.ipv4}. Now:
-  - remove the OLD deploy key on GitHub (repo Settings → Deploy keys; keep '${"bivouac-server-" + result.run}');
-  - check tomorrow that the first nightly backup ran (it waits for the next night, D74);
-  - the platform's known_hosts before the rebuild is kept in ${result.knownHostsBackup ?? "(none)"}.`);
-    return 0;
-  } catch (error) {
-    console.error(`✗ ${(error as Error).message}`);
-    if (existsSync(config("rebuild.json"))) console.error("Run the same command again to carry on from where it stopped: a step already done is never repeated.");
-    return 1;
   }
 }
 

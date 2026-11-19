@@ -222,7 +222,7 @@ The owner regularly codes small applications with Claude. Some live happily as a
   - new adapters arrive by PR into this monorepo, never as modules loaded from npm;
   - the base runs entirely in containers, so it would work on any Docker host (Ubuntu, etc.). Only the Ignition bootstrap is Flatcar-specific.
 
-  `bivy` speaks English, asks for each credential itself (hidden input, then a file only its owner can read under `~/.config/bivouac/`) and uses one checked, pinned prompt library for arrow-key lists. Build order: `bivy ssh` / `bivy exec`, then `bivy init`, then a guided `bivy rebuild` merged only after a successful `rebuild --test`. One short branch per step. No "existing server" mode, other server providers or multi-OS test matrix until someone needs them.
+  `bivy` speaks English, asks for each credential itself (hidden input, then a file only its owner can read under `~/.config/bivouac/`) and uses one checked, pinned prompt library for arrow-key lists. Every question also has a flag or a safe default, so Claude and scripts drive it without a terminal; what erases the server keeps a typed confirmation, terminal only. Build order: `bivy ssh` / `bivy exec`, then `bivy init`, then a guided `bivy rebuild` merged only after a successful `rebuild --test` (built and proven 19 Nov. 2026). One short branch per step. No "existing server" mode, other server providers or multi-OS test matrix until someone needs them.
 
 - **Renovate** (Mend's free plan, verified: private repos included, one run every 4 hours) on the instance repo, for third-party images (Caddy, Postgres, Pocket ID, Tinyauth, Node-RED…): minor updates merged automatically if CI is green, PRs for majors, never a Postgres major version.
 

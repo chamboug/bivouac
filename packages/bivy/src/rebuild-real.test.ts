@@ -9,6 +9,7 @@ import { HOST_KEY_PATH, secretsIn } from "./hostkey.js";
 import { spawnSync } from "node:child_process";
 import { checkoutProblems, rebuildReal, type RealDependencies, type RealState, type RebuildPlan } from "./rebuild-real.js";
 import type { CommandOutput, Remote } from "./remote.js";
+import { scripted } from "./scripted-guide.js";
 
 type Json = Record<string, unknown>;
 
@@ -17,6 +18,11 @@ const PROVISIONAL = { privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nprovisio
 const OWN_KEY = "ssh-ed25519 AAAAown bivouac-server";
 const AGE_KEY = Buffer.from("AGE-SECRET-KEY-1TESTONLY\n");
 const JWKS = JSON.stringify({ keys: [{ kid: "k1", n: "abc" }] });
+const COPIES = [
+  '{"message":"copy","id":"abcd1234","time":"2026-11-14T09:05:00Z","tags":["nightly"]}',
+  '{"message":"copy","id":"beef5678","time":"2026-11-10T02:00:00Z","tags":["nightly"]}',
+].join("\n");
+
 
 /** A Hetzner project holding the real platform. */
 class FakeHetzner {
@@ -144,7 +150,10 @@ class FakeServer implements Remote {
     }
     if (command.includes("Health.Status")) return ok("healthy\n");
     if (command.includes("docker ps")) return ok(this.restored ? "bivouac-pocket-id Up 1 minute (healthy)\nbivouac-caddy Up 1 minute (healthy)\nbivouac-app-biblio Up 1 minute\n" : "bivouac-postgres\n");
+    if (command.endsWith("restore-platform --list")) return ok(COPIES);
     if (command.endsWith("restore-platform")) return ok('{"message":"rebuild plan","copy":"abcd1234","taken":"2026-11-14T09:05:00Z","size":"4.9 GiB"}\n');
+    const named = /restore-platform --snapshot ([0-9a-f]+)$/.exec(command);
+    if (named) return ok(`{"message":"rebuild plan","copy":"${named[1]}","taken":"2026-11-10T02:00:00Z","size":"4.8 GiB"}\n`);
     if (command.includes("restore-platform --yes")) {
       this.restored = true;
       return ok('{"message":"platform restored"}\n');
@@ -491,5 +500,114 @@ describe("the instance checkout", () => {
     git(work, "commit", "-qam", "two");
     expect(checkoutProblems(work).join()).toMatch(/not exactly origin\/main/);
     expect(checkoutProblems(join(dir, "nowhere")).join()).toMatch(/git fetch failed/);
+  });
+});
+
+describe("bivy rebuild, guided (D93)", () => {
+  it("asks for the server type and the loss of the last day, then creates the server", async () => {
+    const { deps, hetzner, server, asked } = setup({ probeReal: () => ({ status: 0, body: "" }) });
+    hetzner.servers = [];
+    for (const ip of hetzner.ips) ip.assignee_id = null;
+    server.reachable = false;
+    const fresh = hetzner.onNewSystem;
+    hetzner.onNewSystem = () => {
+      fresh();
+      server.reachable = true;
+      deps.probeReal = () => ({ status: 200, body: JWKS });
+    };
+    const { guide, questions } = scripted((message, choices) => (message.startsWith("No cx23") ? "cpx22" : message.includes("does not answer") ? "accept" : choices[0]?.value));
+    deps.guide = guide;
+    await rebuildReal(deps, options);
+    expect(questions.map((question) => question.message.split(" ").slice(0, 3).join(" "))).toEqual(["No cx23 can", "The old server", "Which data should"]);
+    expect(questions[0]?.choices).toEqual([{ value: "cpx22", label: "cpx22, €0.03744/hour (about €27/month) (cheapest)" }]);
+    expect(questions[1]?.choices[0]?.label).toMatch(/Stop here.*recommended/);
+    expect(asked).toHaveLength(1);
+    expect(hetzner.servers[0]).toMatchObject({ name: "bivouac", server_type: { name: "cpx22" } });
+  });
+
+  it("stops when the owner does not accept losing the last day", async () => {
+    const { deps, hetzner, server, asked } = setup({ probeReal: () => ({ status: 0, body: "" }) });
+    hetzner.servers = [];
+    for (const ip of hetzner.ips) ip.assignee_id = null;
+    server.reachable = false;
+    deps.guide = scripted((message, choices) => (message.includes("does not answer") ? "stop" : choices[0]?.value)).guide;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/stopped: nothing was changed/);
+    expect([writes(hetzner), asked]).toEqual([[], []]);
+    expect(existsSync(deps.stateFile)).toBe(false);
+  });
+
+  it("asks nothing it cannot settle: another problem stops the rebuild first", async () => {
+    const { deps, hetzner, server } = setup({ probeReal: () => ({ status: 0, body: "" }), resolve: async () => ["192.0.2.99"] });
+    hetzner.servers = [];
+    for (const ip of hetzner.ips) ip.assignee_id = null;
+    server.reachable = false;
+    const { guide, questions } = scripted(() => undefined);
+    deps.guide = guide;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/the plan has problems/);
+    expect(questions).toEqual([]);
+  });
+
+  it("finds a missing age key before the confirmation, and erases nothing", async () => {
+    const { deps, hetzner, server, asked } = setup({ prepareAgeKey: async () => {
+      throw new Error("no age key given: nothing was done");
+    } });
+    deps.guide = scripted((_message, choices) => choices[0]?.value).guide;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/no age key/);
+    expect([writes(hetzner), asked, server.backupAsked]).toEqual([[], [], false]);
+  });
+
+  it("brings back an older copy chosen from the list, after warning that the rest is lost", async () => {
+    const { deps, server } = setup();
+    const { guide, questions } = scripted((message, choices) => (message === "Which data should come back?" ? "older" : message === "Which copy should come back?" ? "beef5678" : choices[0]?.value));
+    deps.guide = guide;
+    const state = (await rebuildReal(deps, options)) as RealState;
+    expect(questions[0]?.choices[1]?.hint).toMatch(/LOST/);
+    expect(questions[1]?.choices.map((choice) => choice.label)).toEqual(["2026-11-14 09:05 UTC (abcd1234)", "2026-11-10 02:00 UTC (beef5678)"]);
+    expect(state.snapshot).toBe("beef5678");
+    expect(server.commands.some((command) => command.endsWith("restore-platform --yes --snapshot beef5678"))).toBe(true);
+    // The question came once the server could read the backups, after the erase.
+    expect(server.commands.findIndex((command) => command.endsWith("--list"))).toBeGreaterThan(server.commands.findIndex((command) => command.includes("deploy_key")));
+  });
+
+  it("--snapshot names the copy without a question, and an odd ID is refused before anything", async () => {
+    const { deps, server, hetzner } = setup();
+    await expect(rebuildReal(deps, { ...options, snapshot: "latest; rm -rf /" })).rejects.toThrow(/not a backup copy ID/);
+    expect([writes(hetzner), server.backupAsked]).toEqual([[], false]);
+    await rebuildReal(deps, { ...options, snapshot: "beef5678" });
+    expect(server.commands.some((command) => command.endsWith("restore-platform --snapshot beef5678"))).toBe(true);
+  });
+
+  it("an unfinished rebuild that erased nothing: forget it, and the protection comes back", async () => {
+    const { deps, hetzner } = setup({ probeReal: () => ({ status: 503, body: "" }) });
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/503/);
+    (hetzner.servers[0] as Json).protection = { delete: false, rebuild: false };
+    const { guide, questions } = scripted((message) => (message.includes("stopped before anything was erased") ? "forget" : undefined));
+    deps.guide = guide;
+    expect(await rebuildReal(deps, options)).toEqual({ abandoned: expect.stringMatching(/^\d{12}-[0-9a-f]{4}$/) });
+    expect(questions).toHaveLength(1);
+    expect(existsSync(deps.stateFile)).toBe(false);
+    expect(hetzner.servers[0]?.protection).toEqual({ delete: true, rebuild: true });
+  });
+
+  it("an unfinished rebuild that erased the server: carry on, or quit leaving it as it is", async () => {
+    const { deps, hetzner, server } = setup();
+    const original = server.run.bind(server);
+    let cut = false;
+    server.run = (command) => {
+      if (!cut && server.rebuilt) {
+        cut = true;
+        throw new Error("connection lost");
+      }
+      return original(command);
+    };
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/connection lost/);
+    deps.guide = scripted(() => "quit").guide;
+    await expect(rebuildReal(deps, options)).rejects.toThrow(/run 'bivy rebuild' again to carry on/);
+    expect(existsSync(deps.stateFile)).toBe(true);
+    const { guide, questions } = scripted((message, choices) => choices[0]?.value);
+    deps.guide = guide;
+    await rebuildReal(deps, options);
+    expect(questions[0]?.choices.map((choice) => choice.value)).toEqual(["carry on", "quit"]);
+    expect(hetzner.calls.filter((call) => call.includes("/actions/rebuild"))).toHaveLength(1);
   });
 });

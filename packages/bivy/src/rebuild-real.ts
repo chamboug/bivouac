@@ -9,6 +9,8 @@ import { firstAddress } from "./ignition.js";
 import {
   DEFAULT_SERVER_TYPE,
   RebuildError,
+  askWhichCopy,
+  checkedSnapshot,
   TEST_LABEL,
   bringBack,
   instanceOf,
@@ -16,6 +18,7 @@ import {
   newestFlatcar,
   readState,
   saveState,
+  shownDate,
   scannedKey,
   step,
   waitUntil,
@@ -65,6 +68,13 @@ export interface RealOptions {
   withoutFreshBackup: boolean;
   /** Forget a rebuild that stopped before the server was erased. */
   abandon?: boolean;
+  /** The backup copy to bring back (restic's ID); the latest nightly one by default. */
+  snapshot?: string | undefined;
+}
+
+/** A rebuild that stopped before erasing anything, forgotten. */
+export interface Abandoned {
+  abandoned: string;
 }
 
 export interface RebuildPlan {
@@ -82,6 +92,13 @@ export interface RebuildPlan {
   backup: { lastSuccessAt?: string; locked: boolean; marker: boolean } | { unreachable: string };
   /** Anything here stops the rebuild before it changes anything. */
   problems: string[];
+  /** Problems a person can settle with a question (D93), each also among the problems. */
+  questions: {
+    /** No cx23 can be ordered for the new server: what can be, in the IPs' location. */
+    serverType?: { name: string; hourly: number }[];
+    /** The old server cannot make a fresh backup: losing what was written since its last copy must be accepted. */
+    freshBackup?: string;
+  };
 }
 
 export interface RealState extends RunState {
@@ -123,6 +140,7 @@ export async function planRebuild(deps: RealDependencies, options: RealOptions):
   const { hetzner } = deps;
   const { platform } = (deps.instance ?? (() => instanceOf(options.root)))();
   const problems: string[] = [];
+  const questions: RebuildPlan["questions"] = {};
   const image = newestFlatcar(await hetzner.snapshots("os=flatcar"));
   const named = (await hetzner.servers()).filter((server) => server.name === SERVER_NAME && !isOurs(server.labels));
   if (named.length > 1) throw new RebuildError(`${named.length} servers are named '${SERVER_NAME}': which one is the platform cannot be told`);
@@ -172,6 +190,7 @@ export async function planRebuild(deps: RealDependencies, options: RealOptions):
     const wanted = offers.find((offer) => offer.name === serverType);
     if (wanted) hourly = wanted.hourly;
     else {
+      if (offers.length > 0) questions.serverType = offers;
       problems.push(`${serverType} cannot be ordered in ${location || "the IPs' location"}. Choose with --server-type, keeping the IPs and the DNS: ${offers.slice(0, 4).map((offer) => `${offer.name} €${offer.hourly}/h`).join(", ") || "none"}. Another location means new IPs and a DNS change: not done by bivy`);
     }
   } else if (options.serverType && options.serverType !== serverType) {
@@ -203,6 +222,7 @@ export async function planRebuild(deps: RealDependencies, options: RealOptions):
   }
   problems.push(...(deps.checkout?.() ?? []));
   if ("unreachable" in backup && !options.withoutFreshBackup) {
+    questions.freshBackup = backup.unreachable;
     problems.push(`the old server cannot make a fresh backup (${backup.unreachable}): run again with --without-fresh-backup to accept losing what was written since its last nightly copy`);
   }
 
@@ -218,7 +238,34 @@ export async function planRebuild(deps: RealDependencies, options: RealOptions):
     image,
     backup,
     problems,
+    questions,
   };
+}
+
+/**
+ * The plan's problems a person can settle (D93): which server type, and
+ * whether to accept losing the last day. Asked only when nothing else stops
+ * the rebuild; the answers become the options of a new plan.
+ */
+async function settle(deps: RealDependencies, options: RealOptions, plan: RebuildPlan): Promise<RealOptions | undefined> {
+  const { guide } = deps;
+  const { serverType, freshBackup } = plan.questions;
+  const settled = (serverType ? 1 : 0) + (freshBackup !== undefined ? 1 : 0);
+  if (!guide || settled === 0 || plan.problems.length > settled) return undefined;
+  const next = { ...options };
+  if (serverType) {
+    next.serverType = await guide.select(`No ${plan.serverType} can be ordered in ${plan.location}, where the IPs are. Which server should replace it? (Another place would mean new addresses and a DNS change: not done by bivy.)`,
+      serverType.slice(0, 6).map((offer, index) => ({ value: offer.name, label: `${offer.name}, €${offer.hourly}/hour (about €${Math.round(offer.hourly * 730)}/month)${index === 0 ? " (cheapest)" : ""}` })));
+  }
+  if (freshBackup !== undefined) {
+    const answer = await guide.select(`The old server does not answer (${freshBackup}), so no fresh backup can be made: everything written since its last nightly copy would be LOST. If Pocket ID is only restarting (about a minute, D68), stop and try again.`, [
+      { value: "stop", label: "Stop here, nothing is changed (recommended)" },
+      { value: "accept", label: "Accept losing the last day, and go on" },
+    ]);
+    if (answer === "stop") throw new RebuildError("stopped: nothing was changed");
+    next.withoutFreshBackup = true;
+  }
+  return next;
 }
 
 export function describePlan(plan: RebuildPlan, domain: string): string {
@@ -282,7 +329,7 @@ const jwksKeys = (body: string) => JSON.stringify((JSON.parse(body) as { keys: {
 
 const erased = (entry: RealState) => entry.serverRequested === true || entry.requesting !== undefined;
 
-export async function rebuildReal(deps: RealDependencies, options: RealOptions): Promise<RealState | RebuildPlan> {
+export async function rebuildReal(deps: RealDependencies, options: RealOptions): Promise<RealState | RebuildPlan | Abandoned> {
   const { platform } = (deps.instance ?? (() => instanceOf(options.root)))();
 
   if (options.plan) {
@@ -296,13 +343,40 @@ export async function rebuildReal(deps: RealDependencies, options: RealOptions):
   // The state is read inside the lock: another run cannot change it meanwhile.
   return withLock(`${deps.stateFile}.lock`, async () => {
     const state = readState<RealState>(deps.stateFile);
-    if (!options.abandon) return run(deps, options, state);
+    let abandon = options.abandon === true;
+    if (state && !abandon && deps.guide) {
+      const started = shownDate(state.startedAt);
+      const answer = erased(state)
+        ? await deps.guide.select(`A rebuild started on ${started} did not finish, and the server was already sent for erasing (${state.done.length} steps done).`, [
+            { value: "carry on", label: "Carry on from where it stopped (recommended)", hint: "a step already done is never repeated" },
+            { value: "quit", label: "Quit, and decide later" },
+          ])
+        : await deps.guide.select(`A rebuild started on ${started} stopped before anything was erased.`, [
+            { value: "start over", label: "Start over", hint: "a new plan, a new confirmation and a fresh backup" },
+            { value: "forget", label: "Forget it, and change nothing" },
+            { value: "quit", label: "Quit, and decide later" },
+          ]);
+      if (answer === "quit") throw new RebuildError(erased(state) ? "stopped: run 'bivy rebuild' again to carry on" : "stopped: nothing was changed");
+      abandon = answer === "forget";
+    }
+    if (!abandon) return run(deps, options, state);
     if (!state) throw new RebuildError("no rebuild under way: nothing to abandon");
     if (erased(state)) throw new RebuildError("the server may already have been sent for rebuilding: run without --abandon, which finds out and carries on, or stops saying nothing was erased");
+    await protectionBack(deps, state);
     rmSync(deps.stateFile);
     deps.log(`Rebuild ${state.run} abandoned: nothing had been erased.`);
-    return state;
+    return { abandoned: state.run };
   });
+}
+
+/** Killed while the protection was lifted for an in-place rebuild never sent: put it back. */
+async function protectionBack(deps: RealDependencies, state: RealState): Promise<void> {
+  if (state.kind !== "in place" || state.serverId === undefined || state.serverRequested) return;
+  const server = await deps.hetzner.server(state.serverId);
+  if (server && !server.protection.delete) {
+    await deps.hetzner.waitAction(await deps.hetzner.changeServerProtection(server.id, true));
+    deps.log(`  delete and rebuild protection of server ${server.id} put back`);
+  }
 }
 
 /**
@@ -361,14 +435,8 @@ async function run(deps: RealDependencies, options: RealOptions, found: RealStat
     if (problems.length > 0) throw new RebuildError(`the instance checkout cannot be trusted: ${problems.join("; ")}`);
   };
   checkout();
-  if (state && state.kind === "in place" && state.serverId !== undefined && !state.serverRequested) {
-    // Killed while the protection was lifted: put it back before anything else.
-    const server = await hetzner.server(state.serverId);
-    if (server && !server.protection.delete) {
-      await hetzner.waitAction(await hetzner.changeServerProtection(server.id, true));
-      deps.log(`  delete and rebuild protection of server ${server.id} put back`);
-    }
-  }
+  // Killed while the protection was lifted: put it back before anything else.
+  if (state) await protectionBack(deps, state);
   if (state && !erased(state)) {
     // Stopped before anything was erased: a new plan, a new confirmation and a new backup, never an old "yes".
     deps.log(`An earlier rebuild (${state.run}) stopped before anything was erased: starting over.`);
@@ -377,9 +445,18 @@ async function run(deps: RealDependencies, options: RealOptions, found: RealStat
   }
 
   if (!state) {
-    const plan = await planRebuild(deps, options);
+    const snapshot = checkedSnapshot(options.snapshot);
+    let plan = await planRebuild(deps, options);
     deps.log(describePlan(plan, platform.domain));
+    const settled = await settle(deps, options, plan);
+    if (settled) {
+      plan = await planRebuild(deps, settled);
+      deps.log(`\n${describePlan(plan, platform.domain)}`);
+    }
     if (plan.problems.length > 0) throw new RebuildError("the plan has problems: nothing was changed");
+    const olderCopy = !snapshot && deps.guide ? await askWhichCopy(deps.guide, true) : false;
+    // A wrong or missing age key is found now: after the erase, it would stop the rebuild halfway.
+    await deps.prepareAgeKey?.();
     const answer = await deps.ask(`\nThis cannot be undone. Type the platform's domain (${platform.domain}) to go ahead: `);
     if (answer.trim() !== platform.domain) throw new RebuildError("not confirmed: nothing was changed");
     const now = deps.now();
@@ -399,9 +476,13 @@ async function run(deps: RealDependencies, options: RealOptions, found: RealStat
       done: "unreachable" in plan.backup ? ["fresh backup"] : [],
       ...("unreachable" in plan.backup ? { withoutFreshBackup: true } : {}),
       timings: {},
+      ...(snapshot ? { snapshot } : {}),
+      ...(olderCopy ? { olderCopy } : {}),
     };
     saveState(deps.stateFile, state);
   } else {
+    if (options.snapshot && checkedSnapshot(options.snapshot) !== state.snapshot) throw new RebuildError("this rebuild already started with another copy: carry on without --snapshot");
+    if (!state.done.includes("age key")) await deps.prepareAgeKey?.();
     deps.log(`Carrying on with rebuild ${state.run} (${state.done.length} steps done).`);
   }
   const current = state;

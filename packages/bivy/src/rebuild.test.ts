@@ -7,7 +7,8 @@ import { appManifestSchema } from "@bivouac/manifest";
 import { GitHub } from "./github.js";
 import { Hetzner } from "./hetzner.js";
 import { HOST_KEY_PATH, secretsIn } from "./hostkey.js";
-import { RebuildError, TEST_LABEL, cleanup, instanceIdentity, newestFlatcar, rebuildTest, testFirewallRules, type RebuildDependencies } from "./rebuild.js";
+import { RebuildError, TEST_LABEL, cleanup, copyChoices, printable, shownDate, instanceIdentity, jsonLines, newestFlatcar, rebuildTest, testFirewallRules, testServerChoices, unfinishedTest, type RebuildDependencies } from "./rebuild.js";
+import { scripted } from "./scripted-guide.js";
 import type { CommandOutput, Remote } from "./remote.js";
 
 type Json = Record<string, unknown>;
@@ -147,6 +148,12 @@ class FakeServer implements Remote {
       return ok(this.restored
         ? "bivouac-postgres Up 9 minutes (healthy)\nbivouac-pocket-id Up 1 minute (healthy)\nbivouac-caddy Up 1 minute (healthy)\nbivouac-app-biblio Up 1 minute\n"
         : "bivouac-postgres\n");
+    }
+    if (command.endsWith("restore-platform --list")) return ok('{"message":"copy","id":"abcd1234","time":"2026-11-14T02:00:00Z","tags":["nightly"]}\n{"message":"copy","id":"beef5678","time":"2026-11-10T02:00:00Z","tags":["nightly"]}\n');
+    if (command.endsWith("restore-platform --snapshot beef5678")) return ok('{"message":"rebuild plan","copy":"beef5678","taken":"2026-11-10T02:00:00Z","size":"4.8 GiB"}\n');
+    if (command.includes("restore-platform --yes --snapshot beef5678")) {
+      this.restored = true;
+      return ok('{"message":"platform restored","copy":"beef5678"}\n');
     }
     if (command.endsWith("restore-platform")) return ok('{"message":"rebuild plan","copy":"abcd1234","taken":"2026-11-14T02:00:00Z","size":"4.9 GiB"}\n');
     if (command.includes("restore-platform --yes --snapshot abcd1234")) {
@@ -394,5 +401,93 @@ describe("Flatcar snapshot", () => {
     const image = (id: number, version: string) => ({ id, description: "", status: "available", architecture: "x86", disk_size: 40, labels: { os: "flatcar", "flatcar-version": version } });
     expect(newestFlatcar([image(1, "4757.2.3"), image(2, "4757.10.0"), image(3, "999.0.0")]).id).toBe(2);
     expect(() => newestFlatcar([])).toThrow(/no Flatcar snapshot/);
+  });
+});
+
+describe("bivy rebuild --test, guided (D93)", () => {
+  it("asks where the test server goes, which data, then for consent, and shows each step in a sentence", async () => {
+    const { deps, server, hetzner } = setup();
+    ageKeyArrives(server);
+    const { guide, questions } = scripted((message, choices) => (message === "Which data should come back?" ? "older" : message === "Which copy should come back?" ? "beef5678" : message.startsWith("Rent") ? true : choices[0]?.value));
+    const shown: string[] = [];
+    deps.guide = guide;
+    deps.progress = { start: (sentence) => shown.push(`start ${sentence}`), stop: (sentence) => shown.push(`stop ${sentence}`), fail: (sentence) => shown.push(`fail ${sentence}`) };
+    let prepared = 0;
+    deps.prepareAgeKey = async () => {
+      prepared++;
+    };
+    const state = await rebuildTest(deps, options);
+    expect(questions.map((question) => question.message.split(" ").slice(0, 3).join(" "))).toEqual(["Where should the", "Which data should", "Rent a cx23", "Which copy should"]);
+    expect(questions[0]?.choices).toEqual([{ value: "hel1/cx23", label: "cx23 in hel1 (Helsinki), €0.01056/hour (recommended)" }]);
+    expect(questions[2]?.message).toMatch(/notifications twice/);
+    expect(prepared).toBe(1);
+    expect(state).toMatchObject({ location: "hel1", serverType: "cx23", snapshot: "beef5678" });
+    expect(server.commands.some((command) => command.includes("restore-platform --yes --snapshot beef5678"))).toBe(true);
+    expect(shown).toContain("start Renting the test server");
+    expect(shown).toContain("stop Bringing the data back from the backup (a minute or more)");
+    expect(hetzner.servers.some((entry) => (entry.labels as Json)[TEST_LABEL])).toBe(true);
+  });
+
+  it("rents nothing without consent, or when the age key is wrong", async () => {
+    const { deps, hetzner } = setup();
+    deps.guide = scripted((message, choices) => (message.startsWith("Rent") ? false : choices[0]?.value)).guide;
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/nothing was rented/);
+    deps.guide = scripted((message, choices) => (message.startsWith("Rent") ? true : choices[0]?.value)).guide;
+    deps.prepareAgeKey = async () => {
+      throw new RebuildError("this age key is not the one the instance's secrets are encrypted for");
+    };
+    await expect(rebuildTest(deps, options)).rejects.toThrow(/not the one/);
+    expect(hetzner.calls.filter((call) => !call.startsWith("GET"))).toEqual([]);
+    expect(() => readFileSync(deps.stateFile)).toThrow();
+  });
+
+  it("--yes, --location and --snapshot answer the questions", async () => {
+    const { deps, server } = setup();
+    ageKeyArrives(server);
+    const { guide, questions } = scripted(() => undefined);
+    deps.guide = guide;
+    const state = await rebuildTest(deps, { ...options, yes: true, location: "hel1", snapshot: "beef5678" });
+    expect(questions).toEqual([]);
+    expect(state.snapshot).toBe("beef5678");
+    await expect(rebuildTest(setup().deps, { ...options, snapshot: "../x" })).rejects.toThrow(/not a backup copy ID/);
+  });
+
+  it("an unfinished test: carried on without a terminal, a choice with one", async () => {
+    const { deps } = setup();
+    expect(await unfinishedTest(deps)).toBe("none");
+    await expect(rebuildTest(deps, options)).rejects.toThrow(RebuildError);
+    expect(await unfinishedTest(deps)).toBe("carry on");
+    const { guide, questions } = scripted(() => "clean up");
+    expect(await unfinishedTest({ ...deps, guide })).toBe("clean up");
+    expect(questions[0]?.choices.map((choice) => choice.value)).toEqual(["carry on", "clean up", "quit"]);
+    expect(questions[0]?.message).toMatch(/billed/);
+  });
+
+  it("offers the wanted type where it can be ordered first, then the cheapest others", () => {
+    const type = (name: string, hourly: string, locations: string[]) => ({ name, architecture: "x86", memory: 4, disk: 40, deprecation: null, locations: locations.map((location) => ({ name: location, available: true })), prices: locations.map((location) => ({ location, price_hourly: { gross: hourly } })) });
+    const choices = testServerChoices([type("cpx22", "0.03", ["fsn1"]), type("cx23", "0.01", ["nbg1"]), type("cx33", "0.02", ["fsn1", "nbg1"])], "cx23", ["fsn1", "nbg1", "hel1"]);
+    expect(choices.map((choice) => choice.value)).toEqual(["nbg1/cx23", "fsn1/cx33", "nbg1/cx33", "fsn1/cpx22"]);
+    expect(choices[0]?.label).toMatch(/recommended/);
+  });
+
+  it("lists backup copies newest first, saying which are incomplete, and drops odd IDs", () => {
+    const lines = jsonLines([
+      '{"message":"copy","id":"aaaa1111","time":"2026-11-01T02:00:00Z","tags":["nightly"]}',
+      '{"message":"copy","id":"bbbb2222","time":"2026-11-03T02:00:00Z","tags":["incomplete"]}',
+      '{"message":"copy","id":"; rm -rf","time":"2026-11-04T02:00:00Z","tags":[]}',
+      '{"message":"copy","id":"cccc3333","time":"2026-10-30T02:00:00Z","tags":["\\u001b[2Jlatest"]}',
+      '{"message":"rebuild plan","copy":"aaaa1111"}',
+    ].join("\n"));
+    expect(copyChoices(lines)).toEqual([
+      { value: "bbbb2222", label: "2026-11-03 02:00 UTC (bbbb2222)", hint: "incomplete: something is missing from it" },
+      { value: "aaaa1111", label: "2026-11-01 02:00 UTC (aaaa1111)" },
+      { value: "cccc3333", label: "2026-10-30 02:00 UTC (cccc3333)", hint: "?[2Jlatest" },
+    ]);
+  });
+
+  it("shows text from the server or a state file without control characters", () => {
+    expect(printable("4.9 GiB\u001b[1A\r")).toBe("4.9 GiB?[1A?");
+    expect(shownDate("2026-11-14T09:05:00Z")).toBe("2026-11-14 09:05 UTC");
+    expect(shownDate("not a date\u0007")).toBe("not a date?");
   });
 });

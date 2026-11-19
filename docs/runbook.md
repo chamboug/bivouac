@@ -29,16 +29,23 @@ in the instance repo's operations log.
 - Docker and Node LTS (see `.nvmrc`). Butane, SOPS and the image upload tool
   run in containers; nothing else is installed.
 - This repo, built: `npm ci && npm run build`.
-- Credentials in `~/.config/bivouac/`, one value per file, mode 600, typed by
-  the owner with `read -s` so they never show on screen or in the shell
-  history:
+- Credentials in `~/.config/bivouac/`, one value per file, mode 600 (D93).
+  **`bivy` asks for each one itself** the first time a command needs it, with
+  hidden input, and writes the file; the next commands read it there. Delete
+  the file to type a value again. A script (or Claude) is never asked: the
+  command stops and says which file is missing. The age key stays in
+  `~/.config/sops/age/keys.txt`, where SOPS reads it; on a computer without
+  it, `bivy rebuild` lets the owner paste it and checks it is the instance's.
+- Values only the manual steps below use (the OVH keys, until `bivy` asks for
+  them; the temporary upload token of section 4) are typed the same way by
+  hand, in a real terminal, so they never show on screen or in the history:
 
   ```bash
   mkdir -p ~/.config/bivouac && chmod 700 ~/.config/bivouac
   ```
 
   ```bash
-  for n in hetzner-token ovh-application-key ovh-application-secret ovh-consumer-key; do read -rs "v?$n : "; echo; (umask 077; printf '%s' "$v" > ~/.config/bivouac/$n); done; unset v; ls -l ~/.config/bivouac
+  for n in ovh-application-key ovh-application-secret ovh-consumer-key; do read -rs "v?$n : "; echo; (umask 077; printf '%s' "$v" > ~/.config/bivouac/$n); done; unset v; ls -l ~/.config/bivouac
   ```
 
   (`read -rs "v?prompt"` is zsh syntax, the default shell on macOS.)
@@ -156,8 +163,8 @@ architecture.
 3. **A temporary token.** The tool receives a token that can do anything in
    the project (Hetzner tokens cannot be narrowed). The owner creates a
    dedicated Read & Write token in the console (Security → API tokens), stores
-   it in `~/.config/bivouac/hetzner-token-upload` with the `read -s` command of
-   section 0 (in a real terminal), and deletes it once the snapshot exists.
+   it in `~/.config/bivouac/hetzner-token-upload` with the hidden-input command
+   of section 0 (in a real terminal), and deletes it once the snapshot exists.
 
 4. **Protect what exists (consent)**, so that a mistaken deletion fails:
    `hc /servers/<id>/actions/change_protection -X POST -d '{"delete": true, "rebuild": true}'`
@@ -746,12 +753,13 @@ before the prod phase, then every 3 months with the app check of section 13.
 It never touches the real server, its IPs, the DNS, or the backup repository
 other than to read. Cost: a CX23 is about €0.01 an hour, plus a temporary IPv4.
 
-**Before**: a nightly copy that succeeded (section 12); the Hetzner token in
-`~/.config/bivouac/hetzner-token`; and a **temporary GitHub token** typed into
-`~/.config/bivouac/github-rebuild-token` (the command prints its pre-filled
-creation link: one day, "Administration: write", only the instance repo).
-That permission can also delete the repo: delete the token as soon as the test
-is over. The test's deploy key is deleted with it (GitHub docs).
+**Before**: a nightly copy that succeeded (section 12). `bivy` asks, at the
+start and before renting anything, for what it lacks: the Hetzner token, and a
+**temporary GitHub token** (it prints the pre-filled creation link: one day,
+"Administration: write", only the instance repo, kept in
+`~/.config/bivouac/github-rebuild-token`). That permission can also delete the
+repo: the end summary says to delete the token on GitHub, and `bivy` deletes
+its own copy. The test's deploy key is deleted with it (GitHub docs).
 
 **Apps that act on their own** run on the test server too, on a copy of
 02:00 (D91's note of 15 November 2026). Before a test, look in each app for
@@ -763,6 +771,18 @@ known ones.
 ```bash
 bivy rebuild --test <instance-dir> --ssh-key ~/.ssh/<key>
 ```
+
+**In a terminal, it asks** (D93), each question with the arrow keys, the
+recommended answer first: what to do with an unfinished test (carry on,
+delete what it created, quit); where the test server goes (a CX23 where one
+can be ordered first, with the hourly price); which data comes back (the
+latest nightly copy, or an older one chosen from the list once the server can
+read the backups); then whether to rent the server now. The age key is found
+before that. Each step is then one sentence with a spinner, and the end says
+what is left to do. **Without a terminal** (a script, Claude), nothing is
+asked: `--location`, `--server-type`, `--snapshot <id>` and `--yes` answer,
+and the defaults are the CX23 where it can be ordered and the latest copy; an
+unfinished test is carried on, or deleted with `--cleanup`.
 
 `bivy`'s SSH reads neither `~/.ssh/config` nor the system's files, and never
 asks for anything (`BatchMode`): a key with a passphrase must already be in
@@ -833,30 +853,46 @@ bivy rebuild --plan <instance-dir> --ssh-key ~/.ssh/<key>   # only reads
 bivy rebuild <instance-dir> --ssh-key ~/.ssh/<key>
 ```
 
+In a terminal, every choice below is a question with the arrow keys (D93);
+the flag in brackets answers it without one. The typed confirmation has no
+flag: only a person at a terminal can give it.
+
 1. The plan: in place if the server `bivouac` exists, otherwise a new server
-   on the unassigned Primary IPs (`--server-type` if no CX23 can be ordered
-   there; another location means new IPs and a DNS change, by hand). It stops
-   on anything odd: DNS not pointing to the Primary IPv4, an IP with
-   `auto_delete`, no firewall, a lock or a marker on the old server.
-2. The owner types the platform's domain.
-3. A fresh backup on the old server; nothing is erased if it fails. If the old
-   server is gone: `--without-fresh-backup` (what was written since its last
-   nightly copy is lost; refused while the platform still answers).
-4. Pocket ID's signing keys recorded; protection lifted, Hetzner's `rebuild`
+   on the unassigned Primary IPs. If no CX23 can be ordered there, it asks
+   which type among those that can (`--server-type`); another location means
+   new IPs and a DNS change, by hand. It stops on anything odd: DNS not
+   pointing to the Primary IPv4, an IP with `auto_delete`, no firewall, a lock
+   or a marker on the old server. Questions are only asked when nothing else
+   stops it.
+2. If the old server does not answer, no fresh backup can be made: it asks
+   whether to stop (recommended) or accept losing what was written since its
+   last nightly copy (`--without-fresh-backup`; refused while the platform
+   still answers).
+3. Which data comes back: the copy made just before erasing, or an older one
+   chosen from the list once the server can read the backups (`--snapshot
+   <id>`); everything written since an older copy is lost.
+4. The age key: from `~/.config/sops/age/keys.txt` (or `--age-key`), or
+   pasted from the password manager, checked against `.sops.yaml` and kept
+   only if the owner says so. Found **before** anything is erased.
+5. The owner types the platform's domain.
+6. A fresh backup on the old server; nothing is erased if it fails.
+7. Pocket ID's signing keys recorded; protection lifted, Hetzner's `rebuild`
    (or a new server), protection put back; the platform's `known_hosts` is
    backed up next to it (`known_hosts.before-rebuild-<run>`).
-5. Host key swap, marker `{"mode":"rebuild"}`, then **the owner adds the
+8. Host key swap, marker `{"mode":"rebuild"}`, then **the owner adds the
    deploy key** it prints, at the link it gives, "Allow write access"
    unchecked; it waits, then checks GitHub refuses any write.
-6. age key, `restore-platform`, Pocket ID and the apps; checks on the real
+9. age key, `restore-platform`, Pocket ID and the apps; checks on the real
    names with real certificates (same signing keys as before, each app
    healthy); the marker removed.
-7. Afterwards: remove the **old** deploy key on GitHub (D30); check the next
-   night's backup (the first one waits for it, D74).
+10. The end summary says what is left: remove the **old** deploy key on
+    GitHub (D30); check the next night's backup (the first one waits for it,
+    D74).
 
-Interrupted: run the same command again. Before the erase, it starts over
-with a new plan, confirmation and backup (`--abandon` forgets it); after,
-it carries on and never sends the rebuild twice.
+Interrupted: run the same command again. Before the erase, it asks whether
+to start over with a new plan, confirmation and backup, or forget it
+(`--abandon`, which also puts the server's protection back if a kill left it
+lifted); after, it carries on and never sends the rebuild twice.
 
 ## 17. The status page (D96)
 

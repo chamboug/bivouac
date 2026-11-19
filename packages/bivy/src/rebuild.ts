@@ -8,6 +8,7 @@ import { Hetzner, orderableTypes, type FirewallRule, type Image, type Labels } f
 import { HOST_KEY_PATH, keyPart, withHostKey, type HostKeyPair } from "./hostkey.js";
 import { buildButane, compileButane, firstAddress } from "./ignition.js";
 import type { Remote } from "./remote.js";
+import { sentenceFor, type Choice, type Guide, type Progress } from "./guide.js";
 
 /**
  * `bivy rebuild --test` (D91): a temporary copy of the platform, rebuilt
@@ -42,6 +43,10 @@ export interface RunState {
   hostKey?: string;
   done: string[];
   timings: Record<string, number>;
+  /** The backup copy to bring back, when it is not the latest nightly one. */
+  snapshot?: string;
+  /** The owner wants an older copy, to choose from the list once the server can read the backups. */
+  olderCopy?: boolean;
 }
 
 export interface TestState extends RunState {
@@ -57,7 +62,7 @@ export interface TestState extends RunState {
 }
 
 /** What the steps shared by a test and a real rebuild need. */
-export type CommonDependencies = Pick<RebuildDependencies, "remote" | "scanHostKey" | "ageKey" | "stateFile" | "knownHosts" | "log" | "sleep" | "now">;
+export type CommonDependencies = Pick<RebuildDependencies, "remote" | "scanHostKey" | "ageKey" | "stateFile" | "knownHosts" | "log" | "sleep" | "now" | "guide" | "progress" | "prepareAgeKey">;
 
 export interface RebuildDependencies {
   /** The instance repo, read and validated (by default from the directory given). */
@@ -75,6 +80,12 @@ export interface RebuildDependencies {
   ignition: (ipv6: string) => string;
   /** The age key's content, read only when it is placed. */
   ageKey: () => Buffer;
+  /** Finds the age key before anything is created, asking for it if need be: a wrong key is caught early. */
+  prepareAgeKey?: () => Promise<void>;
+  /** Present when a person is at the terminal: the questions are asked. Absent, flags and defaults decide. */
+  guide?: Guide | undefined;
+  /** How the steps are shown; absent, one line per step. */
+  progress?: Progress | undefined;
   /** An HTTPS request to the test server, under a name of the platform. */
   probe: (host: string, address: string, path: string) => { status: number; body: string };
   /** The same request to the real platform, read only. */
@@ -91,6 +102,10 @@ export interface TestOptions {
   location?: string | undefined;
   serverType?: string | undefined;
   keep: boolean;
+  /** The backup copy to bring back (restic's ID); the latest nightly one by default. */
+  snapshot?: string | undefined;
+  /** Rent the server without asking (a person at the terminal is asked otherwise). */
+  yes?: boolean;
 }
 
 export class RebuildError extends Error {}
@@ -170,12 +185,60 @@ export function testFirewallRules(ipv4: string): FirewallRule[] {
 export const step = async (deps: CommonDependencies, state: RunState, name: string, work: () => Promise<void>) => {
   if (state.done.includes(name)) return;
   const begin = deps.now();
-  deps.log(`· ${name}`);
-  await work();
+  const sentence = sentenceFor(name);
+  if (deps.progress) deps.progress.start(sentence);
+  else deps.log(`· ${name}`);
+  try {
+    await work();
+  } catch (error) {
+    deps.progress?.fail(sentence);
+    throw error;
+  }
   state.done.push(name);
   state.timings[name] = Math.round((deps.now() - begin) / 1000);
+  deps.progress?.stop(sentence, state.timings[name]);
   saveState(deps.stateFile, state);
 };
+
+/** A restic snapshot ID, as the reconciler prints it and accepts it. */
+export function checkedSnapshot(id: string): string;
+export function checkedSnapshot(id: string | undefined): string | undefined;
+export function checkedSnapshot(id: string | undefined): string | undefined {
+  if (id === undefined) return undefined;
+  if (!SNAPSHOT_PATTERN.test(id)) throw new RebuildError(`'${id}' is not a backup copy ID (8 to 64 hexadecimal characters, as the list of copies shows them)`);
+  return id;
+}
+
+/** Text from the server or a state file, shown in the terminal: no control characters that could redraw it (rule 6 review). */
+export const printable = (value: unknown): string => String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, "?").slice(0, 200);
+
+/** A date from a state file, for a person; the raw text when it is not one. */
+export function shownDate(value: string): string {
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? printable(value) : `${new Date(time).toISOString().replace("T", " ").slice(0, 16)} UTC`;
+}
+
+/** Which data comes back: asked before anything is created or erased. */
+export async function askWhichCopy(guide: Guide, real: boolean): Promise<boolean> {
+  const older = await guide.select("Which data should come back?", [
+    { value: "latest", label: real ? "The latest copy, made just before erasing (recommended)" : "The latest nightly copy (recommended)" },
+    { value: "older", label: "An older copy", hint: real ? "everything written since that copy is LOST; you choose it from a list later" : "you choose it from a list once the test server is up" },
+  ]);
+  return older === "older";
+}
+
+/** The copies the server can read, newest first, as arrow-key choices. */
+export function copyChoices(lines: { message: string; [key: string]: unknown }[]): Choice<string>[] {
+  return lines
+    .filter((line) => line.message === "copy" && typeof line.id === "string" && SNAPSHOT_PATTERN.test(line.id) && typeof line.time === "string")
+    .map((line) => ({ id: line.id as string, time: line.time as string, tags: Array.isArray(line.tags) ? (line.tags as unknown[]).map(printable) : [] }))
+    .sort((a, b) => Date.parse(b.time) - Date.parse(a.time))
+    .map((copy) => {
+      const when = shownDate(copy.time).replace(/ UTC$/, "");
+      const hint = copy.tags.includes("incomplete") ? "incomplete: something is missing from it" : copy.tags.includes("pre-restore") ? "one app only, taken before a restore" : copy.tags.includes("nightly") ? undefined : copy.tags.join(", ") || undefined;
+      return { value: copy.id, label: `${when} UTC (${copy.id.slice(0, 8)})`, ...(hint ? { hint } : {}) };
+    });
+}
 
 /** Runs a command on the server and fails loudly, without ever printing what was sent to it. */
 export function must(remote: Remote, what: string, command: string, options: { input?: string | Buffer; timeoutMs?: number } = {}): string {
@@ -206,20 +269,48 @@ export function jsonLines(output: string): { message: string; [key: string]: unk
     });
 }
 
+/** Where a test server can go: the wanted type first, where it can be ordered, then the cheapest others. */
+export function testServerChoices(types: Parameters<typeof orderableTypes>[0], wanted: string, locations: string[]): Choice<string>[] {
+  const offers = locations.flatMap((location) => orderableTypes(types, location, MINIMUM).map((type) => ({ location, ...type })));
+  const first = offers.filter((offer) => offer.name === wanted);
+  const others = offers.filter((offer) => offer.name !== wanted).sort((a, b) => a.hourly - b.hourly).slice(0, 6);
+  return [...first, ...others].map((offer, index) => ({
+    value: `${offer.location}/${offer.name}`,
+    label: `${offer.name} in ${offer.location} (${LOCATION_NAMES[offer.location] ?? offer.location}), €${offer.hourly}/hour${index === 0 ? " (recommended)" : ""}`,
+  }));
+}
+
+const LOCATION_NAMES: Record<string, string> = { fsn1: "Falkenstein", nbg1: "Nuremberg", hel1: "Helsinki" };
+
 /** Chooses where the test server goes, and records it before anything is created. */
 async function newState(deps: RebuildDependencies, options: TestOptions): Promise<TestState> {
-  const { hetzner } = deps;
+  const { hetzner, guide } = deps;
   (deps.instance ?? (() => instanceOf(options.root)))();
+  const snapshot = checkedSnapshot(options.snapshot);
   const image = newestFlatcar(await hetzner.snapshots("os=flatcar"));
   const wanted = options.serverType ?? DEFAULT_SERVER_TYPE;
   const types = await hetzner.serverTypes();
   const locations = options.location ? [options.location] : LOCATIONS;
-  const choice = locations
+  let choice = locations
     .map((location) => ({ location, type: orderableTypes(types, location, MINIMUM).find((entry) => entry.name === wanted) }))
     .find((entry) => entry.type);
+  if (guide && !options.location && !options.serverType) {
+    // A person chooses, the type that can be ordered first (D93).
+    const choices = testServerChoices(types, wanted, locations);
+    if (choices.length === 0) throw new RebuildError(`no server type of ${MINIMUM.memory} GB or more can be ordered in ${locations.join(", ")}`);
+    const [location, name] = (await guide.select("Where should the test server go?", choices)).split("/") as [string, string];
+    choice = { location, type: orderableTypes(types, location, MINIMUM).find((entry) => entry.name === name) };
+  }
   if (!choice?.type) {
     const offers = locations.map((location) => `${location}: ${orderableTypes(types, location, MINIMUM).slice(0, 3).map((entry) => `${entry.name} €${entry.hourly}/h`).join(", ") || "none"}`);
     throw new RebuildError(`${wanted} cannot be ordered in ${locations.join(", ")}; choose --server-type and --location among:\n  ${offers.join("\n  ")}`);
+  }
+  const olderCopy = !snapshot && guide ? await askWhichCopy(guide, false) : false;
+  // A wrong age key is found now, not after renting a server.
+  await deps.prepareAgeKey?.();
+  if (guide && !options.yes) {
+    const go = await guide.confirm(`Rent a ${choice.type.name} in ${choice.location} now, at €${choice.type.hourly}/hour? The test takes about ten minutes, and the household's apps may send their notifications twice (D91).`);
+    if (!go) throw new RebuildError("not confirmed: nothing was rented");
   }
   const stamp = new Date(deps.now()).toISOString().replace(/[-:T]/g, "").slice(0, 12);
   const state: TestState = {
@@ -231,6 +322,8 @@ async function newState(deps: RebuildDependencies, options: TestOptions): Promis
     image: image.id,
     done: [],
     timings: {},
+    ...(snapshot ? { snapshot } : {}),
+    ...(olderCopy ? { olderCopy } : {}),
   };
   saveState(deps.stateFile, state);
   deps.log(`Test ${state.run}: ${state.serverType} in ${state.location} (€${state.hourly}/hour incl. VAT), Flatcar ${image.labels["flatcar-version"]}.`);
@@ -409,10 +502,18 @@ export async function bringBack(deps: CommonDependencies, state: RunState, how: 
     if (others.some((name) => name !== "bivouac-postgres")) throw new RebuildError(`containers started before the data was back: ${others.join(", ")}`);
   });
   await step(deps, state, "restore the latest nightly copy", async () => {
-    const plan = jsonLines(must(remote, "restore-platform (plan)", `${RECONCILER} restore-platform`, { timeoutMs: 10 * 60_000 }));
+    if (!state.snapshot && state.olderCopy) {
+      if (!deps.guide) throw new RebuildError("an older copy was asked for, and nobody is at a terminal to choose it: run again in a terminal, or with --snapshot <id>");
+      const choices = copyChoices(jsonLines(must(remote, "listing the backup copies", `${RECONCILER} restore-platform --list`, { timeoutMs: 10 * 60_000 })));
+      if (choices.length === 0) throw new RebuildError("the server lists no backup copy");
+      state.snapshot = checkedSnapshot(await deps.guide.select("Which copy should come back?", choices));
+      saveState(deps.stateFile, state);
+    }
+    const chosen = checkedSnapshot(state.snapshot);
+    const plan = jsonLines(must(remote, "restore-platform (plan)", `${RECONCILER} restore-platform${chosen ? ` --snapshot ${chosen}` : ""}`, { timeoutMs: 10 * 60_000 }));
     const described = plan.find((line) => line.message === "rebuild plan");
     if (!described || typeof described.copy !== "string" || !SNAPSHOT_PATTERN.test(described.copy)) throw new RebuildError(`restore-platform gave no plan: ${JSON.stringify(plan.at(-1))}`);
-    deps.log(`  copy ${described.copy} taken ${String(described.taken)}, ${String(described.size)}`);
+    deps.log(`  copy ${described.copy} taken ${printable(described.taken)}, ${printable(described.size)}`);
     const result = remote.run(`${RECONCILER} restore-platform --yes --snapshot ${described.copy}`, { timeoutMs: 120 * 60_000 });
     const lines = jsonLines(result.stdout);
     for (const line of lines) if (line.message !== "rebuild plan") deps.log(`  ${JSON.stringify(line)}`);
@@ -538,8 +639,26 @@ export async function cleanup(deps: RebuildDependencies, githubToken: boolean): 
   return problems;
 }
 
+/** What to do with a test that did not finish: asked when a person is at the terminal, carried on otherwise. */
+export async function unfinishedTest(deps: Pick<RebuildDependencies, "stateFile" | "guide">): Promise<"carry on" | "clean up" | "quit" | "none"> {
+  const state = readState(deps.stateFile);
+  if (!state) return "none";
+  if (!deps.guide) return "carry on";
+  const started = shownDate(state.startedAt);
+  return deps.guide.select(`A test started on ${started} did not finish (${state.done.length} steps done). Its server may still be running, billed.`, [
+    { value: "carry on", label: "Carry on from where it stopped (recommended)" },
+    { value: "clean up", label: "Delete what it created", hint: "the server, its addresses, its firewall and its deploy key" },
+    { value: "quit", label: "Quit, and decide later" },
+  ]);
+}
+
 export async function rebuildTest(deps: RebuildDependencies, options: TestOptions): Promise<TestState> {
-  const state = readState(deps.stateFile) ?? (await newState(deps, options));
+  const found = readState(deps.stateFile);
+  if (found && options.snapshot && checkedSnapshot(options.snapshot) !== found.snapshot) {
+    throw new RebuildError(`this test already started with ${found.snapshot ? `copy ${found.snapshot}` : "the latest copy"}: carry on without --snapshot, or --cleanup first`);
+  }
+  if (found && !found.done.includes("age key")) await deps.prepareAgeKey?.();
+  const state = found ?? (await newState(deps, options));
   try {
     await create(deps, state);
   } catch (error) {
