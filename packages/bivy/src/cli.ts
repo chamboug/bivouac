@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +13,8 @@ import { newHostKey } from "./hostkey.js";
 import { RebuildError, cleanup, curlProbe, ignitionFor, instanceIdentity, rebuildTest } from "./rebuild.js";
 import { SshRemote, scanHostKey } from "./remote.js";
 import { checkoutProblems, rebuildReal } from "./rebuild-real.js";
+import { SshError, execCommand, serverAddress, splitAtDoubleDash, sshArguments } from "./ssh.js";
+import * as prompts from "@clack/prompts";
 import { resolve4 } from "node:dns/promises";
 import { createInterface } from "node:readline/promises";
 
@@ -21,6 +24,12 @@ Commands:
   validate [dir]              check an instance repo (manifests, keys, secrets, Butane, Caddyfile)
   ignition [dir] [-o file] [--ipv6 <address/64>]
                               print the server's Ignition config (JSON)
+
+  ssh [dir]                   open a shell on the server, as core
+  exec [app] [-- command...]  run a command in an app's container; with no
+                              command, a shell; with no app, choose it from a list
+      --instance <dir>        the instance repo (default: the current directory)
+      --ssh-key <file>        default ~/.ssh/id_ed25519
 
   rebuild [dir]               rebuild the real server from the latest nightly copy,
                               on the same IPs (D91). Erases the server: a decision
@@ -46,8 +55,10 @@ Commands:
 [dir] defaults to the current directory.`;
 
 async function main(argv: string[]): Promise<number> {
+  // What follows `--` belongs to the command run in a container, never to bivy.
+  const { own, command: inner } = splitAtDoubleDash(argv);
   const { positionals, values } = parseArgs({
-    args: argv,
+    args: own,
     allowPositionals: true,
     options: {
       output: { type: "string", short: "o" },
@@ -65,6 +76,7 @@ async function main(argv: string[]): Promise<number> {
       "age-key": { type: "string" },
       "hetzner-token": { type: "string" },
       "github-token": { type: "string" },
+      instance: { type: "string" },
     },
   });
   const [command, directory = "."] = positionals;
@@ -81,6 +93,10 @@ async function main(argv: string[]): Promise<number> {
       return ignition(root, values.output, values.ipv6);
     case "rebuild":
       return rebuild(root, values);
+    case "ssh":
+      return ssh(values.instance ? resolve(values.instance) : root, undefined, [], values["ssh-key"]);
+    case "exec":
+      return ssh(resolve(values.instance ?? "."), positionals[1] ?? null, inner, values["ssh-key"]);
     default:
       console.error(`Unknown command '${command}'.\n\n${USAGE}`);
       return 1;
@@ -162,6 +178,60 @@ function ignition(root: string, output: string | undefined, ipv6: string | undef
   } catch (error) {
     if (!(error instanceof IgnitionError)) throw error;
     console.error(error.message);
+    return 1;
+  }
+}
+
+/**
+ * `bivy ssh` (app undefined) and `bivy exec` (app given, or null to choose
+ * it): find the server and connect, with the platform's own known_hosts.
+ */
+async function ssh(root: string, app: string | null | undefined, command: string[], sshKey: string | undefined): Promise<number> {
+  const instance = loadInstance(root);
+  if (!instance.platform) {
+    console.error(`No valid platform.yml in ${root}: run bivy from the instance repo, or pass it (bivy ssh <dir>, bivy exec --instance <dir>).`);
+    return 1;
+  }
+  const tty = process.stdin.isTTY === true && process.stdout.isTTY === true;
+  const identity = sshKey ?? join(homedir(), ".ssh", "id_ed25519");
+  const knownHosts = config("known_hosts");
+  if (!existsSync(identity)) {
+    console.error(`No SSH key at ${identity}: pass the right one with --ssh-key <file>.`);
+    return 1;
+  }
+  if (!existsSync(knownHosts)) {
+    console.error(`No known host key for the platform in ${knownHosts}: without it, nothing proves the server is ours (runbook section 8).`);
+    return 1;
+  }
+
+  let remote: string | undefined;
+  if (app !== undefined) {
+    const names = instance.apps.map((entry) => entry.name).sort();
+    let chosen = app;
+    if (chosen === null) {
+      if (!tty) {
+        console.error(`Which app? bivy exec <app> -- <command>. Apps: ${names.join(", ") || "none"}.`);
+        return 1;
+      }
+      const answer = await prompts.select({ message: "Which app?", options: names.map((name) => ({ value: name, label: name })) });
+      if (prompts.isCancel(answer)) return 1;
+      chosen = answer;
+    }
+    if (!names.includes(chosen)) {
+      console.error(`No app '${chosen}' in this instance. Apps: ${names.join(", ") || "none"}.`);
+      return 1;
+    }
+    remote = execCommand(chosen, command, tty);
+  }
+
+  try {
+    const host = await serverAddress(instance.platform.domain, resolve4);
+    const result = spawnSync("ssh", sshArguments(host, identity, knownHosts, { tty, remote }), { stdio: "inherit" });
+    if (result.error) throw new SshError(`could not start ssh: ${result.error.message}`);
+    return result.status ?? 1;
+  } catch (error) {
+    if (!(error instanceof SshError)) throw error;
+    console.error(`✗ ${error.message}`);
     return 1;
   }
 }
