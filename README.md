@@ -7,19 +7,22 @@ A self-hosting platform for small apps, run as code: one server, Git as the
 source of truth, nightly off-site backups and one-command rebuilds. Its
 maintenance is meant to be rare, guided and never silent.
 
-The design, and the reason behind each choice, are in [`CLAUDE.md`](CLAUDE.md)
-and the [decision log](docs/decisions.md). Installing a server by hand is
-described in the [runbook](docs/runbook.md). The logo, colours and type are
+How it works is in the [architecture](docs/architecture.md), the reason behind
+each choice in the [decision log](docs/decisions.md), and the rules for working
+on it in [`CLAUDE.md`](CLAUDE.md). Procedures on a real server are in the
+[runbook](docs/runbook.md). The logo, colours and type are
 in [`docs/brand`](docs/brand/README.md).
 
 ## Layout
 
 - `packages/manifest`: schema of app and site manifests, and validation of an
   instance repo (shared by the CLI and the reconciler).
-- `packages/bivy`: the `bivy` CLI. For now: `bivy validate` and `bivy ignition`.
-- `packages/reconciler`: the reconciler that runs on the server. For now: it
-  follows the instance repo and writes the Caddyfile. Published as
-  `ghcr.io/chamboug/bivouac-reconciler:sha-<commit>`.
+- `packages/bivy`: the `bivy` CLI: `init`, `configure`, `rebuild [--test]`,
+  `restore`, `ssh`, `exec`, `validate`, `ignition`.
+- `packages/reconciler`: the reconciler that runs on the server: it follows the
+  instance repo, runs the base services and the apps, the nightly backups and
+  the restore test. Published as `ghcr.io/chamboug/bivouac-reconciler:sha-<commit>`.
+- `status-page/`: the platform's status page.
 - `template/`: the instance repo template.
 - `app-template/` and `app-layers/`: the app template and the shared sign-in
   and database code every app extends.
