@@ -267,7 +267,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 - **Revisit**: when an app opens to the general public, or the community outgrows help by hand.
 
 ### D38 — Lost machine, and secrets shown once
-- **Choice**: `bivy machine add` (*not built*) makes a key on a new machine and opens the PR adding it, removing a lost one. A lost Mac means rotating secrets, with consent. `bivy init` shows the age key and restic password once and waits until `stored` is typed. The only lockout: losing both GitHub access and the password manager.
+- **Choice**: `bivy machine add` (*not built*) makes a key on a new machine and opens the PR adding it, removing a lost one. A lost Mac means rotating secrets, with consent. Until it is built: runbook section 20. `bivy init` shows the age key and restic password once and waits until `stored` is typed. The only lockout: losing both GitHub access and the password manager.
 
 ### D39 — Low-cost rebuild test
 - **Choice**: `bivy rebuild --test` builds a temporary server billed by the hour, restores, checks, destroys everything, never touching the real IPs or DNS (D91). Before prod, then quarterly, with a reminder from the reconciler. **Rejected**: a permanent second VPS.

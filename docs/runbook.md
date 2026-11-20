@@ -509,7 +509,8 @@ Record everything done in the instance repo's operations log.
 ## 11. Rescue: no SSH key works any more (consent)
 
 For when nobody can log in as `core` (a wrong `ssh-keys.yml`, a lost
-machine, a broken key sync). Hetzner's rescue system boots a small Debian
+machine, a broken key sync). A lost machine alone usually needs only a new
+key pushed to Git (section 20); this is for when that does not work. Hetzner's rescue system boots a small Debian
 from the network; the server's disk is untouched and can be mounted. Tried
 on 8 November 2026 (D63). About 3 minutes of downtime, free.
 
@@ -1050,3 +1051,58 @@ changed by hand (sections 10 and 12).
 **Not yet run against real infrastructure** (19 November 2026): tested
 against fake APIs and a local Git repo only. A first real run is a decision
 of the owner's (an empty project, a test domain, a few cents).
+
+## 20. A lost or broken Mac (consent)
+
+`bivy machine add` is not built (D38); until it is, by hand. Two cases:
+**broken** (the disk is gone or unreadable) or **lost or stolen** (someone
+else may hold it). On the Mac live the two SSH keys allowed on the server,
+the age key, the Hetzner token, the OVH keys, the `gh` token and a GitHub SSH
+key. The server keeps running alone meanwhile: nothing here is urgent for
+it.
+
+**Lost or stolen: cut access first**, from any browser, before anything
+else. These give direct control, without decrypting anything:
+
+1. GitHub: delete the Mac's SSH key and its `gh` token, sign out the other
+   sessions. Whoever can write to the instance repo can add an SSH key to
+   the server (D12).
+2. Hetzner: delete the project's Read & Write token (Security → API tokens).
+3. OVH: revoke the platform's API keys (D49).
+4. Then the server's SSH keys, as in step 4 below, from the new machine.
+
+**Then, on the new machine** (both cases):
+
+1. **GitHub**: a new SSH key for `git`, added to the owner's account; clone
+   this repo and the instance repo; section 0 (Docker, Node, build).
+2. **age key** from the password manager into
+   `~/.config/sops/age/keys.txt` (mode 600, directory 700), typed by the owner
+   in a real terminal.
+3. **New SSH keys**: the owner's (`ssh-keygen -t ed25519 -C <machine>`) and
+   Claude's (section 0), each named after the new machine.
+4. **`ssh-keys.yml`** (consent, high risk): add the two new public keys,
+   remove the old machine's, `bivy validate`, push. The reconciler writes the
+   list within a minute; the host script applies it and refuses an empty or
+   malformed list, which raises an alert and leaves the old list in place
+   (D63). Nothing pushed yet (no git on the new machine)? The file can be
+   edited on github.com.
+5. **Host key**: rebuild `~/.config/bivouac/known_hosts` from the Hetzner
+   console, never by accepting the key blindly (section 8, step 1). Then log
+   in and check `~core/.ssh/authorized_keys` holds the new keys only. If no
+   key gets in, section 11.
+6. **Tokens**: a new Hetzner token and new OVH keys with the same rights
+   (section 0, D49); delete the old ones if not done. `bivy` asks for each
+   credential file the first time it needs it.
+
+**Lost or stolen: the secrets behind the age key** (decision of the owner).
+With the age key and a clone of the instance repo, a holder of the Mac can
+read every SOPS file: the master secret (and so every derived secret, D14),
+Pocket ID's keys, the restic password, the mail password, the GHCR token,
+the apps' own secrets. With FileVault on and the Mac off or locked, its disk
+cannot be read without the session password. The owner chooses between
+accepting that risk, stated, and rotating; there is no tested rotation
+procedure yet: a Claude session plans it, starting with what can be reached
+from outside (the mail password, the GHCR token, the restic password and its
+bucket key, the apps' session secrets), with consent at each step.
+
+Record what was done in the operations log.
