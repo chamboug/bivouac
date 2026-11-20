@@ -660,8 +660,21 @@ Done by Claude in the session of the quarterly reminder (D44, D81). Apps are lef
 
 Built with D90. Brings **one** app's database and volumes back to a nightly
 copy, without touching the other apps, Pocket ID or the reconciler's passes.
-Run on the server by the reconciler itself, through `docker exec` (the
-`restore-app` command of `main.js`):
+
+**The usual way, from the Mac** (D101), in the instance repo:
+
+```bash
+bivy restore            # asks the app, the copy and the part, shows the plan, then asks to type the app's name
+bivy restore biblio --plan                   # only reads: what it would do, the disk needed and free
+bivy restore biblio --snapshot <id> --only database
+```
+
+It does everything below (the plan first, then the exact copy of the plan,
+the disk check) and ends with the command that undoes it. The confirmation
+is typed in a terminal: Claude only runs `--plan`.
+
+**By hand on the server**, run by the reconciler itself through
+`docker exec` (the `restore-app` command of `main.js`):
 
 ```bash
 r=(docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-app)
@@ -673,10 +686,12 @@ r=(docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-
 ```
 
 Without `--yes`, nothing is changed. It is a data operation: the owner's
-consent first, saying which copy and what will be lost. **Check the free disk
-first** (`df -h /`): the command does not (D94). It needs about three times
-the database's size (safety dump, restored dump, the new database beside the
-live one), and the replaced database is kept for good. After an interrupted
+consent first, saying which copy and what will be lost. The plan (without
+`--yes`) gives the disk needed and free, and a run with `--yes` refuses when
+it is short (D101): about three times the database's size (safety dump,
+restored dump, the new database beside the live one) plus 1 GiB. Volumes
+are not counted: bringing back an emptied volume needs up to its size again,
+so check `df -h /` for a large one. The replaced database is kept for good. After an interrupted
 restore, only a restore of **all** the app's data (no `--only`) starts it
 again (D94). Run it without `--yes`
 first, then with `--yes` **and `--snapshot <id>`** of the copy it named: a
@@ -732,8 +747,7 @@ the error. Each app has its own mark (`backup/restore-interrupted-<app>.json`).
 until the owner asks to drop it (`DROP DATABASE`, consent). `pre-restore`
 copies are never removed by the weekly clean-up (only `nightly` and
 `incomplete` ones are); remove them by hand when no longer wanted, with
-consent. The restore uses up to the dump's size again on disk; check `df`
-first for a large database.
+consent. The kept database holds the database's size on disk until then.
 
 **Rehearsing it** (done 13 November 2026, D90): with a throwaway app
 `<app>-preview` (a real app's image, one group, its own volume), never with a

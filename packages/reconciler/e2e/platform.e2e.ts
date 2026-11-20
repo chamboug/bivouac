@@ -3,6 +3,7 @@
  * run in order and share one platform: each step builds on the previous one,
  * like passes on a real server.
  */
+import { spawn } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -27,6 +28,7 @@ import {
   RECONCILER_NEWER,
   RECONCILER_RUNNING,
   STATUS_IMAGE,
+  startIdleReconciler,
   callApi,
   startReconciler,
   readStateFile,
@@ -660,6 +662,14 @@ describe("k. restoring one app's data (runbook section 14)", () => {
     const pass = restore("recettes");
     expect(pass.status).toBe(0);
     expect(messages(pass)).toEqual(expect.arrayContaining(["restore plan", "nothing changed: add --yes to restore"]));
+    // What bivy restore reads to guide a person (D101).
+    const plan = pass.logs.find((line) => line.message === "restore plan") as Record<string, unknown>;
+    expect(plan).toMatchObject({ restores: { database: true }, interrupted: false });
+    expect(plan.busy).toBeUndefined();
+    expect(plan.databaseBytes).toBeGreaterThan(0);
+    expect(plan.neededBytes).toBeGreaterThan(3 * (plan.databaseBytes as number));
+    expect(plan.freeBytes).toBeGreaterThan(0);
+    expect(Date.parse(plan.deployedAt as string)).toBeGreaterThan(0);
     expect(titles()).toBe("written since");
     expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
   });
@@ -776,6 +786,36 @@ describe("k. restoring one app's data (runbook section 14)", () => {
     expect(restore("recettes", "--yes").status).toBe(0);
     expect(readStateFile(platform, "backup/restore-interrupted-recettes.json")).toBeUndefined();
     expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
+  });
+
+  it("carries on to its end when the client that started it goes away (D101)", async () => {
+    // bivy restore runs it with docker exec over SSH: a lost connection kills that client, never the restore.
+    owner("DELETE FROM public.books; INSERT INTO public.books VALUES ('written since')");
+    startIdleReconciler(platform, env());
+    try {
+      const client = spawn("docker", ["exec", "bivouac-reconciler", "node", "packages/reconciler/dist/main.js", "restore-app", "recettes", "--yes"], { stdio: ["ignore", "pipe", "pipe"] });
+      await new Promise<void>((resolve, reject) => {
+        let output = "";
+        client.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+          output += chunk;
+          if (output.includes("safety copy sent")) {
+            client.kill("SIGKILL");
+            resolve();
+          }
+        });
+        client.on("close", () => reject(new Error(`the restore ended before its safety copy: ${output}`)));
+      });
+      const deadline = Date.now() + 180_000;
+      // The lock is released just before the app is started again.
+      const over = () => readStateFile(platform, "backup/lock.json") === undefined && inspect<ContainerState>("bivouac-app-recettes").State.Running;
+      while (!over() && Date.now() < deadline) await new Promise((wait) => setTimeout(wait, 1000));
+      expect(readStateFile(platform, "backup/lock.json")).toBeUndefined();
+      expect(titles()).toBe("kept");
+      expect(readStateFile(platform, "backup/restore-interrupted-recettes.json")).toBeUndefined();
+      expect(inspect<ContainerState>("bivouac-app-recettes").State.Running).toBe(true);
+    } finally {
+      docker("rm", "--force", "bivouac-reconciler");
+    }
   });
 });
 

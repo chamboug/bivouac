@@ -237,6 +237,17 @@ export function runOnce(
   return { status: result.status, logs };
 }
 
+/**
+ * A reconciler container that does nothing on its own, for commands run in it
+ * with `docker exec`, as bivy restore does on the server (D101).
+ */
+export function startIdleReconciler(platform: Platform, env: Record<string, string> = {}): void {
+  docker("run", "--detach",
+    ...reconcilerOptions(platform, platform.ageKey, ""),
+    ...Object.entries(env).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
+    "--entrypoint", "sleep", RECONCILER_IMAGE, "infinity");
+}
+
 /** Starts the reconciler in the background, passing every 10 s (local platform). */
 export function startReconciler(platform: Platform, ports: string): void {
   docker("run", "--detach", "--restart", "unless-stopped",

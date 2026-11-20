@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createInterface } from "node:readline";
 
 /**
  * SSH to a server through the system's `ssh`, always with a known_hosts file
@@ -54,6 +55,25 @@ export class SshRemote implements Remote {
     if (result.error) throw new RemoteError(`ssh to ${this.host} failed: ${result.error.message}`);
     return { status: result.status ?? 255, stdout: result.stdout, stderr: result.stderr };
   }
+}
+
+/**
+ * Runs a command on the server and gives each line of its output as it
+ * comes. The ssh process gets its own process group and no standard input:
+ * Ctrl-C at the keyboard never reaches it, so a long job on the server is
+ * not cut short from here. Status 255 when ssh failed or the connection was lost.
+ */
+export function streamSsh(host: string, identity: string, knownHosts: string, command: string, onLine: (line: string) => void): Promise<{ status: number; stderr: string }> {
+  return new Promise((done) => {
+    const child = spawn("ssh", [...sshOptions(identity, knownHosts), `core@${host}`, command], { stdio: ["ignore", "pipe", "pipe"], detached: true });
+    let stderr = "";
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+      stderr = (stderr + chunk).slice(-8192);
+    });
+    createInterface({ input: child.stdout }).on("line", onLine);
+    child.on("error", (error) => done({ status: 255, stderr: error.message }));
+    child.on("close", (code) => done({ status: code ?? 255, stderr }));
+  });
 }
 
 /** The server's ED25519 host key, as `ssh-keyscan` sees it, and its SHA256 fingerprint. */

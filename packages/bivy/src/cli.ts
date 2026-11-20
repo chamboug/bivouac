@@ -14,6 +14,9 @@ import { type AskSecret, CredentialError, credential } from "./credentials.js";
 import { resolve4 } from "node:dns/promises";
 import { INIT_USAGE, initCli } from "./init-cli.js";
 import { printBanner } from "./banner.js";
+import { SshRemote, streamSsh } from "./remote.js";
+import { restoreCommand } from "./restore.js";
+import { TerminalProgress, interactive, terminalGuide } from "./terminal.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -25,6 +28,17 @@ Commands:
   ssh [dir]                   open a shell on the server, as core
   exec [app] [-- command...]  run a command in an app's container; with no
                               command, a shell; with no app, choose it from a list
+      --instance <dir>        the instance repo (default: the current directory)
+      --ssh-key <file>        default ~/.ssh/id_ed25519
+
+  restore [app]               bring one app's data back to a backup copy, on the
+                              running server (D101). Replaces live data: confirmed
+                              by typing the app's name in a terminal. In a
+                              terminal, it asks what the options below say.
+      --plan                  only read, and say what it would do
+      --snapshot <id>         this copy (default: the latest nightly one)
+      --before <date>         the latest nightly copy at or before that day (UTC)
+      --only database|files   one part only (default: both)
       --instance <dir>        the instance repo (default: the current directory)
       --ssh-key <file>        default ~/.ssh/id_ed25519
 
@@ -85,6 +99,8 @@ async function main(argv: string[]): Promise<number> {
       "hetzner-token": { type: "string" },
       "github-token": { type: "string" },
       snapshot: { type: "string" },
+      before: { type: "string" },
+      only: { type: "string" },
       yes: { type: "boolean" },
       instance: { type: "string" },
     },
@@ -108,6 +124,8 @@ async function main(argv: string[]): Promise<number> {
       return ssh(values.instance ? resolve(values.instance) : root, undefined, [], values["ssh-key"]);
     case "exec":
       return ssh(resolve(values.instance ?? "."), positionals[1] ?? null, inner, values["ssh-key"]);
+    case "restore":
+      return restore(resolve(values.instance ?? "."), positionals[1], values);
     default:
       console.error(`Unknown command '${command}'.\n\n${USAGE}`);
       return 1;
@@ -245,6 +263,66 @@ async function ssh(root: string, app: string | null | undefined, command: string
     console.error(`✗ ${error.message}`);
     return 1;
   }
+}
+
+/** `bivy restore [app]` (D101): the server found as for bivy exec, then restore.ts. */
+async function restore(root: string, app: string | undefined, values: Record<string, string | boolean | undefined>): Promise<number> {
+  const instance = loadInstance(root);
+  if (!instance.platform) {
+    console.error(`No valid platform.yml in ${root}: run bivy from the instance repo, or pass --instance <dir>.`);
+    return 1;
+  }
+  const text = (name: string) => (typeof values[name] === "string" ? (values[name] as string) : undefined);
+  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
+  const knownHosts = config("known_hosts");
+  if (!existsSync(identity)) {
+    console.error(`No SSH key at ${identity}: pass the right one with --ssh-key <file>.`);
+    return 1;
+  }
+  if (!existsSync(knownHosts)) {
+    console.error(`No known host key for the platform in ${knownHosts}: without it, nothing proves the server is ours (runbook section 8).`);
+    return 1;
+  }
+  let host: string;
+  try {
+    host = await serverAddress(instance.platform.domain, resolve4);
+  } catch (error) {
+    if (!(error instanceof SshError)) throw error;
+    console.error(`✗ ${error.message}`);
+    return 1;
+  }
+  const tty = interactive();
+  const progress = new TerminalProgress(tty);
+  const ssh = new SshRemote(host, identity, knownHosts);
+  return restoreCommand(
+    {
+      apps: instance.apps,
+      progress,
+      log: progress.log,
+      guide: tty ? progress.around(terminalGuide) : undefined,
+      typed: tty
+        ? async (message) => {
+            progress.pause();
+            const answer = await prompts.text({ message });
+            return prompts.isCancel(answer) ? "" : (answer ?? "");
+          }
+        : undefined,
+      remote: {
+        run: (command) => ssh.run(command, { timeoutMs: 15 * 60_000 }),
+        stream: async (command, onLine) => {
+          // Ctrl-C: said, never acted on. The restore runs on the server, whose ssh is out of the keyboard's reach.
+          const refuse = () => progress.log("  A restore cannot be stopped halfway: it carries on on the server. Wait for its end.");
+          process.on("SIGINT", refuse);
+          try {
+            return await streamSsh(host, identity, knownHosts, command, onLine);
+          } finally {
+            process.off("SIGINT", refuse);
+          }
+        },
+      },
+    },
+    { app, snapshot: text("snapshot"), before: text("before"), only: text("only"), plan: values.plan === true },
+  );
 }
 
 const config = (file: string) => join(homedir(), ".config", "bivouac", file);

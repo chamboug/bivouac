@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { acquireLock, appBeingRestored, clearStaleLock, interruptedRestore, markInterrupted, readLock, releaseLock } from "./lock.js";
-import { chooseSnapshot, parseRestoreArgs, previousName, restoringName, type Snapshot } from "./restore.js";
+import { chooseSnapshot, diskNeeded, freeDisk, parseRestoreArgs, previousName, restoringName, type Snapshot } from "./restore.js";
 
 describe("restore-app arguments", () => {
   it("only says what it would do without --yes", () => {
@@ -49,6 +49,20 @@ describe("choosing the copy", () => {
     expect(chooseSnapshot(copies, { snapshot: "cccc3333" }).short_id).toBe("cccc3333");
     expect(chooseSnapshot(copies, { snapshot: "dddd4444ffff" }).short_id).toBe("dddd4444");
     expect(() => chooseSnapshot(copies, { snapshot: "eeee5555" })).toThrow(/no copy/);
+  });
+});
+
+describe("disk a restore needs", () => {
+  const GIB = 1024 ** 3;
+
+  it("counts the safety dump, and the restored dump and new database when the database is restored", () => {
+    expect(diskNeeded(2 * GIB, true)).toBe(7 * GIB);
+    expect(diskNeeded(2 * GIB, false)).toBe(3 * GIB);
+    expect(diskNeeded(0, false)).toBe(GIB);
+  });
+
+  it("reads the free space of a directory's disk", () => {
+    expect(freeDisk(tmpdir())).toBeGreaterThan(0);
   });
 });
 

@@ -1,12 +1,12 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statfsSync } from "node:fs";
 import { join } from "node:path";
 import { PLATFORM_CONTAINERS, PLATFORM_IMAGES, PLATFORM_NETWORKS, appContainerName, type AppManifest } from "@bivouac/manifest";
 import { checkHealth } from "./apps.js";
 import { BACKUP_CONTAINER, RESTIC_HOST, checked, dumpDatabase, lastLine, runOneOff, runRestic, type BackupPlan } from "./backup.js";
 import { joinPlatformNetworks, postgresServer, type Runtime } from "./base.js";
 import { waitFor } from "./containers.js";
-import { acquireLock, interruptedFile, interruptedRestore, markInterrupted, releaseLock } from "./lock.js";
-import { createRestoreTarget, databaseExists, databaseName, swapDatabases } from "./postgres.js";
+import { acquireLock, interruptedFile, interruptedRestore, markInterrupted, readLock, releaseLock } from "./lock.js";
+import { createRestoreTarget, databaseExists, databaseName, databasesBytes, swapDatabases } from "./postgres.js";
 import { deriveSecret, type PlatformSecrets } from "./secrets.js";
 
 /**
@@ -114,6 +114,31 @@ export function chooseSnapshot(snapshots: Snapshot[], options: Pick<RestoreOptio
   return latest;
 }
 
+const GIB = 1024 ** 3;
+const gib = (bytes: number) => `${(bytes / GIB).toFixed(1)} GiB`;
+
+/**
+ * Disk a restore needs (runbook section 14): the safety dump of the current
+ * database always; when the database is restored, also the restored dump and
+ * the new database beside the live one. The database's size is an upper
+ * bound for its dump. One GiB more for restic's cache and the volumes' changes.
+ */
+export function diskNeeded(databaseBytes: number, restoresDatabase: boolean): number {
+  return databaseBytes * (restoresDatabase ? 3 : 1) + GIB;
+}
+
+/**
+ * Free space for an unprivileged writer (Postgres is not root), on the disk of
+ * the state directory. On Flatcar, /var/lib/bivouac and /var/lib/docker
+ * (Docker's volumes, Postgres) are both on the ROOT partition: checked on the
+ * server, 20 Nov. 2026 (D101). Volumes are not counted: restoring an emptied
+ * volume needs up to its size again (runbook section 14).
+ */
+export function freeDisk(path: string): number {
+  const stats = statfsSync(path);
+  return stats.bavail * stats.bsize;
+}
+
 /** Postgres names are at most 63 bytes; app names at most 40 (manifest schema). */
 export const restoringName = (database: string) => `bivouac_restoring_${database}`;
 export function previousName(database: string, now: Date): string {
@@ -186,19 +211,41 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
   if (missing.length > 0) throw new Error(`copy ${chosen.short_id} does not hold ${missing.join(", ")}: choose a later one`);
   const now = (context.now ?? (() => new Date()))();
   const previous = database ? previousName(database, now) : undefined;
+  const stateDir = runtime.stateDir;
+  const server = postgresServer(secrets);
+  const container = appContainerName(app.name);
+  // What a person (or bivy restore) needs to decide, read before anything changes.
+  // Postgres is reached on the platform's network, which a one-off run joins first.
+  await joinPlatformNetworks(runtime);
+  const databaseBytes = database && (await databaseExists(server, database)) ? await databasesBytes(server, [database]) : 0;
+  const neededBytes = diskNeeded(databaseBytes, wantDatabase);
+  const freeBytes = freeDisk(stateDir);
+  const busy = readLock(stateDir);
+  const resumingNow = interruptedRestore(stateDir, app.name);
+  const running = await runtime.docker.inspectContainer(container);
   log("restore plan", {
     app: app.name,
     copy: chosen.short_id,
     taken: chosen.time,
     database: wantDatabase ? `${database} (the current one kept as ${previous})` : "untouched",
     volumes: wantFiles ? volumes : "untouched",
+    restores: { database: wantDatabase, files: wantFiles },
+    databaseBytes,
+    neededBytes,
+    freeBytes,
+    ...(busy ? { busy: `${busy.job}${busy.app ? ` of ${busy.app}` : ""}` } : {}),
+    interrupted: resumingNow,
+    ...(running?.Created ? { deployedAt: running.Created, image: running.Config.Image } : {}),
   });
   if (!options.yes) {
     log("nothing changed: add --yes to restore");
     return;
   }
+  // The safety dump, the restored dump and the new database sit beside the live one (D94).
+  if (freeBytes < neededBytes) {
+    throw new Error(`not enough free disk: about ${gib(neededBytes)} needed, ${gib(freeBytes)} free. Nothing was changed`);
+  }
 
-  const stateDir = runtime.stateDir;
   const lock = { job: "restore" as const, app: app.name, startedAt: now.getTime() };
   const holder = acquireLock(stateDir, lock);
   if (holder) throw new Error(`a ${holder.job}${holder.app ? ` of ${holder.app}` : ""} is running: try again once it is over`);
@@ -209,7 +256,6 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
     }
   }
   const work = join(stateDir, "backup", "restore-app");
-  const container = appContainerName(app.name);
   // An earlier restore of it stopped halfway: it was left stopped on purpose, and runs again once this one completes.
   const resuming = interruptedRestore(stateDir, app.name);
   /** Whether to start the app at the end: it was running, or a restore of it is being completed. */
@@ -273,7 +319,6 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
       ));
       const dumps = join(restoreDir, "source", "dumps");
       if (!existsSync(join(dumps, `${database}.dump`))) throw new Error(`copy ${chosen.short_id} holds no dump of ${database}: choose a later one`);
-      const server = postgresServer(secrets);
       const incoming = restoringName(database);
       await createRestoreTarget(server, incoming, database, app.database?.extensions ?? []);
       await loadDump(runtime, database, incoming, dumps, deriveSecret(secrets.master_secret, `db:${database}`));
@@ -316,6 +361,7 @@ export async function restoreApp(context: RestoreContext, options: RestoreOption
       start = false;
     }
     const undo = safety ? ` Safety copy of the data before this restore: ${safety}.` : "";
+    log("restore stopped", { changed: changing || resuming });
     throw new Error(`${(error as Error).message}.${changing || resuming ? " The app stays stopped: run the restore again, or restore the safety copy." : " Nothing was changed."}${undo}`);
   } finally {
     rmSync(work, { recursive: true, force: true });

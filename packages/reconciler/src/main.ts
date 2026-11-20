@@ -175,6 +175,11 @@ async function main(argv: string[]): Promise<number> {
     : undefined;
 
   if (argv[0] === "restore-app") {
+    // Started over SSH by bivy restore (D101): a lost connection must not cut a
+    // restore short. Its output may then have nowhere to go; the work carries on.
+    process.stdout.on("error", () => undefined);
+    process.stderr.on("error", () => undefined);
+    process.on("SIGHUP", () => undefined);
     try {
       const options = parseRestoreArgs(argv.slice(1));
       // It first sends a safety copy to the repository: never from a test

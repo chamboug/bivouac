@@ -32,6 +32,8 @@ export class DockerError extends Error {
 export interface ContainerInfo {
   Id: string;
   Name: string;
+  /** When the container was created: the reconciler recreates an app's container to deploy a new image. */
+  Created?: string;
   Config: { Labels: Record<string, string> | null; Image: string };
   State: { Status: string; Running: boolean; Health?: { Status: string }; StartedAt?: string; OOMKilled?: boolean };
   RestartCount?: number;
