@@ -1098,11 +1098,13 @@ else. These give direct control, without decrypting anything:
 With the age key and a clone of the instance repo, a holder of the Mac can
 read every SOPS file: the master secret (and so every derived secret, D14),
 Pocket ID's keys, the restic password, the mail password, the GHCR token,
-the apps' own secrets. With FileVault on and the Mac off or locked, its disk
-cannot be read without the session password. The owner chooses between
-accepting that risk, stated, and rotating; there is no tested rotation
-procedure yet: a Claude session plans it, starting with what can be reached
-from outside (the mail password, the GHCR token, the restic password and its
-bucket key, the apps' session secrets), with consent at each step.
+the apps' own secrets. But with FileVault on and the Mac off or locked, its
+disk cannot be read without the session password, and on Apple silicon that
+password cannot be guessed at speed. **By default, accept**: the access cut
+above is enough. Rotate only if the Mac was taken unlocked, or the session
+password may be known. There is no tested rotation procedure yet: a Claude
+session plans it, starting with what can be reached from outside (the mail
+password, the GHCR token, the restic password and its bucket key, the apps'
+session secrets), with consent at each step.
 
 Record what was done in the operations log.
