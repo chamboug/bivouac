@@ -12,7 +12,8 @@
     "start": "node .output/server/index.mjs",
     "db:generate": "drizzle-kit generate",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "icons": "node scripts/icons.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1164.0",

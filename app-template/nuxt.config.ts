@@ -31,6 +31,19 @@ export default defineNuxtConfig({
     },
   ],
   css: ["~/assets/css/main.css"],
+  // Installable on a phone's home screen (CLAUDE.md, "Phone and icon"). The
+  // name here and in public/manifest.webmanifest is the app's own.
+  app: {
+    head: {
+      htmlAttrs: { lang: "en" },
+      title: "App",
+      link: [
+        { rel: "manifest", href: "/manifest.webmanifest" },
+        { rel: "icon", type: "image/png", href: "/favicon.png" },
+        { rel: "apple-touch-icon", href: "/icon-180.png" },
+      ],
+    },
+  },
   devtools: { enabled: false },
   telemetry: false,
   // Sibling apps share a registrable domain: none may frame this one.

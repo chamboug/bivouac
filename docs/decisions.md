@@ -111,6 +111,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D99 | `bivy init` and `bivy configure` | never run for real |
 | D100 | Visual identity | |
 | D101 | `bivy restore <app>` | |
+| D103 | Apps installable on a phone, with a theme choice | |
 
 ---
 
@@ -584,3 +585,10 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 ### D101 — `bivy restore <app>`, guided
 - **Choice**: `bivy restore [app]` asks the app, the nightly copy (14 latest; older with `--snapshot`) and the part (both, database or files); shows the server's plan from a dry run of `restore-app` (what goes back, what is kept, disk needed and free); warns when the app was deployed after the copy; asks for the app's name typed in a terminal (no flag, rule 5); runs it with one sentence per step; ends with the undo command. `--plan` only reads, and is all Claude runs. A lost connection does not stop the restore on the server (`restore-app` ignores SIGHUP and a closed output: tested end to end). The reconciler's dry run now reports disk needed and free, and a real run refuses when it is short (closes D94's gap).
 - **Rejected**: running the restore detached and polling it; reading the image history from Git; listing every copy.
+
+### D103 — Apps installable on a phone, with a theme choice
+- **Context**: apps are used mostly on phones, often added to the home screen, where they open without the browser's bar; each app had to rediscover the manifest, the icons and dark mode.
+- **Choice**: the app template ships a web manifest (`display: standalone`), a placeholder `public/icon.svg` and `npm run icons`, which draws the PNGs (favicon, `apple-touch-icon` for iOS, 192 and 512 for Android, the 512 also maskable) with the Chromium the tests already use. Every app replaces the name and draws its own icon. Every app keeps a theme choice (automatic, light, dark: Nuxt UI's `UColorModeSelect`, kept on the device), and `theme-color` follows the chosen theme. The template's `CLAUDE.md` says what a screen needs without a browser bar (its own way back, no dead end, outside links in a new tab).
+- **Verified**: iOS takes the home-screen icon from `apple-touch-icon` and supports only `standalone` (web.dev, *Learn PWA*); maskable icons through `purpose` (MDN). Nuxt UI 4.12 has `UColorModeSelect` and a French locale.
+- **Rejected**: `@vite-pwa/nuxt` (a service worker and its cache for every app, when offline use is rare; an app that wants one writes it, as the inventory app did); the theme choice in the shared layers (layers are for the platform's contract, not the interface); an icon generator package (one more dependency for four images).
+- **Not verified**: the safe-area advice for a bar fixed at the bottom, on a real iPhone.

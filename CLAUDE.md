@@ -84,7 +84,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | Auth modes | `oidc`, `public`, `local` (Better Auth) built; `forward` (Tinyauth) not | D10, D79, D97 |
 | Reconciler | Polls Git every minute; bases, databases, OIDC clients, Caddy, containers; self-update by digest | D2, D50–D61 |
 | Deployment | App CI builds, `propose.yml` opens a PR, merged by itself if the layers did not change | D5, D64, D86, D92 |
-| Apps | Nuxt template with shared layers by commit; Renovate for the layers only | D79, D80, D81 |
+| Apps | Nuxt template with shared layers by commit, installable on a phone, theme choice; Renovate for the layers only | D79, D80, D81, D103 |
 | App MCPs | `mcp: true` opens `/mcp`, signed in through Pocket ID | D85 |
 | Alerts | Pushover from the server, healthchecks.io as dead man's switch, normal priority | D45, D76, D82 |
 | Status page | `status.apps.example.org`, through the reconciler's internal API | D8, D96 |

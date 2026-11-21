@@ -69,8 +69,9 @@ Read the app's `CLAUDE.md` first. Work the way web developers do: a local server
 
 1. `npm ci`, then `DEV_GROUPS=<group>,<name>-admin npm run dev:local` (the groups of the fake signed-in person, comma-separated; without it, the person is in no group of this app). Give the person the address, `http://localhost:3000`, to open themselves. Keep it running for the whole step. To try another role, restart with other groups, then sign out or use a private window (the old session may keep the old groups).
 2. The loop: change the code (the schema in `server/db/schema.ts`, then `npm run db:generate`; pages with Nuxt UI, through the `nuxt-ui` MCP, not from memory). The page reloads by itself. Say in one or two lines what changed and what to try; the person tries it and says what to change; again. Check light, dark, phone width and each role yourself before handing over, never in place of their try.
-3. Tests along the way: keep the template's; add unit tests of who may see and change what, and one Playwright test of the main path.
-4. Only when the person says it is right: `npm test`; stop `dev:local`; `npm run build`; then the end-to-end tests on a database of their own in the dev Postgres, which keeps running:
+3. Early on, the app's own name and icon (its `CLAUDE.md`, "Phone and icon"): propose a drawing for `public/icon.svg`, let the person look at it, then `npm run icons`. The theme choice (automatic, light, dark) stays reachable; every screen but the home one has its own way back, since the app opened from a phone's home screen has no browser bar.
+4. Tests along the way: keep the template's; add unit tests of who may see and change what, and one Playwright test of the main path.
+5. Only when the person says it is right: `npm test`; stop `dev:local`; `npm run build`; then the end-to-end tests on a database of their own in the dev Postgres, which keeps running:
    ```bash
    docker exec <folder name>-dev-pg createdb -U postgres e2e 2>/dev/null || true
    DATABASE_URL=postgres://postgres:dev@localhost:55433/e2e npm run test:e2e

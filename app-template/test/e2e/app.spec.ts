@@ -60,6 +60,26 @@ test("the session cannot be passed in a header, and pages cannot be framed", asy
   expect((await request.get("/api/me", { headers: { "x-__host-bivouac-session-session": "x" } })).status()).toBe(401);
 });
 
+test("a phone can install the app without a session: manifest and icons are public", async ({ request }) => {
+  const manifest = await request.get("/manifest.webmanifest");
+  expect(manifest.status()).toBe(200);
+  const { display, icons } = await manifest.json();
+  expect(display).toBe("standalone");
+  for (const path of ["/favicon.png", "/icon-180.png", ...icons.map((icon: { src: string }) => icon.src)]) {
+    const icon = await request.get(path);
+    expect(icon.status(), path).toBe(200);
+    expect(icon.headers()["content-type"], path).toBe("image/png");
+  }
+});
+
+test("the home page offers the theme choice and links the icons", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Theme" })).toBeVisible();
+  await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.webmanifest");
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute("href", "/icon-180.png");
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute("content", /^#[0-9a-f]{6}$/);
+});
+
 test("a callback without a sign-in in progress is refused", async ({ request }) => {
   expect((await request.get("/auth/callback?code=x&state=y")).status()).toBe(400);
 });

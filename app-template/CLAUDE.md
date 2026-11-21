@@ -42,6 +42,19 @@ A Nuxt app hosted on a Bivouac platform. The platform runs this image and provid
 
 Nuxt UI: use the `nuxt-ui` MCP server (`.mcp.json`), or `https://ui.nuxt.com/llms.txt`, rather than memory.
 
+- **Every app lets the person choose its theme**: automatic (follows the device), light or dark. The template's home page has `UColorModeSelect` in its header; keep it there or move it to a settings page reachable from every screen, never remove it. The choice is kept on the device. `app/app.vue` sets the browser's `theme-color` to the page's background for the chosen theme: keep it. Check every screen in both themes.
+- Write the app in its people's language: `htmlAttrs.lang` in `nuxt.config.ts`, `lang` in the web manifest, and Nuxt UI's locale on `UApp` (`<UApp :locale="fr">` with `import { fr } from "@nuxt/ui/locale"`), which also translates the theme choice.
+
+## Phone and icon
+
+The app can be added to a phone's home screen and then opens like an app (`public/manifest.webmanifest`, `display: standalone`).
+
+- **Its own name and icon, from the first version.** Replace "App" in `nuxt.config.ts` (`title`) and in the web manifest (`name`, `short_name` of 12 characters at most, `theme_color` and `background_color`). Draw `public/icon.svg` for this app: a full square with its own background (no rounded corners, no transparency: phones cut the shape themselves), the drawing inside the central circle 80% wide, simple enough to read at 32 pixels. Then `npm run icons` draws the PNGs (favicon, iPhone, Android) and commit them all. Leaving the template's tent makes every app look the same on the home screen.
+- **Opened from the home screen, there is no browser bar**: no address, no back or reload button, no tabs. So every screen other than the home one has its own way back (a back button in its header, or a tab bar); no screen is a dead end, error pages included (a link home); nothing relies on reloading to show fresh data; links to other sites open in a new tab (`target="_blank"`), otherwise they take the app's place.
+- A bar fixed to the bottom of the screen sits under the iPhone's home bar: add `viewport-fit=cover` to the viewport and pad the bar with `env(safe-area-inset-bottom)`, then check on a real phone.
+- iOS takes the home-screen icon from `apple-touch-icon`, not from the manifest; Android from the manifest. To try the installed version: on the Mac, Chrome's "Install" in the address bar on `http://localhost:3000` opens it in its own window, without the browser bar.
+- `public/` is readable by anyone, signed in or not: the icon and manifest hold nothing private.
+
 ## Deployment
 
 Pushing to `main` runs the tests, builds the image and, when the repo holds the deployment token, opens a PR on the instance repo changing the image in the manifest; that PR usually merges by itself, so a push puts the version online with no one else looking. Without the token, the platform's admin changes the image by hand. Nothing is built on the server.

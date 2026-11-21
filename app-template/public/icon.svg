@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- The template's placeholder: draw the app's own (CLAUDE.md, "Phone and icon"). -->
+  <!-- A full square with its own background; the drawing stays inside the central circle (80% wide). -->
+  <rect width="512" height="512" fill="#d4501c"/>
+  <path fill="#f5f2eb" fill-rule="evenodd" d="M256 136 376 352H136Z M256 232 298 352H214Z"/>
+</svg>
