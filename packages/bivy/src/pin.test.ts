@@ -43,6 +43,17 @@ function registry({ images, header, type = "application/vnd.oci.image.index.v1+j
       if (!images[repository]) return new Response(JSON.stringify({ errors: [{ code: "DENIED" }] }), { status: 403 });
       return Response.json({ token: `token-${repository}` });
     }
+    const list = /^\/v2\/(.+)\/tags\/list$/.exec(url.pathname);
+    if (list) {
+      const repository = list[1] ?? "";
+      if ((init?.headers as Record<string, string>)?.Authorization !== `Bearer token-${repository}`) return new Response("", { status: 401 });
+      const all = Object.keys(images[repository] ?? {});
+      // Two tags a page, so that the Link header is followed.
+      const start = Number(url.searchParams.get("last") ? all.indexOf(url.searchParams.get("last") ?? "") + 1 : 0);
+      const page = all.slice(start, start + 2);
+      const more = start + 2 < all.length;
+      return Response.json({ name: repository, tags: page }, more ? { headers: { link: `</v2/${repository}/tags/list?n=2&last=${page.at(-1)}>; rel="next"` } } : {});
+    }
     const match = /^\/v2\/(.+)\/manifests\/(.+)$/.exec(url.pathname);
     const repository = match?.[1] ?? "";
     if ((init?.headers as Record<string, string>)?.Authorization !== `Bearer token-${repository}`) return new Response("", { status: 401 });
@@ -108,6 +119,47 @@ describe("bivy pin", () => {
     // Anonymous: no credential is ever sent but the registry's own pull token.
     expect(fake.requests[0]?.url).toBe("https://ghcr.io/token?service=ghcr.io&scope=repository%3Aowner%2Fbivouac-reconciler%3Apull");
     expect(fake.requests[1]?.headers.Accept).toContain("application/vnd.oci.image.index.v1+json");
+  });
+
+  it("writes the release tag of the same digest, so Renovate can follow it (D109)", async () => {
+    const OTHER = JSON.stringify({ schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{}] });
+    const fake = registry({
+      images: { "owner/bivouac-reconciler": { "sha-1111111": OTHER, "v1.0.9": OTHER, "sha-4a764e9": INDEX, "v1.0.10": INDEX, "v1.0.11": OTHER, "main": INDEX } },
+    });
+    const { code, file, output } = await run(fake, "reconciler", "4a764e9");
+    expect(code).toBe(0);
+    expect(file.text).toContain(`image: ghcr.io/owner/bivouac-reconciler:v1.0.10@${DIGEST}   # kept`);
+    expect(output).not.toMatch(/no release tag/);
+    // Newest first: v1.0.11 (another digest), then v1.0.10; never v1.0.9 or a moving tag.
+    const looked = fake.requests.map((request) => new URL(request.url).pathname).filter((path) => /manifests\/v/.test(path));
+    expect(looked).toEqual(["/v2/owner/bivouac-reconciler/manifests/v1.0.11", "/v2/owner/bivouac-reconciler/manifests/v1.0.10"]);
+  });
+
+  it("never sends the pull token to another host than GHCR", async () => {
+    const base = registry({ images: { "owner/bivouac-reconciler": { "sha-4a764e9": INDEX, "a": INDEX, "b": INDEX } } });
+    const sent: string[] = [];
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      sent.push(url.origin);
+      const answer = await base.fetch(input, init);
+      if (url.pathname.endsWith("/tags/list")) {
+        return Response.json(await answer.json(), { headers: { link: '<https://elsewhere.example/v2/x/tags/list?last=b>; rel="next"' } });
+      }
+      return answer;
+    }) as typeof globalThis.fetch;
+    const { code, file, output } = await run({ fetch, requests: [] }, "reconciler", "4a764e9");
+    expect(code).toBe(1);
+    expect(output).toMatch(/pointed the next page of tags elsewhere/);
+    expect(file.writes).toBe(0);
+    expect(sent.every((origin) => origin === "https://ghcr.io")).toBe(true);
+  });
+
+  it("keeps the commit's tag for a version published before release tags, and says Renovate cannot follow it", async () => {
+    const fake = registry({ images: { "owner/bivouac-reconciler": { "sha-4a764e9": INDEX } } });
+    const { code, file, output } = await run(fake, "reconciler", "4a764e9");
+    expect(code).toBe(0);
+    expect(file.text).toContain(`bivouac-reconciler:sha-4a764e9@${DIGEST}`);
+    expect(output).toMatch(/sha-4a764e9 has no release tag .*Renovate cannot follow/s);
   });
 
   it("pins the status page, keeping its quotes", async () => {

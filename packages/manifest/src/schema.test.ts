@@ -285,6 +285,7 @@ describe("platform config", () => {
       "ghcr.io/example/bivouac-reconciler:sha-abc1234",
       `ghcr.io/example/bivouac-reconciler@sha256:${"a".repeat(64)}`,
       `ghcr.io/example/bivouac-reconciler:sha-abc1234@sha256:${"a".repeat(64)}`,
+      `ghcr.io/example/bivouac-reconciler:v1.0.42@sha256:${"a".repeat(64)}`,
     ]) {
       expect(parse({ reconciler: { image } }).success).toBe(true);
     }
@@ -292,11 +293,11 @@ describe("platform config", () => {
       expect.stringMatching(/^reconciler\.image: must name an exact version/),
     ]);
     expect(messages({ reconciler: { image: "ghcr.io/example/bivouac-reconciler:latest" } })).toContain(
-      "reconciler.image: must name one commit's image (':sha-<commit>') or a digest, never a moving tag",
+      "reconciler.image: must name one commit's image (':sha-<commit>' or ':v<x.y.z>') or a digest, never a moving tag",
     );
-    for (const image of ["ghcr.io/example/bivouac-reconciler:main", "ghcr.io/example/bivouac-reconciler:v1", "ghcr.io/example/bivouac-reconciler:sha-XYZ1234"]) {
+    for (const image of ["ghcr.io/example/bivouac-reconciler:main", "ghcr.io/example/bivouac-reconciler:v1", "ghcr.io/example/bivouac-reconciler:v1.0", "ghcr.io/example/bivouac-reconciler:v1.0.4-rc", "ghcr.io/example/bivouac-reconciler:sha-XYZ1234"]) {
       expect(messages({ reconciler: { image } })).toEqual([
-        "reconciler.image: must name one commit's image (':sha-<commit>') or a digest, never a moving tag",
+        "reconciler.image: must name one commit's image (':sha-<commit>' or ':v<x.y.z>') or a digest, never a moving tag",
       ]);
     }
     for (const image of [

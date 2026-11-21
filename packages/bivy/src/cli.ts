@@ -36,7 +36,8 @@ Commands:
                               move the reconciler or the status page to the
                               version CI published for a commit of main: finds
                               its digest on GHCR, writes that one line of
-                              platform.yml, then validates (D106). Commits nothing.
+                              platform.yml with the release tag Renovate follows
+                              (v1.0.<n>, D109), then validates (D106). Commits nothing.
       --instance <dir>        the instance repo (default: the current directory)
 
   ssh [dir]                   open a shell on the server, as core
@@ -195,7 +196,7 @@ function validate(root: string): number {
   if (instance.platform && !/@sha256:[a-f0-9]{64}$/.test(instance.platform.reconciler.image)) {
     errors.push({
       file: "platform.yml",
-      message: "reconciler.image must be pinned by digest (ghcr.io/<owner>/bivouac-reconciler:sha-<commit>@sha256:<digest>, D61)",
+      message: "reconciler.image must be pinned by digest (ghcr.io/<owner>/bivouac-reconciler:v<x.y.z>@sha256:<digest> or :sha-<commit>@…, D61, D109)",
     });
   }
   // The status page holds the token of the reconciler's API: the same rule.
@@ -203,7 +204,7 @@ function validate(root: string): number {
   if (status && !/@sha256:[a-f0-9]{64}$/.test(status.image)) {
     errors.push({
       file: "platform.yml",
-      message: "status.image must be pinned by digest (ghcr.io/<owner>/bivouac-status:sha-<commit>@sha256:<digest>)",
+      message: "status.image must be pinned by digest (ghcr.io/<owner>/bivouac-status:v<x.y.z>@sha256:<digest> or :sha-<commit>@…)",
     });
   }
   if (instance.sshKeys && instance.platform) {

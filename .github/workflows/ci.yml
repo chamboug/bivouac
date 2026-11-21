@@ -148,18 +148,22 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/bivouac-reconciler:sha-${GITHUB_SHA::7}"
+          # Also v1.0.<run number>: a tag Renovate can order, for the instance
+          # repo (D109). The same run gives both images the same number.
+          release="ghcr.io/${GITHUB_REPOSITORY_OWNER}/bivouac-reconciler:v1.0.${GITHUB_RUN_NUMBER}"
           echo "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker build --file packages/reconciler/Dockerfile \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.licenses=MIT" \
-            --tag "$image" .
+            --tag "$image" --tag "$release" .
           docker push "$image"
+          docker push "$release"
           # The digest this run pushed, to compare with the one written in platform.yml (D61):
           # a tag can be pushed again by someone else, a digest cannot change.
           # Read as the runbook does (D61): the top-level digest the registry serves for this tag.
           digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published $image and $release" >> "$GITHUB_STEP_SUMMARY"
           echo "Digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
 
   # Publishes the status page image after the tests pass on main, like the
@@ -182,13 +186,17 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/bivouac-status:sha-${GITHUB_SHA::7}"
+          # Also v1.0.<run number>: a tag Renovate can order, for the instance
+          # repo (D109). The same run gives both images the same number.
+          release="ghcr.io/${GITHUB_REPOSITORY_OWNER}/bivouac-status:v1.0.${GITHUB_RUN_NUMBER}"
           echo "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           docker build --file status-page/Dockerfile \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.licenses=MIT" \
-            --tag "$image" .
+            --tag "$image" --tag "$release" .
           docker push "$image"
+          docker push "$release"
           digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published $image and $release" >> "$GITHUB_STEP_SUMMARY"
           echo "Digest: \`$digest\`" >> "$GITHUB_STEP_SUMMARY"

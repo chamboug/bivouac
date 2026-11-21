@@ -84,7 +84,7 @@ const DISK_FULL_SHARE = 0.8;
 
 /** The scheduler's week number (backup.ts): weeks start on Monday, at the backup hour. */
 const backupWeek = (now: number) => Math.floor((Math.floor((now - 2 * HOUR) / DAY) + 4) / 7);
-const shortImage = (image: string | null) => (image ? (/:(sha-[0-9a-f]+)/.exec(image)?.[1] ?? image.split("@")[0] ?? image) : "unknown");
+const shortImage = (image: string | null) => (image ? (/:(sha-[0-9a-f]+|v\d+\.\d+\.\d+)(@|$)/.exec(image)?.[1] ?? image.split("@")[0] ?? image) : "unknown");
 
 /**
  * The state as a person reads it, and what is worth a look: each problem in

@@ -273,7 +273,8 @@ function checkGroups(auth: AuthMode, groups: string[], ctx: z.RefinementCtx): vo
 
 /**
  * An image the monorepo's CI publishes for one commit:
- * `ghcr.io/<owner>/bivouac-<name>:sha-<commit>`, optionally with its digest.
+ * `ghcr.io/<owner>/bivouac-<name>:sha-<commit>` (or its `v1.0.<n>` tag),
+ * optionally with its digest.
  * Only these are accepted where the platform runs its own code (D50).
  */
 function platformImageSchema(component: string, description: string) {
@@ -287,10 +288,11 @@ function platformImageSchema(component: string, description: string) {
       ctx.addIssue({ code: "custom", message: `must be ${description} (ghcr.io/<owner>/bivouac-${component})` });
       return;
     }
-    // Only the tags CI publishes for one commit: a tag such as ':main' moves,
-    // and the server would keep whatever it pulled first.
-    if (tag !== undefined && !/^sha-[0-9a-f]{7,40}$/.test(tag)) {
-      ctx.addIssue({ code: "custom", message: "must name one commit's image (':sha-<commit>') or a digest, never a moving tag" });
+    // Only the tags CI publishes for one commit: `sha-<commit>`, or the
+    // release number Renovate can order (`v1.0.<n>`, D109). A tag such as
+    // ':main' moves, and the server would keep whatever it pulled first.
+    if (tag !== undefined && !/^(sha-[0-9a-f]{7,40}|v\d+\.\d+\.\d+)$/.test(tag)) {
+      ctx.addIssue({ code: "custom", message: "must name one commit's image (':sha-<commit>' or ':v<x.y.z>') or a digest, never a moving tag" });
     }
   });
   return { pattern, schema };
