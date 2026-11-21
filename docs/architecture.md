@@ -117,7 +117,7 @@ It also runs the nightly backup, the weekly retention and restore test (D74, D75
 
 Properties: **idempotent** (the same code installs, updates and rebuilds); **never deletes data**; **monitored deployment**: a failing image is stopped and marked, not retried until the manifest changes (D21).
 
-**Not built yet** (layer 6 and on demand): archiving on removal (D18), automatic rollback to the previous image (D21), static sites (D22), Tinyauth (D10), resource history (D42), the platform MCP over SSH (D32).
+**Not built yet** (layer 6 and on demand): archiving on removal (D18), automatic rollback to the previous image (D21), static sites (D22), Tinyauth (D10), resource history (D42).
 
 ## GitHub tokens
 

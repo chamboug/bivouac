@@ -88,11 +88,12 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | App MCPs | `mcp: true` opens `/mcp`, signed in through Pocket ID | D85 |
 | Alerts | Pushover from the server, healthchecks.io as dead man's switch, normal priority | D45, D76, D82 |
 | Status page | `status.apps.example.org`, through the reconciler's internal API | D8, D96 |
-| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore`, `ssh`, `exec`, `validate` | D31, D91, D93, D99, D101 |
+| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore`, `ssh`, `exec`, `validate` | D31, D91, D93, D99, D101, D104 |
 | Rebuild | `bivy rebuild --test` every 3 months, the only proof the platform comes back | D39, D91 |
 
 ## Conventions for Claude
 
+- **Claude acts on the server through `bivy`** (D104). Improvising over `bivy ssh`/`exec` is for reading; a change goes through a written command or Git. Each improvisation asks: worth a command? Easy without Claude's privileged access? If not, say so in the session and propose the command.
 - **App contract** (any framework): an image that listens on `port`, answers on the health endpoint, reads the standard variables the platform provides, and applies additive migrations at startup (D19, D21).
 - **User files** (D72): never `fs` directly, only the storage module. The database stores keys (`photos/123.jpg`), never paths or URLs. Files are served through an app route that checks access (`/api/files/...`).
 - **App work happens on the Mac** with `npm run dev:local`: light, dark and phone width checked before pushing, never on the real server (D83). The miniature platform (`npm run platform:up`) is for the platform itself (D59).
@@ -107,7 +108,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 
 - **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99) and `bivy restore` (D101). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
 - **Proven**: `bivy rebuild --test` (14 and 19 Nov. 2026, D91); `restore-app` rehearsed on the server (D90); every alert received on the owner's phone (D82).
-- **Not built, on demand**: archiving on app removal (D18), automatic rollback to the previous image (D21), static sites (D22), Tinyauth and `forward` (D10), resource history (D42), the platform MCP over SSH (D32), `bivy machine add` (D38), Web Push module (D84), a send-only mail relay for apps (D70), an overview with diagrams (D93).
+- **Not built, on demand**: archiving on app removal (D18), automatic rollback to the previous image (D21), static sites (D22), Tinyauth and `forward` (D10), resource history (D42), `bivy machine add` (D38), Web Push module (D84), a send-only mail relay for apps (D70), an overview with diagrams (D93).
 
 ## Open items and deadlines
 
@@ -135,5 +136,5 @@ Each has its entry in the log.
 - **WAL archiving** (one backup a night is enough); **paid S3** and **an S3 server** (D72); **a local mail server** (ports blocked, poor deliverability).
 - **Tailscale Funnel**, **Pangolin** (off topic on a VPS).
 - **A webhook for the reconciler** (D2); **secrets in user-data** (D7); **the age key in GitHub** (D35, D36); **IPv6 only** (D26); **Arm** (D25).
-- **Renovate for app versions** (D5); **a public platform MCP** (D32); **`gh`, `hcloud` or `sops` in the CLI** (D31).
+- **Renovate for app versions** (D5); **a platform MCP** (D32, D104); **`gh`, `hcloud` or `sops` in the CLI** (D31).
 - **Prometheus + Grafana** (D42); **a permanent dev or staging instance** (D43).

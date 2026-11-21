@@ -41,7 +41,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D29 | Postgres majors by dump and restore | |
 | D30 | Read-only deploy key | |
 | D31 | `bivy` talks to official APIs directly | |
-| D32 | Platform MCP over SSH | not built |
+| D32 | Platform MCP over SSH | rejected, see D104 |
 | D33 | The reconciler schedules backups | |
 | D34 | Reserved app names | |
 | D35 | CI never decrypts secrets | |
@@ -112,6 +112,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D100 | Visual identity | |
 | D101 | `bivy restore <app>` | |
 | D103 | Apps installable on a phone, with a theme choice | |
+| D104 | Claude works through `bivy`; a gap becomes a command | replaces D32 |
 
 ---
 
@@ -241,9 +242,9 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 - **Rejected**: depending on `gh`; an OAuth App with device flow (one more component).
 - **History**: first a 7-day PAT for every command. `gh` is on the Mac since 9 Nov. 2026, for Claude's work only (D78).
 
-### D32 — Platform MCP *(not built)*
-- **Choice**: the reconciler serves a stdio MCP launched over SSH (`ssh core@<server> docker exec bivouac-reconciler mcp`): nothing exposed, the SSH key is the authentication. It holds the Docker socket's power, so it stays off the internet even though app MCPs are public behind Pocket ID (D85).
-- **Rejected**: an MCP served by the status page.
+### D32 — Platform MCP *(rejected, see D104)*
+- **Was**: the reconciler would serve a stdio MCP launched over SSH (`ssh core@<server> docker exec bivouac-reconciler mcp`): nothing exposed, the SSH key as authentication, off the internet because it holds the Docker socket's power (unlike app MCPs, D85). An MCP served by the status page was rejected.
+- **History**: dropped on 21 Nov. 2026 (D104), never built: Claude already reaches the server through `bivy` and a terminal, so an MCP would be a second way in for the same work, one more component, and one the owner cannot use.
 
 ### D33 — Scheduling backups
 - **Choice**: the reconciler triggers the nightly backup and the weekly test, running restic in throwaway containers (D74, D75).
@@ -592,3 +593,11 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 - **Verified**: iOS takes the home-screen icon from `apple-touch-icon` and supports only `standalone` (web.dev, *Learn PWA*); maskable icons through `purpose` (MDN). Nuxt UI 4.12 has `UColorModeSelect` and a French locale.
 - **Rejected**: `@vite-pwa/nuxt` (a service worker and its cache for every app, when offline use is rare; an app that wants one writes it, as the inventory app did); the theme choice in the shared layers (layers are for the platform's contract, not the interface); an icon generator package (one more dependency for four images).
 - **Not verified**: the safe-area advice for a bar fixed at the bottom, on a real iPhone.
+
+### D104 — Claude works through `bivy`; a gap becomes a command
+- **Context**: procedures in the runbook still hold long hand-typed SSH and `docker` lines, and Claude improvises others in sessions. What only lives in a conversation is lost (rule 7), and work done with Claude's access alone is work the owner could not do without Claude (D44: never requires remembering how things work).
+- **Choice** (21 Nov. 2026, with the owner): `bivy` is how Claude acts on the platform. `bivy ssh` and `bivy exec` stay as the escape hatch, with two paces:
+  - **reading to understand** (diagnosis, an incident never seen before): improvising is allowed, and Claude says in the session what was missing;
+  - **changing something** on the server goes through a written command or Git; a missing one is written first, except an announced emergency fix (rule 4).
+- **Each time Claude improvises**, it asks two questions: would this be worth a command (it came back a second time, it changes something, or it is a runbook step)? Would it have been easy without Claude's privileged access (its SSH key, its `gh` token, its knowledge of the internals)? When the answer to the second is no, the gap is noted and the command, or a way to do without the access, is proposed. A one-off check for a one-off incident stays improvised: every command is code to maintain (rule 9).
+- **Rejected**: a platform MCP over SSH (D32): the same work behind a second door, one more component, invisible to the owner; "only written commands, ever": it would block diagnosing an unknown failure.
