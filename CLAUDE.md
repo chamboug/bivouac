@@ -88,12 +88,12 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | App MCPs | `mcp: true` opens `/mcp`, signed in through Pocket ID | D85 |
 | Alerts | Pushover from the server, healthchecks.io as dead man's switch, normal priority | D45, D76, D82 |
 | Status page | `status.apps.example.org`, through the reconciler's internal API | D8, D96 |
-| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore`, `status`, `backup`, `ssh`, `exec`, `validate` | D31, D91, D93, D99, D101, D104, D105 |
+| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore`, `ssh`, `exec`, `validate` | D31, D91, D93, D99, D101, D104 |
 | Rebuild | `bivy rebuild --test` every 3 months, the only proof the platform comes back | D39, D91 |
 
 ## Conventions for Claude
 
-- **Claude acts on the server through `bivy`** (D104). A session starts with `bivy status`; the backup D89 asks for before a change that can lose data is `bivy backup` (D105). Improvising over `bivy ssh`/`exec` is for reading; a change goes through a written command or Git. Each improvisation asks: worth a command? Easy without Claude's privileged access? If not, say so in the session and propose the command.
+- **Claude acts on the server through `bivy`** (D104). Improvising over `bivy ssh`/`exec` is for reading; a change goes through a written command or Git. Each improvisation asks: worth a command? Easy without Claude's privileged access? If not, say so in the session and propose the command.
 - **App contract** (any framework): an image that listens on `port`, answers on the health endpoint, reads the standard variables the platform provides, and applies additive migrations at startup (D19, D21).
 - **User files** (D72): never `fs` directly, only the storage module. The database stores keys (`photos/123.jpg`), never paths or URLs. Files are served through an app route that checks access (`/api/files/...`).
 - **App work happens on the Mac** with `npm run dev:local`: light, dark and phone width checked before pushing, never on the real server (D83). The miniature platform (`npm run platform:up`) is for the platform itself (D59).
@@ -116,7 +116,7 @@ Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to p
 ### To do
 
 - **Base images updated without relying on Claude** (D95): Caddy, Postgres and Pocket ID are updated only when Claude thinks of it. Renovate is not set up on the instance repo (the instance template has no `renovate.json`, so D29's "never a Postgres major" rule exists nowhere yet). The owner enables Renovate on that repo (D81), then a config follows.
-- **Runbook steps become `bivy` commands** (D104): `bivy status` and `bivy backup` are built (D105). Left, in that order: pinning a new reconciler or status page version with its digest (runbook sections 8 and 17); changing a platform secret with hidden input and a hash check (sections 10 and 12; a rule 6 review); an emergency sign-in link for an admin who lost every passkey (section 10).
+- **Runbook steps become `bivy` commands** (D104): hand-typed SSH and `docker` lines that change something on the server are turned into commands.
 - **Pocket ID sign-in lasting 30 days**: ready on the `pocket-id-30-days` branch, not merged yet.
 
 ### When a need comes

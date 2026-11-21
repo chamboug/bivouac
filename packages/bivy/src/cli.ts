@@ -14,9 +14,8 @@ import { type AskSecret, CredentialError, credential } from "./credentials.js";
 import { resolve4 } from "node:dns/promises";
 import { INIT_USAGE, initCli } from "./init-cli.js";
 import { printBanner } from "./banner.js";
-import { RemoteError, SshRemote, streamSsh } from "./remote.js";
-import { parseLines, restoreCommand } from "./restore.js";
-import { StatusError, TOO_OLD, backupStep, describeState, readState, reconcilerCommand } from "./status.js";
+import { SshRemote, streamSsh } from "./remote.js";
+import { restoreCommand } from "./restore.js";
 import { TerminalProgress, interactive, terminalGuide } from "./terminal.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
@@ -31,14 +30,6 @@ Commands:
                               command, a shell; with no app, choose it from a list
       --instance <dir>        the instance repo (default: the current directory)
       --ssh-key <file>        default ~/.ssh/id_ed25519
-
-  status [dir]                how the platform is: containers, last pass, backups,
-                              host, open incidents; only reads (D104)
-      --json                  the server's answer as it is
-  backup [dir]                back up the platform now, instead of waiting for
-                              the night, and follow it to its end; before any
-                              change that can lose data (D89)
-      --restore-test          also run the weekly restore test right after
 
   restore [app]               bring one app's data back to a backup copy, on the
                               running server (D101). Replaces live data: confirmed
@@ -112,8 +103,6 @@ async function main(argv: string[]): Promise<number> {
       only: { type: "string" },
       yes: { type: "boolean" },
       instance: { type: "string" },
-      json: { type: "boolean" },
-      "restore-test": { type: "boolean" },
     },
   });
   const [command, directory = "."] = positionals;
@@ -137,10 +126,6 @@ async function main(argv: string[]): Promise<number> {
       return ssh(resolve(values.instance ?? "."), positionals[1] ?? null, inner, values["ssh-key"]);
     case "restore":
       return restore(resolve(values.instance ?? "."), positionals[1], values);
-    case "status":
-      return status(values.instance ? resolve(values.instance) : root, values["ssh-key"], values.json === true);
-    case "backup":
-      return backup(values.instance ? resolve(values.instance) : root, values["ssh-key"], values["restore-test"] === true);
     default:
       console.error(`Unknown command '${command}'.\n\n${USAGE}`);
       return 1;
@@ -338,85 +323,6 @@ async function restore(root: string, app: string | undefined, values: Record<str
     },
     { app, snapshot: text("snapshot"), before: text("before"), only: text("only"), plan: values.plan === true },
   );
-}
-
-/** The server, found and checked as for bivy exec; undefined after saying why it cannot be reached. */
-async function server(root: string, sshKey: string | undefined): Promise<{ host: string; identity: string; knownHosts: string } | undefined> {
-  const instance = loadInstance(root);
-  if (!instance.platform) {
-    console.error(`No valid platform.yml in ${root}: run bivy from the instance repo, or pass it (bivy status <dir>).`);
-    return undefined;
-  }
-  const identity = sshKey ?? join(homedir(), ".ssh", "id_ed25519");
-  const knownHosts = config("known_hosts");
-  if (!existsSync(identity)) {
-    console.error(`No SSH key at ${identity}: pass the right one with --ssh-key <file>.`);
-    return undefined;
-  }
-  if (!existsSync(knownHosts)) {
-    console.error(`No known host key for the platform in ${knownHosts}: without it, nothing proves the server is ours (runbook section 8).`);
-    return undefined;
-  }
-  try {
-    return { host: await serverAddress(instance.platform.domain, resolve4), identity, knownHosts };
-  } catch (error) {
-    if (!(error instanceof SshError)) throw error;
-    console.error(`✗ ${error.message}`);
-    return undefined;
-  }
-}
-
-/** `bivy status` (D104): only reads. */
-async function status(root: string, sshKey: string | undefined, json: boolean): Promise<number> {
-  const target = await server(root, sshKey);
-  if (!target) return 1;
-  try {
-    const result = new SshRemote(target.host, target.identity, target.knownHosts).run(reconcilerCommand("status"), { timeoutMs: 60_000 });
-    const state = readState(result);
-    if (json) {
-      console.log(JSON.stringify(state, null, 2));
-      return 0;
-    }
-    const { lines, problems } = describeState(state);
-    console.log(lines.join("\n"));
-    console.log("");
-    if (problems.length === 0) {
-      console.log("✓ Nothing to look at.");
-      return 0;
-    }
-    console.log(`✗ ${problems.length} thing${problems.length > 1 ? "s" : ""} to look at:`);
-    for (const problem of problems) console.log(`  · ${problem}`);
-    return 1;
-  } catch (error) {
-    if (!(error instanceof StatusError) && !(error instanceof RemoteError)) throw error;
-    console.error(`✗ ${error.message}`);
-    return 1;
-  }
-}
-
-/** `bivy backup` (D104): asks the running reconciler for a backup now, and follows it. */
-async function backup(root: string, sshKey: string | undefined, restoreTest: boolean): Promise<number> {
-  const target = await server(root, sshKey);
-  if (!target) return 1;
-  // Ctrl-C leaves bivy only: the backup runs in the reconciler, on the server.
-  const leave = () => {
-    console.log("\n  The backup carries on on the server: bivy status shows how it ended.");
-    process.exit(130);
-  };
-  process.on("SIGINT", leave);
-  try {
-    const result = await streamSsh(target.host, target.identity, target.knownHosts, reconcilerCommand("backup-now", restoreTest ? ["--restore-test"] : []), (text) => {
-      const line = parseLines(text)[0];
-      const sentence = line ? backupStep(line) : undefined;
-      if (sentence) console.log(`· ${sentence}`);
-    });
-    if (result.status === 0) return 0;
-    if (result.status === TOO_OLD) console.error("✗ The server's reconciler is older than this command: move it to a newer version first (runbook section 8).");
-    else if (result.status === 255) console.error(`✗ The connection was lost (${result.stderr.trim().split("\n").at(-1) ?? "ssh failed"}). A backup already started carries on: bivy status shows how it ended.`);
-    return 1;
-  } finally {
-    process.off("SIGINT", leave);
-  }
 }
 
 const config = (file: string) => join(homedir(), ".config", "bivouac", file);

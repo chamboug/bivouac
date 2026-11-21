@@ -840,9 +840,8 @@ describe("m. the status page and the reconciler's internal API (D8)", () => {
     token = derive(platform.masterSecret, "api:status");
     previous = readFileSync(join(platform.repo, "platform.yml"), "utf8");
     platform.commit({ "platform.yml": `${previous}status:\n  image: ${STATUS_IMAGE}\n  groups: [admins]\n` }, "status page");
-    // A reconciler that keeps running, as on the server: the API lives in its
-    // loop, and so does the backup bivy backup asks for.
-    startReconciler(platform, "", { BIVOUAC_BACKUP_REPOSITORY: `${platform.state}/restic-repo` });
+    // A reconciler that keeps running, as on the server: the API lives in its loop.
+    startReconciler(platform, "");
     const deadline = Date.now() + 180_000;
     while (Date.now() < deadline && !docker("logs", "bivouac-reconciler").includes('"message":"pass ')) {
       run("sleep", ["2"]);
@@ -864,36 +863,6 @@ describe("m. the status page and the reconciler's internal API (D8)", () => {
     const client = pocketIdApi(platform, "GET", "/api/oidc/clients/status").body as { allowedUserGroups: { name: string }[] };
     expect(client.allowedUserGroups.map((group) => group.name)).toEqual(["admins"]);
     expect(throughCaddy(`status.${DOMAIN}`, "/api/health").status).toBe(200);
-  });
-
-  it("backs up now when asked, and follows it to its end, the restore test included (bivy backup, D104)", () => {
-    const snapshots = () => (JSON.parse(docker("run", "--rm", "--env", `RESTIC_PASSWORD=${RESTIC_PASSWORD}`, "--env", "RESTIC_REPOSITORY=/repo",
-      "--volume", `${platform.state}/restic-repo:/repo`, PLATFORM_IMAGES.restic, "snapshots", "--tag", "nightly", "--json")) as unknown[]).length;
-    const before = snapshots();
-    const asked = run("docker", ["exec", "bivouac-reconciler", "node", "packages/reconciler/dist/main.js", "backup-now", "--restore-test"]);
-    const messages = asked.stdout.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line) as { message: string; restore?: string });
-    expect(messages.map((line) => line.message)).toEqual(["backup requested", "backup starting", "backup done"]);
-    expect(messages.at(-1)?.restore).toBe("passed");
-    expect(asked.status).toBe(0);
-    expect(snapshots()).toBe(before + 1);
-    expect(JSON.parse(readStateFile(platform, "backup/request.json") ?? "{}")).toMatchObject({ status: "done", restore: "passed" });
-  }, 600_000);
-
-  it("gives bivy status what the status page shows, beside the running reconciler (D104)", () => {
-    const answer = run("docker", ["exec", "bivouac-reconciler", "node", "packages/reconciler/dist/main.js", "status"]);
-    expect(answer.status).toBe(0);
-    const state = JSON.parse(answer.stdout.trim().split("\n").at(-1) ?? "{}") as { lastPass: { status: string }; containers: { name: string }[]; backup: { request: { status: string } }; reconciler: { startedAt: string } };
-    expect(state.lastPass.status).toMatch(/applied|unchanged/);
-    expect(state.containers.map((entry) => entry.name)).toEqual(expect.arrayContaining(["bivouac-postgres", "bivouac-reconciler"]));
-    expect(state.backup.request.status).toBe("done");
-    expect(state.reconciler.startedAt).toBeTruthy();
-    expect(answer.stdout).not.toContain(platform.masterSecret);
-  });
-
-  it("refuses an unknown command rather than starting a second reconciler", () => {
-    const pass = runOnce(platform, { command: "no-such-command" });
-    expect(pass.status).toBe(2);
-    expect(pass.logs.at(-1)?.message).toBe("unknown command");
   });
 
   it("answers the status page, with its token", () => {

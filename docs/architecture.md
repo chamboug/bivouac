@@ -59,7 +59,6 @@ How Bivouac works today, part by part. The reasons are in the [decision log](dec
 - **B2 pricing** (verified, Nov. 2026): 10 GB free, then $6.95/TB/month; downloads free up to 3× the stored volume.
 - `backup: { stop: true }` stops an app that keeps data in files during the backup (D20).
 - **Weekly restore test**: `restic check` and the latest dumps loaded into a throwaway Postgres, reported to healthchecks.io (D75).
-- **A backup now** (D105): `bivy backup [--restore-test]` runs `main.js backup-now` beside the reconciler, which writes a request to `backup/request.json`; the running reconciler picks it up at its next pass, runs the same job as the night's (with the restore test when asked), pings healthchecks.io the same way and records the outcome in that file, which the command follows. A request cut short by a restart is marked failed, never started again on its own; on a rebuild test server it is refused.
 - **Restoring**: one app with `bivy restore <app>` / `restore-app` (D90, D101, runbook section 14); the whole platform with `bivy rebuild` (D91, sections 15 and 16).
 
 ## Authentication
@@ -114,7 +113,7 @@ TypeScript on Node LTS (`packages/reconciler`), image `ghcr.io/chamboug/bivouac-
 7. regenerates the Caddyfile and reloads Caddy;
 8. checks the metadata block, the disk, and sends alerts and the heartbeat.
 
-It also runs the nightly backup, the weekly retention and restore test (D74, D75), `restore-app` (D90), `restore-platform` (D91), and the internal API for the status page (D96). Beside it, through `docker exec`: `status` (what the status page shows, with the last pass it saves in `reconciler/last-pass.json`) and `backup-now` (D105). Any other command is refused, so an unknown one never starts a second loop; `bivy` checks the reconciler knows a command before sending it.
+It also runs the nightly backup, the weekly retention and restore test (D74, D75), `restore-app` (D90), `restore-platform` (D91), and the internal API for the status page (D96).
 
 Properties: **idempotent** (the same code installs, updates and rebuilds); **never deletes data**; **monitored deployment**: a failing image is stopped and marked, not retried until the manifest changes (D21).
 
@@ -140,8 +139,6 @@ TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talk
 | `bivy validate` | The instance repo's checks (D48) | used by CI |
 | `bivy ignition` | Compiles the Butane (D60) | built |
 | `bivy ssh`, `bivy exec` | Reach the server or an app without knowing SSH | built |
-| `bivy status` | Containers, last pass, backups, host, incidents, and what is worth a look; only reads (D105) | built |
-| `bivy backup` | A backup now, followed to its end, before a change that can lose data (D105) | built |
 | `bivy init` | Empty Hetzner project + domain → running platform (D99) | never run for real |
 | `bivy configure backups\|alerts\|mail` | Adds a missing part (D99) | built |
 | `bivy rebuild --test` | Temporary server restored from backups, checked, destroyed (D91) | proven |

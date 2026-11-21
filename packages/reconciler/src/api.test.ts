@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { Api, SYNC_INTERVAL_MS, backupSummary, containerKind, onInternalNetwork, openIncidents, platformState, readLastPass } from "./api.js";
+import { Api, SYNC_INTERVAL_MS, backupSummary, containerKind, onInternalNetwork, openIncidents } from "./api.js";
 import type { Runtime } from "./base.js";
 import type { Docker } from "./docker.js";
 
@@ -153,24 +153,12 @@ describe("internal API", () => {
     expect(containerKind("bivouac-reconciler")).toBe("platform");
   });
 
-  it("gives bivy status the same state, with the last pass the running reconciler saved (D104)", async () => {
-    const { api, stateDir } = setup();
-    expect(readLastPass(stateDir)).toBeNull();
-    api.recordPass({ status: "applied", commit: "def", changes: ["container bivouac-app-biblio recreated"], failures: [] });
-    expect(readLastPass(stateDir)).toMatchObject({ status: "applied", commit: "def" });
-    const runtime = { docker: fakeDocker(), stateDir, self: "bivouac-reconciler" } as unknown as Runtime;
-    const state = (await platformState({ runtime, reconciler: { image: "img", startedAt: "2026-11-15T09:36:41Z" }, lastPass: readLastPass(stateDir) })) as Record<string, unknown>;
-    expect(state).toMatchObject({ reconciler: { image: "img" }, lastPass: { commit: "def" } });
-    expect(JSON.stringify(state)).not.toContain("SECRET");
-    expect((state.host as { bootedAt: unknown }).bootedAt).toBeDefined();
-  });
-
   it("reads the backup record and the open incidents", () => {
     const { stateDir } = setup();
     expect(backupSummary(stateDir)).toBeNull();
     mkdirSync(join(stateDir, "backup"));
     writeFileSync(join(stateDir, "backup", "state.json"), JSON.stringify({ attempts: 1, lastSuccessAt: 1794880825346, restoreWeek: 2968 }));
-    expect(backupSummary(stateDir)).toMatchObject({ lastSuccessAt: "2026-11-17T02:00:25.346Z", restoreTestWeekPassed: 2968, lastError: null, request: null });
+    expect(backupSummary(stateDir)).toMatchObject({ lastSuccessAt: "2026-11-17T02:00:25.346Z", restoreTestWeekPassed: 2968, lastError: null });
     mkdirSync(join(stateDir, "alerts"));
     writeFileSync(join(stateDir, "alerts", "state.json"), JSON.stringify({ incidents: { "disk:host": { message: "Disk 85%", seen: 1794880825346, missed: 0 } } }));
     expect(openIncidents(stateDir)).toEqual([{ key: "disk:host", message: "Disk 85%", since: "2026-11-17T02:00:25.346Z" }]);
