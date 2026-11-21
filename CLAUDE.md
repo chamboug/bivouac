@@ -116,6 +116,7 @@ Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to p
 
 ### To do
 
+- **`bivy status` dates an open incident 1 Jan. 1970**: the reconciler's API gives the incident's pass count as its date (`openIncidents` in `api.ts`); keep a first-seen time instead. Small.
 - **A way back for Pocket ID after an update that broke its database** (D109): `bivy restore pocket-id`, from the night's copy, as `restore-platform` does for that one database. Until then it is done by hand (runbook section 21), the owner consenting.
 
 ### When a need comes

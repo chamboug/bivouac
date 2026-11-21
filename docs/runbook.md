@@ -1236,6 +1236,12 @@ image in `packages/manifest/src/platform.ts` (tag and digest, `docker
 buildx imagetools inspect`), push to `main` once CI is green, then `bivy pin
 reconciler <commit>` and `bivy pin status <commit>` in the instance repo.
 
+**A new kind of value in `platform.yml`** (a tag format, a field): the
+running reconciler reads it with its own schema. Move the server first to a
+version that understands it, written the old way (the same digest under its
+`sha-` tag), then write the new value (D109: four minutes of "invalid
+instance" on 21 Nov. 2026).
+
 **A version that must not go out alone**: keep it on a branch, or have the
 instance's PR wait by stepping the minor (`v1.1.0` in `ci.yml`): only
 `v1.0.<n>` steps merge by themselves.
