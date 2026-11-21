@@ -593,7 +593,22 @@ encrypt), compared after decryption without printing them, plain files deleted:
 The restic password also goes in the owner's password manager. In
 `platform.yml`: `backup.repository: s3:<endpoint>/<bucket>`.
 
-**Running a job now** instead of at 02:00 UTC: the state is read when the
+**A backup now**, instead of waiting for 02:00 UTC, from the instance repo on
+the Mac (D105):
+
+```bash
+bivy backup                  # the night's job, followed to its end (a few minutes)
+bivy backup --restore-test   # and the weekly restore test right after
+```
+
+Before any change that can lose data (D89). It starts at the reconciler's next
+pass, within a minute, or after a restore of an app that holds the lock.
+Ctrl-C or a lost connection leaves the backup running: `bivy status` shows how
+it ended. An app with `backup: { stop: true }` is stopped during it, as at
+night.
+
+**By hand**, for the clean-up or a server whose reconciler predates
+`bivy backup`: the state is read when the
 reconciler starts, and the alert state is written back on every pass. So stop
 the reconciler, change the file, then start it again
 (`sudo systemctl stop bivouac-reconciler`, edit, `start`):
@@ -912,6 +927,10 @@ to start over with a new plan, confirmation and backup, or forget it
 lifted); after, it carries on and never sends the rebuild twice.
 
 ## 17. The status page (D96)
+
+From the Mac, without a browser or a passkey: `bivy status` shows the same
+state through SSH, then lists what is worth a look (D105). It only reads;
+`--json` gives the server's answer as it is.
 
 `status.<domain>`, for the admins only: what runs, versions, health, memory,
 restarts, the last pass, the last backup and restore test, open incidents, the

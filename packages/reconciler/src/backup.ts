@@ -466,6 +466,62 @@ export function isDue(state: BackupState, now: number): boolean {
     && now - (state.lastAttemptAt ?? 0) >= RETRY_DELAY;
 }
 
+/**
+ * A backup asked for now (`bivy backup`), instead of waiting for the night.
+ * `main.js backup-now` writes it; the running reconciler picks it up at its
+ * next pass and records how it went in the same file, which the command
+ * follows. The scheduler's own state is never touched from outside: it is
+ * held in memory and written back on every pass.
+ */
+export interface BackupRequest {
+  requestedAt: number;
+  /** Also run the restore test right after, whatever the week. */
+  restoreTest: boolean;
+  status: "waiting" | "running" | "done" | "failed";
+  startedAt?: number;
+  finishedAt?: number;
+  /** Why the backup failed. */
+  error?: string;
+  /** Only when a restore test was asked for, and the backup worked. */
+  restore?: "passed" | "failed";
+  restoreError?: string;
+}
+
+const requestPath = (stateDir: string) => join(stateDir, "backup", "request.json");
+
+export function readBackupRequest(stateDir: string): BackupRequest | undefined {
+  try {
+    const path = requestPath(stateDir);
+    if (!existsSync(path)) return undefined;
+    const value = JSON.parse(readFileSync(path, "utf8")) as BackupRequest;
+    return typeof value.requestedAt === "number" && typeof value.status === "string" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeBackupRequest(stateDir: string, request: BackupRequest): void {
+  writeIfChanged(requestPath(stateDir), JSON.stringify(request), 0o600);
+}
+
+/**
+ * Asks for a backup now. A request still waiting or running is joined rather
+ * than doubled: one asking for the restore test as well adds it while the
+ * backup has not started.
+ */
+export function requestBackup(stateDir: string, restoreTest: boolean, now = Date.now()): { request: BackupRequest; joined: boolean } {
+  const current = readBackupRequest(stateDir);
+  if (current?.status === "running") return { request: current, joined: true };
+  if (current?.status === "waiting") {
+    const request = { ...current, restoreTest: current.restoreTest || restoreTest };
+    writeBackupRequest(stateDir, request);
+    return { request, joined: true };
+  }
+  const request: BackupRequest = { requestedAt: now, restoreTest, status: "waiting" };
+  writeBackupRequest(stateDir, request);
+  return { request, joined: false };
+}
+
 export interface SchedulerOptions {
   runtime: Runtime;
   log: (message: string, fields?: Record<string, unknown>) => void;
@@ -518,13 +574,22 @@ export class BackupScheduler {
   }
 
   tick(): void {
-    if (this.running || !this.plan || !isDue(this.state, this.now())) return;
+    if (this.running || !this.plan) return;
     const { stateDir } = this.options.runtime;
-    // A restore in progress: the backup waits for a later pass.
+    const request = readBackupRequest(stateDir);
+    const asked = request?.status === "waiting" ? request : undefined;
+    if (!asked && !isDue(this.state, this.now())) return;
+    // A restore in progress: the backup waits for a later pass, and so does a request.
     const lock = { job: "backup" as const, startedAt: this.now() };
     if (acquireLock(stateDir, lock)) return;
     const plan = this.plan;
-    this.running = this.attempt(plan).finally(() => {
+    if (asked) {
+      // The restore test is due again this week: it runs right after a backup that worked.
+      if (asked.restoreTest) delete this.state.restoreWeek;
+      writeBackupRequest(stateDir, { ...asked, status: "running", startedAt: this.now() });
+      this.options.log("backup asked for now", { restoreTest: asked.restoreTest });
+    }
+    this.running = this.attempt(plan, asked).finally(() => {
       releaseLock(stateDir, lock);
       this.running = undefined;
     });
@@ -559,13 +624,16 @@ export class BackupScheduler {
     const { runtime } = this.options;
     const stale = clearStaleLock(runtime.stateDir);
     if (stale?.job === "restore") this.options.log("a restore was interrupted: its app stays stopped until it is restored again", { app: stale.app });
+    // A backup asked for now that a restart cut short: said, never started again on its own.
+    const request = readBackupRequest(runtime.stateDir);
+    if (request?.status === "running") writeBackupRequest(runtime.stateDir, { ...request, status: "failed", finishedAt: this.now(), error: "it was interrupted by a restart of the reconciler" });
     for (const name of [CONTAINER, `${CONTAINER}-dump`, RESTORE_CONTAINER, ...RESTORE_APP_CONTAINERS, ...REBUILD_CONTAINERS]) {
       await runtime.docker.removeContainer(name, { anonymousVolumes: true });
     }
     for (const leftover of ["dumps", "restore-test", "restore-app"]) rmSync(join(runtime.stateDir, "backup", leftover), { recursive: true, force: true });
   }
 
-  private async attempt(plan: BackupPlan): Promise<void> {
+  private async attempt(plan: BackupPlan, asked?: BackupRequest): Promise<void> {
     const now = this.now();
     const day = backupDay(now);
     Object.assign(this.state, {
@@ -586,11 +654,28 @@ export class BackupScheduler {
       this.options.log("backup done");
       await this.cleanUp(plan);
       await this.testRestore(plan);
+      if (asked) this.answer(asked, {
+        status: "done",
+        ...(asked.restoreTest ? { restore: this.state.restoreError ? "failed" as const : "passed" as const } : {}),
+        ...(asked.restoreTest && this.state.restoreError ? { restoreError: this.state.restoreError } : {}),
+      });
     } catch (error) {
       this.state.lastError = redact((error as Error).message);
       this.save();
       this.options.log("backup failed", { error: this.state.lastError });
       await this.ping(plan, "/fail");
+      if (asked) this.answer(asked, { status: "failed", error: this.state.lastError });
+    }
+  }
+
+  /** How a backup asked for now went, for the command that follows it. */
+  private answer(asked: BackupRequest, outcome: Pick<BackupRequest, "status" | "error" | "restore" | "restoreError">): void {
+    const { stateDir } = this.options.runtime;
+    const current = readBackupRequest(stateDir);
+    try {
+      writeBackupRequest(stateDir, { ...asked, ...(current?.requestedAt === asked.requestedAt ? current : {}), ...outcome, finishedAt: this.now() });
+    } catch (error) {
+      this.options.log("backup request not answered", { error: (error as Error).message });
     }
   }
 

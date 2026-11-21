@@ -3,10 +3,10 @@ import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Watch, loadAlertCredentials, sendPushover } from "./alerts.js";
-import { Api } from "./api.js";
+import { Api, platformState, readLastPass } from "./api.js";
 import { API_PORT, loadInstance } from "@bivouac/manifest";
-import { BackupScheduler, backupPlan, runBackup, runMaintenance, runRestoreTest } from "./backup.js";
-import { appBeingRestored } from "./lock.js";
+import { BackupScheduler, backupPlan, readBackupRequest, requestBackup, runBackup, runMaintenance, runRestoreTest, type BackupRequest } from "./backup.js";
+import { appBeingRestored, readLock } from "./lock.js";
 import { parseRestoreArgs, restoreApp } from "./restore.js";
 import { DEFAULT_MARKER, parsePlatformRestoreArgs, readRebuildState, restorePlatform } from "./rebuild.js";
 import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
@@ -62,6 +62,13 @@ import { SelfUpdater } from "./self-update.js";
  *
  * `main.js restore-platform [--list] [--snapshot <id>] [--yes]` brings the
  * whole platform's data back on a server being rebuilt (rebuild.ts, D91).
+ *
+ * `main.js status` prints what the status page shows, as one JSON line,
+ * and `main.js backup-now [--restore-test]` asks the running reconciler for
+ * a backup now and follows it to its end (both beside it with `docker exec`,
+ * for bivy status and bivy backup, D104).
+ *
+ * Any other command is refused: it never starts a second reconciler.
  *
  * `main.js selftest` only checks that the image runs and finds its tools
  * (git, ssh, sops): a new version passes it before the reconciler moves to
@@ -157,6 +164,49 @@ async function alertTest(): Promise<number> {
   return 0;
 }
 
+/** How long `backup-now` follows a request: a backup and a restore test each stop at 110 minutes. */
+const FOLLOW_FOR_MS = 5 * 60 * 60_000;
+/** Past this, a request still waiting is said once, with the reason when known. */
+const PICKED_UP_WITHIN_MS = 3 * 60_000;
+
+/** Follows a backup asked for now until its end, one log line per step. */
+async function followRequest(stateDir: string, requestedAt: number): Promise<number> {
+  const started = Date.now();
+  let seen: BackupRequest["status"] | undefined;
+  let saidWaiting = false;
+  for (;;) {
+    const request = readBackupRequest(stateDir);
+    if (!request || request.requestedAt !== requestedAt) {
+      log("backup failed", { error: "the request disappeared: look at bivy status" });
+      return 1;
+    }
+    if (request.status !== seen) {
+      seen = request.status;
+      if (request.status === "running") log("backup starting");
+      if (request.status === "failed") {
+        log("backup failed", { error: request.error ?? "unknown" });
+        return 1;
+      }
+      if (request.status === "done") {
+        log("backup done", request.restoreTest ? { restore: request.restore } : {});
+        if (request.restore === "failed") log("restore test failed", { error: request.restoreError ?? "unknown" });
+        return request.restore === "failed" ? 1 : 0;
+      }
+    }
+    const waited = Date.now() - started;
+    if (request.status === "waiting" && !saidWaiting && waited > PICKED_UP_WITHIN_MS) {
+      saidWaiting = true;
+      const lock = readLock(stateDir);
+      log("still waiting", { reason: lock ? `a ${lock.job}${lock.app ? ` of ${lock.app}` : ""} is running` : "the reconciler has not picked it up yet" });
+    }
+    if (waited > FOLLOW_FOR_MS) {
+      log("still running", { error: "no end after 5 hours: look at bivy status" });
+      return 1;
+    }
+    await new Promise((wait) => setTimeout(wait, 2000));
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === "selftest") return selftest();
   if (argv[0] === "alert-test") return alertTest();
@@ -218,6 +268,42 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
+  if (argv[0] === "status") {
+    // bivy status (D104): what the status page shows, for whoever has SSH.
+    const self = await config.runtime.docker.inspectContainer(config.self);
+    const state = await platformState({
+      runtime: config.runtime,
+      reconciler: { image: config.image ?? null, startedAt: self?.State.StartedAt ?? null },
+      lastPass: readLastPass(config.runtime.stateDir),
+    });
+    process.stdout.write(`${JSON.stringify(state)}\n`);
+    return 0;
+  }
+
+  if (argv[0] === "backup-now") {
+    // bivy backup (D104): asks the running reconciler, then follows it. Cut
+    // short, the backup carries on: it runs in the reconciler, not here.
+    process.stdout.on("error", () => undefined);
+    try {
+      const flags = argv.slice(1);
+      const unknown = flags.filter((flag) => flag !== "--restore-test");
+      if (unknown.length > 0) throw new Error(`unknown option ${unknown.join(" ")}: only --restore-test`);
+      const rebuild = readRebuildState(config.rebuildMarker, config.runtime.stateDir);
+      if (rebuild?.mode === "test") throw new Error("this is a rebuild test server: it never writes to the backups");
+      if (rebuild?.waiting) throw new Error("this server is waiting for its data: nothing to back up yet");
+      const instance = loadInstance(config.checkout);
+      if (!instance.platform) throw new Error("the instance repo checkout cannot be read");
+      const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
+      if (!backupPlan(instance.platform, instance.apps, secrets, config.backupRepository)) throw new Error("backups are not configured on this platform");
+      const { request, joined } = requestBackup(config.runtime.stateDir, flags.includes("--restore-test"));
+      log(joined ? "joining the backup already asked for" : "backup requested", { restoreTest: request.restoreTest });
+      return await followRequest(config.runtime.stateDir, request.requestedAt);
+    } catch (error) {
+      log("backup failed", { error: (error as Error).message });
+      return 1;
+    }
+  }
+
   if (argv[0] === "once") {
     try {
       const result = await runPass(config, config.runtime, selfUpdater);
@@ -236,6 +322,12 @@ async function main(argv: string[]): Promise<number> {
       log("pass failed", { error: (error as Error).message });
       return 1;
     }
+  }
+
+  // An unknown command must never fall through to a second reconciler loop.
+  if (argv[0] !== undefined) {
+    log("unknown command", { command: argv[0] });
+    return 2;
   }
 
   const watch = process.env.BIVOUAC_ALERTS === "off" ? undefined : new Watch({ stateDir: config.runtime.stateDir, log });

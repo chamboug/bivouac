@@ -113,6 +113,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D101 | `bivy restore <app>` | |
 | D103 | Apps installable on a phone, with a theme choice | |
 | D104 | Claude works through `bivy`; a gap becomes a command | replaces D32 |
+| D105 | `bivy status` and `bivy backup` | |
 
 ---
 
@@ -601,3 +602,10 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
   - **changing something** on the server goes through a written command or Git; a missing one is written first, except an announced emergency fix (rule 4).
 - **Each time Claude improvises**, it asks two questions: would this be worth a command (it came back a second time, it changes something, or it is a runbook step)? Would it have been easy without Claude's privileged access (its SSH key, its `gh` token, its knowledge of the internals)? When the answer to the second is no, the gap is noted and the command, or a way to do without the access, is proposed. A one-off check for a one-off incident stays improvised: every command is code to maintain (rule 9).
 - **Rejected**: a platform MCP over SSH (D32): the same work behind a second door, one more component, invisible to the owner; "only written commands, ever": it would block diagnosing an unknown failure.
+
+### D105 — `bivy status` and `bivy backup`
+- **Context** (21 Nov. 2026): the first two gaps found by applying D104 to the runbook. Every session began with checks improvised over SSH (backups, restarts, `OOMKilled`, swap, versions), and the status page that shows the same is behind the owner's passkey. A backup before a change that can lose data (D89) meant stopping the reconciler, editing its state file with `jq` and starting it again: fragile (a reconciler left stopped deploys nothing, and alerts take a quarter of an hour), and impossible without knowing the internals.
+- **Choice**: two commands of the reconciler, run beside it with `docker exec`, as `restore-app` is: `status` prints the status page's state (the last pass now also saved to disk); `backup-now [--restore-test]` writes a request file that the running reconciler picks up at its next pass, and follows it. The backup is the night's own job: same lock, healthchecks.io pings, alerts and record; the scheduler's state is never written from outside. `bivy status` adds the sentences "what is worth a look" (a late pass or backup, a failure, a stopped, unhealthy, restarted or memory-killed container, an incident, a disk past 80%, no swap). Neither asks for consent: one only reads, the other only adds a copy (an app with `backup: { stop: true }` is stopped during it, as at night).
+- **Guard**: an older reconciler would take an unknown command for its main loop and start a second reconciler beside the first; `bivy` checks the compiled code names the command before sending it, and the reconciler now refuses any command it does not know.
+- **Accepted**: an extra ping to healthchecks.io between two nightly ones (harmless to a cron check, which waits for the next scheduled time, from memory); a request picked up within a minute, not at once.
+- **Rejected**: a write on the internal API (the status page's token would then start backups, and D3 keeps sync as its only action); editing the scheduler's state from outside (it is written back on every pass); a separate process running the backup (two runs could overlap the night's).

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appManifestSchema } from "@bivouac/manifest";
 import type { Runtime } from "./base.js";
-import { BackupScheduler, backupPlan, backupWeek, dumpsFit, markLatestIncomplete, parseCount, retentionCommands, isDue, restartPaused, type BackupPlan } from "./backup.js";
+import { BackupScheduler, readBackupRequest, requestBackup, backupPlan, backupWeek, dumpsFit, markLatestIncomplete, parseCount, retentionCommands, isDue, restartPaused, type BackupPlan } from "./backup.js";
 import { writeFileSync, mkdirSync, existsSync } from "node:fs";
 
 const HOUR = 3600_000;
@@ -284,6 +284,91 @@ describe("after a restart in the middle of a run", () => {
     ]);
     expect(existsSync(join(stateDir, "backup", "dumps"))).toBe(false);
     expect(existsSync(join(stateDir, "backup", "restore-test"))).toBe(false);
+  });
+});
+
+describe("a backup asked for now (bivy backup)", () => {
+  it("runs on the next tick even when the night's backup is done, and records how it went", async () => {
+    let runs = 0;
+    const { scheduler, stateDir, pings } = setup(async () => { runs += 1; });
+    scheduler.tick();
+    await scheduler.idle();
+    expect(runs).toBe(1);
+    requestBackup(stateDir, false, at(100, 15));
+    scheduler.tick();
+    await scheduler.idle();
+    expect(runs).toBe(2);
+    expect(readBackupRequest(stateDir)).toMatchObject({ status: "done", requestedAt: at(100, 15), finishedAt: expect.any(Number) });
+    expect(readBackupRequest(stateDir)?.restore).toBeUndefined();
+    expect(pings.filter((ping) => ping === "https://hc-ping.com/job")).toHaveLength(2);
+    scheduler.tick();
+    await scheduler.idle();
+    expect(runs).toBe(2);
+  });
+
+  it("runs the restore test again when asked, whatever the week", async () => {
+    let restores = 0;
+    const { scheduler, stateDir } = setup(async () => {}, undefined, false, async () => {}, async () => { restores += 1; });
+    scheduler.tick();
+    await scheduler.idle();
+    expect(restores).toBe(1);
+    requestBackup(stateDir, false);
+    scheduler.tick();
+    await scheduler.idle();
+    expect(restores).toBe(1);
+    requestBackup(stateDir, true);
+    scheduler.tick();
+    await scheduler.idle();
+    expect(restores).toBe(2);
+    expect(readBackupRequest(stateDir)).toMatchObject({ status: "done", restore: "passed" });
+  });
+
+  it("says when the backup or the restore test failed", async () => {
+    const broken = setup(async () => { throw new Error("bucket missing"); });
+    requestBackup(broken.stateDir, true);
+    broken.scheduler.tick();
+    await broken.scheduler.idle();
+    expect(readBackupRequest(broken.stateDir)).toMatchObject({ status: "failed", error: expect.stringContaining("bucket missing") });
+    const restore = setup(async () => {}, undefined, false, async () => {}, async () => { throw new Error("no dump of recettes"); });
+    requestBackup(restore.stateDir, true);
+    restore.scheduler.tick();
+    await restore.scheduler.idle();
+    expect(readBackupRequest(restore.stateDir)).toMatchObject({ status: "done", restore: "failed", restoreError: expect.stringContaining("no dump of recettes") });
+  });
+
+  it("joins a request still waiting instead of doubling it, and adds the restore test to it", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "bivouac-backup-"));
+    roots.push(stateDir);
+    const first = requestBackup(stateDir, false, 1000);
+    const second = requestBackup(stateDir, true, 2000);
+    expect(first.joined).toBe(false);
+    expect(second).toEqual({ joined: true, request: { requestedAt: 1000, restoreTest: true, status: "waiting" } });
+  });
+
+  it("waits while a restore of an app holds the lock", () => {
+    let runs = 0;
+    const { scheduler, stateDir } = setup(async () => { runs += 1; });
+    writeFileSync(join(stateDir, "backup", "lock.json"), JSON.stringify({ job: "restore", app: "biblio", startedAt: at(100, 3) }));
+    requestBackup(stateDir, false);
+    scheduler.tick();
+    expect(runs).toBe(0);
+    expect(readBackupRequest(stateDir)?.status).toBe("waiting");
+  });
+
+  it("marks one cut short by a restart as failed, and never starts it again on its own", async () => {
+    const { stateDir } = setup();
+    writeFileSync(join(stateDir, "backup", "request.json"), JSON.stringify({ requestedAt: 1, restoreTest: false, status: "running", startedAt: 2 }));
+    // The night's backup is done: only the request could start one.
+    writeFileSync(join(stateDir, "backup", "state.json"), JSON.stringify({ attempts: 1, day: 100 }));
+    let runs = 0;
+    const runtime = { stateDir, pausedApps: new Set<string>(), docker: { removeContainer: async () => {} } } as unknown as Runtime;
+    const restarted = new BackupScheduler({ runtime, log: () => {}, run: async () => { runs += 1; }, now: () => at(100, 4) });
+    restarted.update(plan);
+    await restarted.recover();
+    expect(readBackupRequest(stateDir)).toMatchObject({ status: "failed", error: expect.stringContaining("interrupted") });
+    restarted.tick();
+    await restarted.idle();
+    expect(runs).toBe(0);
   });
 });
 

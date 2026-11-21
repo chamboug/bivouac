@@ -5,6 +5,7 @@ import { BlockList } from "node:net";
 import { join } from "node:path";
 import { PLATFORM_CONTAINERS, PLATFORM_NETWORKS, STATUS_APP, appContainerName } from "@bivouac/manifest";
 import type { Runtime } from "./base.js";
+import { writeIfChanged } from "./base.js";
 import { MANAGED_LABEL } from "./containers.js";
 import { deriveSecret, type PlatformSecrets } from "./secrets.js";
 
@@ -89,6 +90,12 @@ export class Api {
 
   recordPass(summary: Omit<PassSummary, "at">): void {
     this.lastPass = { at: new Date(this.now()).toISOString(), ...summary };
+    // Also on disk, for `main.js status` (bivy status), which runs beside this process.
+    try {
+      writeIfChanged(lastPassPath(this.options.runtime.stateDir), JSON.stringify(this.lastPass), 0o600);
+    } catch (error) {
+      this.options.log?.("last pass not saved", { error: (error as Error).message });
+    }
   }
 
   listen(port: number): Server {
@@ -159,36 +166,64 @@ export class Api {
   }
 
   async state(): Promise<unknown> {
-    const { runtime } = this.options;
-    const containers = await Promise.all(
-      (await this.managed()).map(async (name) => {
-        const info = await runtime.docker.inspectContainer(name);
-        if (!info) return undefined;
-        const running = info.State.Running === true;
-        const memory = running ? await runtime.docker.memory(name).catch(() => undefined) : undefined;
-        return {
-          name,
-          kind: containerKind(name),
-          image: info.Config.Image,
-          state: info.State.Status,
-          health: info.State.Health?.Status ?? null,
-          startedAt: info.State.StartedAt,
-          restarts: info.RestartCount ?? 0,
-          oomKilled: info.State.OOMKilled === true,
-          memory: memory ?? null,
-        };
-      }),
-    );
-    return {
-      generatedAt: new Date(this.now()).toISOString(),
+    return platformState({
+      runtime: this.options.runtime,
       reconciler: { image: this.options.image ?? null, startedAt: this.startedAt },
       lastPass: this.lastPass ?? null,
-      containers: containers.filter((entry) => entry !== undefined),
-      backup: backupSummary(runtime.stateDir),
-      incidents: openIncidents(runtime.stateDir),
-      host: hostSummary(runtime.stateDir),
-    };
+      now: this.now,
+    });
   }
+}
+
+const lastPassPath = (stateDir: string) => join(stateDir, "reconciler", "last-pass.json");
+
+/** The last pass the running reconciler recorded, as `main.js status` reads it from beside it. */
+export function readLastPass(stateDir: string): PassSummary | null {
+  return (readJson(lastPassPath(stateDir)) as PassSummary | undefined) ?? null;
+}
+
+/**
+ * What runs and how the platform is: the status page's `/v1/state`, and
+ * `main.js status` for `bivy status` (D104). Only the platform's own
+ * containers, never their environment, mounts or command.
+ */
+export async function platformState(options: {
+  runtime: Runtime;
+  reconciler: { image: string | null; startedAt: string | null };
+  lastPass: PassSummary | null;
+  now?: () => number;
+}): Promise<unknown> {
+  const { runtime } = options;
+  const { docker, self } = runtime;
+  const names = [...new Set([...(self ? [self] : []), ...(await docker.listContainers(`${MANAGED_LABEL}=true`))])].sort();
+  const containers = await Promise.all(
+    names.map(async (name) => {
+      const info = await docker.inspectContainer(name);
+      if (!info) return undefined;
+      const running = info.State.Running === true;
+      const memory = running ? await docker.memory(name).catch(() => undefined) : undefined;
+      return {
+        name,
+        kind: containerKind(name),
+        image: info.Config.Image,
+        state: info.State.Status,
+        health: info.State.Health?.Status ?? null,
+        startedAt: info.State.StartedAt,
+        restarts: info.RestartCount ?? 0,
+        oomKilled: info.State.OOMKilled === true,
+        memory: memory ?? null,
+      };
+    }),
+  );
+  return {
+    generatedAt: new Date((options.now ?? Date.now)()).toISOString(),
+    reconciler: options.reconciler,
+    lastPass: options.lastPass,
+    containers: containers.filter((entry) => entry !== undefined),
+    backup: backupSummary(runtime.stateDir),
+    incidents: openIncidents(runtime.stateDir),
+    host: hostSummary(runtime.stateDir),
+  };
 }
 
 /** An app the owner hosts, or a piece of the platform itself (the status page included). */
@@ -223,6 +258,8 @@ export function backupSummary(stateDir: string): unknown {
     restoreTestWeekPassed: typeof state.restoreWeek === "number" ? state.restoreWeek : null,
     restoreError: typeof state.restoreError === "string" ? state.restoreError : null,
     maintenanceError: typeof state.maintenanceError === "string" ? state.maintenanceError : null,
+    // The last backup asked for now (bivy backup), as backup.ts records it.
+    request: readJson(join(stateDir, "backup", "request.json")) ?? null,
   };
 }
 
@@ -249,7 +286,10 @@ export function hostSummary(stateDir: string): unknown {
     const match = new RegExp(`^${name}:\\s+(\\d+) kB$`, "m").exec(meminfo);
     return match ? Number(match[1]) * 1024 : null;
   };
+  // Not namespaced by Docker: the host's own (from memory, checked on the server).
+  const uptime = existsSync("/proc/uptime") ? Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) : Number.NaN;
   return {
+    bootedAt: Number.isFinite(uptime) ? new Date(Date.now() - uptime * 1000).toISOString() : null,
     disk: { totalBytes: disk.blocks * disk.bsize, availableBytes: disk.bavail * disk.bsize },
     memory: { totalBytes: field("MemTotal"), availableBytes: field("MemAvailable") },
     swap: { totalBytes: field("SwapTotal"), freeBytes: field("SwapFree") },

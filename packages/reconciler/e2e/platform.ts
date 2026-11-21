@@ -249,9 +249,10 @@ export function startIdleReconciler(platform: Platform, env: Record<string, stri
 }
 
 /** Starts the reconciler in the background, passing every 10 s (local platform). */
-export function startReconciler(platform: Platform, ports: string): void {
+export function startReconciler(platform: Platform, ports: string, env: Record<string, string> = {}): void {
   docker("run", "--detach", "--restart", "unless-stopped",
     ...reconcilerOptions(platform, platform.ageKey, ports),
+    ...Object.entries(env).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
     "--env", "BIVOUAC_INTERVAL_SECONDS=10",
     // Fake credentials: the local platform must never try to alert anyone.
     "--env", "BIVOUAC_ALERTS=off",
