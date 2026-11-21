@@ -70,10 +70,11 @@ How Bivouac works today, part by part. The reasons are in the [decision log](dec
   - per-client group restriction, groups in the ID token with the `groups` scope;
   - admin API with `STATIC_API_KEY`; a client's chosen secret set through `POST /api/oidc/clients/{id}/secrets`; `PUT` replaces the whole client (D52);
   - several passkeys per account (users are advised to have at least two, phone and computer, or one synced passkey); one-time **Login Code** links made by the admin for someone who lost theirs, and `bivy login-link` for an admin who lost every passkey (D107); no email code (D37);
-  - the first admin is created at `/setup` by whoever gets there first (D15).
+  - the first admin is created at `/setup` by whoever gets there first (D15);
+  - a sign-in lasts 30 days (`SESSION_DURATION`), not extended on use; an app's daily return trip is silent meanwhile (D102).
 - **Mail for Pocket ID only**: an OVH mailbox through `smtp.mail.ovh.net:587`, STARTTLS, password as a file; settings from Git (`UI_CONFIG_DISABLED=true`). Hetzner blocks outbound 25 and 465. **Apps never get that password** (D70).
 - **Auth modes** (D10), in the manifest:
-  - `oidc` (default): the shared Nuxt layer speaks OIDC, encrypted-cookie session of 24 h (D79);
+  - `oidc` (default): the shared Nuxt layer speaks OIDC, encrypted-cookie session of 24 h, renewed silently through Pocket ID (D79, D102);
   - `forward` (*not built*): Caddy `forward_auth` to **Tinyauth** (v5.2.0 verified), connected to Pocket ID, `ACLS_POLICY=deny`, per-app groups through `TINYAUTH_APPS_<APP>_OAUTH_GROUPS`, Caddy overwriting `X-Forwarded-Host`, cookie on `.apps.example.org`. Before building it: D94's open item on apps reaching each other;
   - `public`: no protection;
   - `local`: the app signs its own users in with **Better Auth**; the platform gives `SESSION_SECRET` (D97). Pocket ID stays reserved for the invited community; a "Sign in with Pocket ID" button (generic OAuth) can sit beside local accounts. If several public sites ever had to share accounts, an IdP with passwords would be reconsidered.

@@ -61,6 +61,9 @@ export function pocketIdUrl(): string {
   return `http://${PLATFORM_CONTAINERS.pocketId}:${POCKET_ID_PORT}`;
 }
 
+/** One passkey a month per browser, not one per app per day (D102). */
+export const POCKET_ID_SESSION_DAYS = 30;
+
 /**
  * Pocket ID reads its application settings from the environment only with
  * `UI_CONFIG_DISABLED` (verified, v2.19.2): Git stays the source of truth,
@@ -73,6 +76,12 @@ export function pocketIdConfigEnv(mail: MailConfig | undefined): Record<string, 
     // Invitations only: open signup stays refused, and the pages that create
     // and use invitation links are hidden unless this is set (verified).
     ALLOW_USER_SIGNUPS: "withToken",
+    // How long a sign-in at Pocket ID lasts, in minutes (default 60, verified
+    // v2.19.2). An app's own session lasts a day; past it, the app sends the
+    // browser back here and the round trip is silent while this one is valid.
+    // The token is not extended on use; a disabled or deleted account is
+    // refused at once, since Pocket ID reloads the user on every request.
+    SESSION_DURATION: String(POCKET_ID_SESSION_DAYS * 24 * 60),
     ...(mail && {
       SMTP_HOST: mail.host,
       SMTP_PORT: String(mail.port),

@@ -111,6 +111,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D99 | `bivy init` and `bivy configure` | never run for real |
 | D100 | Visual identity | |
 | D101 | `bivy restore <app>` | |
+| D102 | A Pocket ID sign-in lasts 30 days | |
 | D103 | Apps installable on a phone, with a theme choice | |
 | D104 | Claude works through `bivy`; a gap becomes a command | replaces D32 |
 | D105 | `bivy status` and `bivy backup` | |
@@ -590,6 +591,14 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 ### D101 — `bivy restore <app>`, guided
 - **Choice**: `bivy restore [app]` asks the app, the nightly copy (14 latest; older with `--snapshot`) and the part (both, database or files); shows the server's plan from a dry run of `restore-app` (what goes back, what is kept, disk needed and free); warns when the app was deployed after the copy; asks for the app's name typed in a terminal (no flag, rule 5); runs it with one sentence per step; ends with the undo command. `--plan` only reads, and is all Claude runs. A lost connection does not stop the restore on the server (`restore-app` ignores SIGHUP and a closed output: tested end to end). The reconciler's dry run now reports disk needed and free, and a real run refuses when it is short (closes D94's gap).
 - **Rejected**: running the restore detached and polling it; reading the image history from Git; listing every copy.
+
+### D102 — A Pocket ID sign-in lasts 30 days
+- **Context**: people had to use their passkey again on every app, about once a day. Each app's session lasts 24 hours from sign-in and is not extended (D79); past it, the app sends the browser to Pocket ID, whose own sign-in lasted 60 minutes (its default), so it asked for the passkey again. Deployments played no part: the app session key is derived and does not change.
+- **Choice**: `SESSION_DURATION=43200` (30 days) on Pocket ID, from Git. An app still asks Pocket ID once a day, so group changes keep taking effect within a day; the round trip is silent while the Pocket ID sign-in is valid and the app was already authorized. Facts verified in v2.19.2's source: the sign-in is a signed token whose lifetime is that setting, not extended on use; every request reloads the account, so disabling someone takes effect at once at Pocket ID and within a day in apps; MCP clients keep requiring a fresh passkey (D85). Login Codes, device login and invitation sign-ups get the same 30 days.
+- **Sign-out**: the oidc layer keeps the ID token in the session cookie and sends it to Pocket ID's end-session endpoint with the app's address; Pocket ID then ends its own session at once and sends the browser back. Without it, Pocket ID only offered a confirmation page, and closing it kept the 30-day sign-in. The token is left out when the session data would pass 2600 bytes (a cookie over 4 KB is dropped and the user could not sign in); sign-out then confirms at Pocket ID, as do sessions opened before this layer version. Signing out of an app does not disconnect Claude from it (D85). The token travels in the URL, so Pocket ID's request log, which admins see on the status page, holds it: accepted, it only proves a past sign-in and opens nothing.
+- **Met on the way**: an app keeps its own copy of the template's tests, so app-layers v1.3.0 failed the sign-out test of every app (it checked the exact provider address). Fixed in each app to check only where sign-out goes. A layer change that alters what the template's tests assert needs the same fix in each app before its Renovate PR can pass.
+- **Accepted**: a browser left signed in, or a copied Pocket ID cookie, opens the apps for up to 30 days instead of an hour, and the owner's own browser is an admin credential that long. Logging out only clears the cookie, and removing a passkey does not end the sessions it opened; disabling an account cuts them only while it stays disabled. The real cut is `pocket-id key-rotate --session-key` then a restart, which signs everyone out (runbook section 20).
+- **Rejected**: extending the app session on use (groups would no longer be reread, and each app would still ask once); a longer app session alone (same reason).
 
 ### D103 — Apps installable on a phone, with a theme choice
 - **Context**: apps are used mostly on phones, often added to the home screen, where they open without the browser's bar; each app had to rediscover the manifest, the icons and dark mode.
