@@ -4,13 +4,14 @@
  * like passes on a real server.
  */
 import { spawn } from "node:child_process";
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PLATFORM_IMAGES } from "../../manifest/src/platform.ts";
 import { LoginLinkError, loginLinkCommand, readLink } from "../../bivy/src/login-link.ts";
+import { SoftwarePasskey } from "./passkey.ts";
 import {
   CADDY_ADDRESS,
   DOMAIN,
@@ -25,6 +26,7 @@ import {
   inspect,
   pocketIdApi,
   psql,
+  RECONCILER_BAD_CADDY,
   RECONCILER_BROKEN,
   RECONCILER_NEWER,
   RECONCILER_RUNNING,
@@ -37,8 +39,10 @@ import {
   run,
   writeStateFile,
   runOnce,
+  runLoopUntilExit,
   reachableFromApps,
   throughCaddy,
+  Visitor,
   encryptForPlatform,
   tokenAnswer,
   type PassOutput,
@@ -318,6 +322,107 @@ describe("d2. a sign-in link for an admin who lost every passkey (bivy login-lin
   });
 });
 
+describe("d3. a person signs in to an app with a passkey, as from a phone (D109)", () => {
+  // What a base update must never break: a passkey added by a new member,
+  // then a sign-in with it alone, then the app's own OIDC exchange. Pocket
+  // ID's API and pages as its own front end uses them, through Caddy.
+  const AUTH = `auth.${DOMAIN}`;
+  const ORIGIN = `https://${AUTH}`;
+  const CALLBACK = `https://recettes.${DOMAIN}/auth/callback`;
+  const passkey = new SoftwarePasskey(ORIGIN);
+  let userId = "";
+  let famille = "";
+
+  const json = <T>(answer: { body: string }) => JSON.parse(answer.body) as T;
+  const setGroups = (groupIds: string[]) =>
+    expect(pocketIdApi(platform, "PUT", `/api/users/${userId}/user-groups`, { userGroupIds: groupIds }).status).toBe(200);
+
+  /** Asks Pocket ID to sign in to recettes, going through its consent page if it shows one; where it sends the browser. */
+  // Random, as the app's sign-in route makes them: Pocket ID refuses a state shorter than 8 characters.
+  const STATE = randomBytes(16).toString("base64url");
+  const NONCE = randomBytes(16).toString("base64url");
+  const authorize = (visitor: Visitor, challenge: string): string => {
+    const query = new URLSearchParams({
+      client_id: "recettes", redirect_uri: CALLBACK, response_type: "code", scope: "openid profile email groups",
+      state: STATE, nonce: NONCE, code_challenge: challenge, code_challenge_method: "S256",
+    });
+    let location = visitor.request(AUTH, `/authorize?${query}`).headers.location?.[0] ?? "";
+    for (let step = 0; step < 3 && location.startsWith("/interaction?"); step++) {
+      const id = new URL(location, ORIGIN).searchParams.get("interaction") ?? "";
+      const interaction = json<{ scopes: string[]; requiredSteps: string[]; currentStep?: string }>(visitor.request(AUTH, `/api/oidc/interactions/${id}`));
+      const next = interaction.currentStep ?? interaction.requiredSteps[0];
+      expect(next, "the only page a passkey sign-in may show is consent").toBe("consent");
+      const done = json<{ redirectUrl?: string }>(visitor.request(AUTH, `/api/oidc/interactions/${id}/complete`, { json: { step: next, scopes: interaction.scopes } }));
+      const url = new URL(done.redirectUrl ?? "", ORIGIN);
+      location = url.host === AUTH ? visitor.request(AUTH, `${url.pathname}${url.search}`).headers.location?.[0] ?? "" : url.href;
+    }
+    return location;
+  };
+
+  beforeAll(() => {
+    const user = pocketIdApi(platform, "POST", "/api/users", { username: "with-passkey", email: "with-passkey@example.invalid", firstName: "With", lastName: "Passkey" });
+    expect(user.status).toBe(201);
+    userId = (user.body as { id: string }).id;
+    const groups = pocketIdApi(platform, "GET", "/api/user-groups?search=famille").body as { data: { id: string; name: string }[] };
+    famille = groups.data.find((group) => group.name === "famille")?.id ?? "";
+    expect(famille).not.toBe("");
+    setGroups([famille]);
+  });
+
+  it("adds a passkey from a sign-in link, as a new member does", () => {
+    const visitor = new Visitor();
+    const link = readLink(run("sh", ["-c", loginLinkCommand("with-passkey")]), DOMAIN);
+    expect(visitor.request(AUTH, `/api/one-time-access-token/${link.split("/lc/")[1]}`, { method: "POST" }).status).toBe(200);
+    const start = visitor.request(AUTH, "/api/webauthn/register/start");
+    expect(start.status).toBe(200);
+    const finish = visitor.request(AUTH, "/api/webauthn/register/finish", { json: passkey.create(json(start)) });
+    expect(finish.status, finish.body).toBe(200);
+  });
+
+  it("signs in with that passkey alone, then into the app, which gets the person and their groups", () => {
+    const phone = new Visitor();
+    const start = phone.request(AUTH, "/api/webauthn/login/start");
+    expect(start.status).toBe(200);
+    const login = phone.request(AUTH, "/api/webauthn/login/finish", { json: passkey.get(json(start)) });
+    expect(login.status, login.body).toBe(200);
+    expect(json<{ id: string }>(login).id).toBe(userId);
+
+    const verifier = randomBytes(32).toString("base64url");
+    const location = authorize(phone, createHash("sha256").update(verifier).digest("base64url"));
+    expect(location).toMatch(new RegExp(`^${CALLBACK.replaceAll(".", "\\.")}\\?`));
+    const callback = new URL(location);
+    expect(callback.searchParams.get("state")).toBe(STATE);
+    const code = callback.searchParams.get("code") ?? "";
+    expect(code, location).not.toBe("");
+
+    // The app's side, as its server does it: the code for tokens, with its derived secret.
+    const secret = derive(platform.masterSecret, "oidc:recettes");
+    const tokens = new Visitor().request(AUTH, "/api/oidc/token", {
+      form: { grant_type: "authorization_code", code, redirect_uri: CALLBACK, code_verifier: verifier },
+      headers: [`Authorization: Basic ${Buffer.from(`recettes:${secret}`).toString("base64")}`],
+    });
+    expect(tokens.status, tokens.body).toBe(200);
+    const idToken = json<{ id_token: string }>(tokens).id_token;
+    const claims = JSON.parse(Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString()) as { sub: string; nonce: string; groups: string[]; iss: string };
+    expect(claims).toMatchObject({ sub: userId, nonce: NONCE, iss: ORIGIN });
+    expect(claims.groups).toContain("famille");
+  });
+
+  it("keeps someone outside the app's groups out, passkey or not", () => {
+    setGroups([]);
+    try {
+      const phone = new Visitor();
+      const start = phone.request(AUTH, "/api/webauthn/login/start");
+      expect(phone.request(AUTH, "/api/webauthn/login/finish", { json: passkey.get(json(start)) }).status).toBe(200);
+      const location = authorize(phone, createHash("sha256").update(randomBytes(32).toString("base64url")).digest("base64url"));
+      // Pocket ID's own refusal page, for the group (seen on v2.19.2): no code reaches the app.
+      expect(location).toBe("/interaction/error?error=You+are+not+allowed+to+access+this+service.");
+    } finally {
+      setGroups([famille]);
+    }
+  });
+});
+
 describe("e. app containers", () => {
   it("routes each app through Caddy once it is healthy", () => {
     expect(throughCaddy(`recettes.${DOMAIN}`, "/api/health").status).toBe(200);
@@ -500,6 +605,38 @@ describe("g. the reconciler moves itself to the version in platform.yml (D50)", 
   });
 });
 
+describe("g2. a new version whose base image does not start goes back by itself (D109)", () => {
+  const STATE = { image: "reconciler/image.env", trial: "reconciler/trial.env", refused: "reconciler/refused.env" };
+
+  it("goes back to the previous version, which brings Caddy back and reports why", () => {
+    // As systemd starts a version just moved to: on trial, the previous one named.
+    platform.commit({ "platform.yml": platformYml(RECONCILER_BAD_CADDY) }, "a version with a broken Caddy");
+    writeStateFile(platform, STATE.trial, `BIVOUAC_TRIAL_IMAGE=${RECONCILER_BAD_CADDY}\nBIVOUAC_PREVIOUS_IMAGE=${RECONCILER_RUNNING}\n`);
+    const loop = runLoopUntilExit(platform, RECONCILER_BAD_CADDY, { BIVOUAC_HEALTH_TIMEOUT: "20" }, 240);
+    expect(loop.status).toBe(0);
+    expect(loop.logs).toContainEqual(expect.objectContaining({
+      message: "new reconciler version failed its first pass: going back",
+      previous: RECONCILER_RUNNING,
+      reason: expect.stringMatching(/bivouac-caddy .* did not become healthy once recreated/),
+    }));
+    expect(readStateFile(platform, STATE.image)).toBe(`BIVOUAC_RECONCILER_IMAGE=${RECONCILER_RUNNING}\n`);
+    expect(readStateFile(platform, STATE.refused)).toMatch(new RegExp(`^BIVOUAC_REFUSED_IMAGE=${RECONCILER_BAD_CADDY.replace(/[.]/g, "\\.")}\nBIVOUAC_REFUSED_REASON=bivouac-caddy`));
+    expect(readStateFile(platform, STATE.trial)).toBeUndefined();
+
+    // The previous version starts, refuses the failed one while platform.yml
+    // names it, and puts its own Caddy back.
+    const back = runOnce(platform);
+    expect(back.logs).toContainEqual(expect.objectContaining({ message: "a new reconciler version failed its trial: rolled back", refused: RECONCILER_BAD_CADDY }));
+    expect(back.logs).toContainEqual(expect.objectContaining({ message: "pass applied" }));
+    expect(inspect<ContainerState & { Config: { Image: string } }>("bivouac-caddy").Config.Image).toBe(PLATFORM_IMAGES.caddy);
+    expect(inspect<ContainerState>("bivouac-caddy").State.Health?.Status).toBe("healthy");
+    expect(throughCaddy(`auth.${DOMAIN}`, "/.well-known/openid-configuration").status).toBe(200);
+
+    platform.commit({ "platform.yml": platformYml(RECONCILER_RUNNING) }, "back to the running version");
+    for (const file of Object.values(STATE)) removeStateFile(platform, file);
+    expect(runOnce(platform).logs).toContainEqual(expect.objectContaining({ message: "pass unchanged" }));
+  });
+});
 
 describe("h. SSH keys for the host (D12)", () => {
   it("writes the list of ssh-keys.yml for the host's path unit, and follows its changes", () => {

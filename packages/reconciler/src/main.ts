@@ -10,7 +10,7 @@ import { appBeingRestored, readLock } from "./lock.js";
 import { parseRestoreArgs, restoreApp } from "./restore.js";
 import { DEFAULT_MARKER, parsePlatformRestoreArgs, readRebuildState, restorePlatform } from "./rebuild.js";
 import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
-import { checkStateMount, type Runtime } from "./base.js";
+import { BaseServiceError, checkStateMount, type Runtime } from "./base.js";
 import { parsePorts } from "./containers.js";
 import { Docker } from "./docker.js";
 import { runPass, type PassConfig, type PassResult } from "./pass.js";
@@ -223,6 +223,14 @@ async function main(argv: string[]): Promise<number> {
         log,
       })
     : undefined;
+  // For the alert on a version that has not moved for too long (D109).
+  if (selfUpdater && config.image) {
+    try {
+      selfUpdater.setBuiltAt(await config.runtime.docker.imageCreated(config.image));
+    } catch (error) {
+      log("cannot read when this version was built", { error: (error as Error).message });
+    }
+  }
 
   if (argv[0] === "restore-app") {
     // Started over SSH by bivy restore (D101): a lost connection must not cut a
@@ -406,9 +414,18 @@ async function main(argv: string[]): Promise<number> {
     } catch (error) {
       log("pass failed", { error: (error as Error).message });
       api.recordPass({ status: "failed", changes: [], failures: [{ app: "(platform)", message: (error as Error).message }] });
-      // A pass stopped by an error (GitHub unreachable, secrets unreadable)
-      // still proves the version stays up: reported by the alerts instead.
-      selfUpdater?.confirm();
+      if (error instanceof BaseServiceError && selfUpdater?.onTrial()) {
+        // A version on trial whose new base image does not start goes back
+        // to the previous one, which brings its own images back (D109). Not
+        // during a backup or a restore: the trial stays open, and the next
+        // failed pass tries again.
+        if (!backups.busy && !appBeingRestored(config.runtime.stateDir) && selfUpdater.rollBack(error.message)) process.exit(0);
+      } else {
+        // A pass stopped by another error (GitHub unreachable, secrets
+        // unreadable) still proves the version stays up: reported by the
+        // alerts instead.
+        selfUpdater?.confirm();
+      }
       if (!quiet) {
         backups.tick();
         await watch?.afterPass({ error: error as Error }, [backups.observation(), ...(selfUpdater ? [selfUpdater.observation()] : [])]);

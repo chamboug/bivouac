@@ -118,6 +118,15 @@ export class Docker {
     return true;
   }
 
+  /** When an image was built (its `Created`), or undefined when it is not here. */
+  async imageCreated(image: string): Promise<Date | undefined> {
+    const response = await this.call("GET", `/images/${image}/json`);
+    if (response.status === 404) return undefined;
+    if (response.status !== 200) throw new DockerError(`inspect image ${image}: ${errorMessage(response)}`, response.status);
+    const created = new Date((JSON.parse(response.body.toString()) as { Created?: string }).Created ?? "");
+    return Number.isNaN(created.getTime()) ? undefined : created;
+  }
+
   /**
    * Pulls an image. `auth` is the registry login, sent as Docker expects it
    * (base64 JSON in `X-Registry-Auth`). Errors can arrive either as an HTTP

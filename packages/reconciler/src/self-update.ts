@@ -31,6 +31,12 @@ import type { Docker } from "./docker.js";
  * previous version reads `refused.env` and does not move to that version
  * again until `platform.yml` names another one. A version that crashes after
  * its first pass is not rolled back: the heartbeat reports it (D45).
+ *
+ * A version on trial whose first pass leaves a base service it changed
+ * unhealthy (a new Caddy, Postgres or Pocket ID image that does not start)
+ * goes back the same way, by itself (`rollBack`, D109): it writes the
+ * previous version to `image.env`, itself to `refused.env`, and exits. The
+ * previous version then brings its own base images back.
  */
 
 /** Read by the systemd unit (`EnvironmentFile=`), relative to the state directory. */
@@ -86,6 +92,12 @@ export interface SelfUpdateOptions {
   log: (message: string, fields?: Record<string, unknown>) => void;
 }
 
+/**
+ * Age of the running version past which the monthly update of the base
+ * (Renovate, D109) is taken to be stuck: a month, plus two weeks of slack.
+ */
+export const STALE_AFTER_DAYS = 45;
+
 /** Name of the throwaway container that runs a new version's self-test. */
 export const SELFTEST_CONTAINER = "bivouac-reconciler-selftest";
 
@@ -94,6 +106,8 @@ export class SelfUpdater {
   private readonly refused = new Map<string, string>();
   /** The version platform.yml named on the last check. */
   private desired: string | undefined;
+  /** When the running version was built, once known. */
+  private builtAt: Date | undefined;
 
   constructor(private readonly options: SelfUpdateOptions) {
     const path = join(options.stateDir, REFUSED_FILE);
@@ -102,9 +116,11 @@ export class SelfUpdater {
       // Moved back by hand to the version once rolled back from: nothing to report.
       rmSync(path, { force: true });
     } else if (image) {
-      const reason = `it crashed at start, and the server went back to ${options.current}`;
+      // The host script writes no reason: its versions crashed at start.
+      const why = envValue(path, "BIVOUAC_REFUSED_REASON") ?? "it crashed at start";
+      const reason = `${why}, and the server went back to ${options.current}`;
       this.refused.set(image, reason);
-      options.log("a new reconciler version crashed at start: rolled back", { current: options.current, refused: image });
+      options.log("a new reconciler version failed its trial: rolled back", { current: options.current, refused: image, reason: why });
     }
   }
 
@@ -173,13 +189,56 @@ export class SelfUpdater {
     if (image === current) log("new reconciler version confirmed", { image: current });
   }
 
-  /** A version platform.yml names but this server refused: reported until platform.yml changes. */
-  observation(): Observation {
+  /** Whether the running version is on trial: it has not got through a pass yet (D61). */
+  onTrial(): boolean {
+    return envValue(join(this.options.stateDir, TRIAL_FILE), "BIVOUAC_TRIAL_IMAGE") === this.options.current;
+  }
+
+  /**
+   * Called when a pass of this version failed because a base service it
+   * changed did not become healthy. On trial, it goes back to the version it
+   * replaced and returns it: the caller must then exit so systemd starts that
+   * one. Once proven, or with nothing to go back to, it returns undefined:
+   * the alert reports the failure, as for any pass (D45).
+   */
+  rollBack(reason: string): string | undefined {
+    const { stateDir, current, log } = this.options;
+    const trialFile = join(stateDir, TRIAL_FILE);
+    if (!this.onTrial()) return undefined;
+    const previous = envValue(trialFile, "BIVOUAC_PREVIOUS_IMAGE");
+    if (!previous || previous === current) return undefined;
+    const oneLine = reason.replace(/\s+/g, " ").slice(0, 300);
+    // The refused version first: the previous one must never start without knowing why.
+    writeIfChanged(join(stateDir, REFUSED_FILE), `BIVOUAC_REFUSED_IMAGE=${current}\nBIVOUAC_REFUSED_REASON=${oneLine}\n`, 0o600);
+    writeIfChanged(join(stateDir, IMAGE_ENV_FILE), `BIVOUAC_RECONCILER_IMAGE=${previous}\n`, 0o600);
+    rmSync(trialFile, { force: true });
+    rmSync(join(stateDir, TRIAL_STARTS_FILE), { force: true });
+    log("new reconciler version failed its first pass: going back", { current, previous, reason: oneLine });
+    return previous;
+  }
+
+  /** When the running version was built (its image's `Created`), for `observation`. */
+  setBuiltAt(builtAt: Date | undefined): void {
+    this.builtAt = builtAt;
+  }
+
+  /**
+   * A version platform.yml names but this server refused: reported until
+   * platform.yml changes. And a running version older than STALE_AFTER_DAYS:
+   * the monthly update stopped somewhere, silently (D44, D109).
+   */
+  observation(now = new Date()): Observation {
+    const incidents: Observation["incidents"] = [];
     const reason = this.desired ? this.refused.get(this.desired) : undefined;
-    return {
-      incidents: reason ? [{ key: `reconciler:${this.desired}`, message: `The new reconciler version ${this.desired} was refused: ${reason}` }] : [],
-      checked: ["reconciler"],
-    };
+    if (reason) incidents.push({ key: `reconciler:${this.desired}`, message: `The new reconciler version ${this.desired} was refused: ${reason}` });
+    const days = this.builtAt ? Math.floor((now.getTime() - this.builtAt.getTime()) / 86_400_000) : 0;
+    if (days > STALE_AFTER_DAYS) {
+      incidents.push({
+        key: "reconciler:stale",
+        message: `The reconciler running here was built ${days} days ago: the monthly update of the base (Renovate) is stuck. Look at the open Renovate pull requests of the monorepo and the instance repo (D109).`,
+      });
+    }
+    return { incidents, checked: ["reconciler"] };
   }
 
   private refuse(image: string, reason: string): void {

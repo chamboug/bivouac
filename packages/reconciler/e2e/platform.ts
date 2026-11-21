@@ -16,6 +16,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PLATFORM_IMAGES } from "../../manifest/src/platform.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(here, "..", "..", "..");
@@ -30,6 +31,8 @@ export const MAIL_PASSWORD = "e2e-mail-password-not-a-secret";
 export const RECONCILER_RUNNING = "ghcr.io/example/bivouac-reconciler:sha-e2e0000";
 export const RECONCILER_NEWER = "ghcr.io/example/bivouac-reconciler:sha-e2e0001";
 export const RECONCILER_BROKEN = "ghcr.io/example/bivouac-reconciler:sha-e2ebad0";
+/** A reconciler whose Caddy image never becomes healthy: the test app stands in for it (D109). */
+export const RECONCILER_BAD_CADDY = "ghcr.io/example/bivouac-reconciler:sha-e2ebad1";
 export const TEST_APP_IMAGE = "bivouac-test-app:dev";
 /** The test app, standing in for the status page (only a `bivouac-status` image is accepted there). */
 export const STATUS_IMAGE = "ghcr.io/example/bivouac-status:sha-e2e0000";
@@ -66,6 +69,12 @@ export function buildImages(): void {
   docker("tag", RECONCILER_IMAGE, RECONCILER_RUNNING);
   docker("tag", RECONCILER_IMAGE, RECONCILER_NEWER);
   docker("tag", TEST_APP_IMAGE, RECONCILER_BROKEN);
+  // The same reconciler, with the test app as its Caddy image: it runs, but
+  // never answers Caddy's health check.
+  const badCaddy = run("docker", ["build", "--quiet", "--tag", RECONCILER_BAD_CADDY, "-"], {
+    input: `FROM ${RECONCILER_IMAGE}\nRUN grep -q '${PLATFORM_IMAGES.caddy}' packages/manifest/dist/platform.js && sed -i 's|${PLATFORM_IMAGES.caddy}|${TEST_APP_IMAGE}|' packages/manifest/dist/platform.js\n`,
+  });
+  if (badCaddy.status !== 0) throw new Error(`could not build ${RECONCILER_BAD_CADDY}: ${badCaddy.stderr}`);
   docker("tag", TEST_APP_IMAGE, STATUS_IMAGE);
 }
 
@@ -248,6 +257,30 @@ export function startIdleReconciler(platform: Platform, env: Record<string, stri
     "--entrypoint", "sleep", RECONCILER_IMAGE, "infinity");
 }
 
+/**
+ * Runs the reconciler's loop on `image`, as systemd would start a version on
+ * trial, until it exits by itself (at most `seconds`). Its JSON lines.
+ */
+export function runLoopUntilExit(platform: Platform, image: string, env: Record<string, string>, seconds: number): PassOutput {
+  docker("run", "--detach",
+    ...reconcilerOptions(platform, platform.ageKey, ""),
+    "--env", `BIVOUAC_RECONCILER_IMAGE=${image}`,
+    "--env", "BIVOUAC_INTERVAL_SECONDS=10",
+    "--env", "BIVOUAC_ALERTS=off",
+    ...Object.entries(env).flatMap(([name, value]) => ["--env", `${name}=${value}`]),
+    image);
+  try {
+    const waited = spawnSync("docker", ["wait", "bivouac-reconciler"], { encoding: "utf8", timeout: seconds * 1000 });
+    const logs = run("docker", ["logs", "bivouac-reconciler"]).stdout
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line) as { message: string });
+    return { status: waited.status === 0 ? Number(waited.stdout.trim()) : -1, logs };
+  } finally {
+    run("docker", ["rm", "--force", "bivouac-reconciler"]);
+  }
+}
+
 /** Starts the reconciler in the background, passing every 10 s (local platform). */
 export function startReconciler(platform: Platform, ports: string, env: Record<string, string> = {}): void {
   docker("run", "--detach", "--restart", "unless-stopped",
@@ -272,6 +305,57 @@ export function throughCaddy(host: string, path: string, method = "GET", headers
     "--request", method, "--resolve", `${host}:443:${CADDY_ADDRESS}`, `https://${host}${path}`]);
   const lines = result.stdout.split("\n");
   return { status: Number(lines.pop()), body: lines.join("\n") };
+}
+
+export interface Answer {
+  status: number;
+  /** Header names in lower case; a header sent several times has several values. */
+  headers: Record<string, string[]>;
+  body: string;
+}
+
+/**
+ * A browser of sorts, through Caddy as a visitor would come: it keeps the
+ * cookies each host sets and sends them back, and never follows redirects
+ * (the tests read where they go).
+ */
+export class Visitor {
+  private readonly cookies = new Map<string, Map<string, string>>();
+
+  request(host: string, path: string, options: { method?: string; json?: unknown; form?: Record<string, string>; headers?: string[] } = {}): Answer {
+    const jar = this.cookies.get(host) ?? new Map<string, string>();
+    const data = options.json !== undefined
+      ? ["--header", "Content-Type: application/json", "--data-binary", JSON.stringify(options.json)]
+      : options.form ? ["--header", "Content-Type: application/x-www-form-urlencoded", "--data-binary", new URLSearchParams(options.form).toString()] : [];
+    const result = run("docker", ["run", "--rm", "--network", INTERNAL_NETWORK, CURL_IMAGE,
+      "--silent", "--insecure", "--max-time", "10", "--include",
+      "--request", options.method ?? (data.length > 0 ? "POST" : "GET"),
+      // As a browser would send them: Pocket ID checks where requests come from.
+      "--header", `Origin: https://${host}`,
+      ...(jar.size > 0 ? ["--header", `Cookie: ${[...jar].map(([name, value]) => `${name}=${value}`).join("; ")}`] : []),
+      ...(options.headers ?? []).flatMap((header) => ["--header", header]),
+      ...data,
+      "--resolve", `${host}:443:${CADDY_ADDRESS}`, `https://${host}${path}`]);
+    if (result.status !== 0) throw new Error(`curl failed for ${host}${path}: ${result.stderr}`);
+    const split = result.stdout.indexOf("\r\n\r\n");
+    const [statusLine, ...lines] = result.stdout.slice(0, split).split("\r\n");
+    const headers: Record<string, string[]> = {};
+    for (const line of lines) {
+      const colon = line.indexOf(":");
+      const name = line.slice(0, colon).trim().toLowerCase();
+      (headers[name] ??= []).push(line.slice(colon + 1).trim());
+    }
+    for (const cookie of headers["set-cookie"] ?? []) {
+      const [pair = ""] = cookie.split(";");
+      const equals = pair.indexOf("=");
+      const name = pair.slice(0, equals);
+      const value = pair.slice(equals + 1);
+      if (value === "" || /max-age=(0|-)/i.test(cookie)) jar.delete(name);
+      else jar.set(name, value);
+    }
+    this.cookies.set(host, jar);
+    return { status: Number(/^HTTP\/\S+ (\d+)/.exec(statusLine ?? "")?.[1]), headers, body: result.stdout.slice(split + 4) };
+  }
 }
 
 /** YAML encrypted with SOPS for the platform's age key, like `sops encrypt` on the owner's Mac. */

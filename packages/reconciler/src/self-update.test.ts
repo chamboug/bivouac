@@ -145,7 +145,7 @@ describe("self-update", () => {
     const calls: string[] = [];
     const logs: string[] = [];
     const { self, stateDir, envFile } = updater(0, calls, logs, NEXT);
-    expect(logs).toEqual(["a new reconciler version crashed at start: rolled back"]);
+    expect(logs).toEqual(["a new reconciler version failed its trial: rolled back"]);
     expect(await self.check(checkout(NEXT))).toBeUndefined();
     expect(calls).toEqual([]);
     expect(existsSync(envFile)).toBe(false);
@@ -157,6 +157,57 @@ describe("self-update", () => {
     expect(await self.check(checkout(CURRENT))).toBeUndefined();
     expect(self.observation()).toEqual({ incidents: [], checked: ["reconciler"] });
     expect(existsSync(join(stateDir, REFUSED_FILE))).toBe(false);
+  });
+
+  it("goes back by itself when its first pass leaves a base service unhealthy, and says why (D109)", () => {
+    const logs: string[] = [];
+    const { self, stateDir, envFile } = updater(0, [], logs);
+    writeFileSync(join(stateDir, TRIAL_FILE), `BIVOUAC_TRIAL_IMAGE=${CURRENT}\nBIVOUAC_PREVIOUS_IMAGE=${NEXT}\n`);
+    writeFileSync(join(stateDir, TRIAL_STARTS_FILE), "1\n");
+    expect(self.onTrial()).toBe(true);
+    expect(self.rollBack("bivouac-caddy (caddy:9) did not become\nhealthy")).toBe(NEXT);
+    expect(readFileSync(envFile, "utf8")).toBe(`BIVOUAC_RECONCILER_IMAGE=${NEXT}\n`);
+    expect(readFileSync(join(stateDir, REFUSED_FILE), "utf8")).toBe(
+      `BIVOUAC_REFUSED_IMAGE=${CURRENT}\nBIVOUAC_REFUSED_REASON=bivouac-caddy (caddy:9) did not become healthy\n`,
+    );
+    expect(statSync(join(stateDir, REFUSED_FILE)).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(stateDir, TRIAL_FILE))).toBe(false);
+    expect(existsSync(join(stateDir, TRIAL_STARTS_FILE))).toBe(false);
+    expect(logs).toEqual(["new reconciler version failed its first pass: going back"]);
+
+    // The previous version starts, refuses this one and reports why, until platform.yml changes.
+    const back = new SelfUpdater({ docker: fakeDocker(0, []), stateDir, current: NEXT, pull: async () => undefined, log: () => undefined });
+    return back.check(checkout(CURRENT)).then((moved) => {
+      expect(moved).toBeUndefined();
+      expect(back.observation().incidents).toEqual([
+        { key: `reconciler:${CURRENT}`, message: `The new reconciler version ${CURRENT} was refused: bivouac-caddy (caddy:9) did not become healthy, and the server went back to ${NEXT}` },
+      ]);
+    });
+  });
+
+  it("does not go back once proven, nor without a previous version", () => {
+    const { self, stateDir, envFile } = updater(0);
+    expect(self.onTrial()).toBe(false);
+    expect(self.rollBack("unhealthy")).toBeUndefined();
+    writeFileSync(join(stateDir, TRIAL_FILE), `BIVOUAC_TRIAL_IMAGE=${NEXT}\nBIVOUAC_PREVIOUS_IMAGE=${CURRENT}\n`);
+    expect(self.rollBack("unhealthy")).toBeUndefined();
+    writeFileSync(join(stateDir, TRIAL_FILE), `BIVOUAC_TRIAL_IMAGE=${CURRENT}\n`);
+    expect(self.rollBack("unhealthy")).toBeUndefined();
+    expect(existsSync(envFile)).toBe(false);
+    expect(existsSync(join(stateDir, REFUSED_FILE))).toBe(false);
+  });
+
+  it("reports a version that has not moved for more than 45 days, until it moves (D109)", () => {
+    const { self } = updater(0);
+    const now = new Date("2027-03-01T12:00:00Z");
+    expect(self.observation(now).incidents).toEqual([]);
+    self.setBuiltAt(new Date("2027-01-15T12:00:00Z"));
+    expect(self.observation(now).incidents).toEqual([]);
+    self.setBuiltAt(new Date("2027-01-14T11:00:00Z"));
+    expect(self.observation(now)).toEqual({
+      incidents: [{ key: "reconciler:stale", message: expect.stringMatching(/built 46 days ago: the monthly update of the base \(Renovate\) is stuck/) }],
+      checked: ["reconciler"],
+    });
   });
 
   it("moves to a newer version after a rollback", async () => {

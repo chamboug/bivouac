@@ -200,14 +200,36 @@ export async function ensureBase(
     },
     mounts: [{ type: "bind", source: pocketIdSecrets, target: SECRETS_TARGET, readOnly: true }],
     healthCheck: { test: ["/app/pocket-id", "healthcheck"], intervalSeconds: 30, startPeriodSeconds: 60 },
-  });
+    // An older Pocket ID refuses a database a newer one migrated (verified
+    // in v2.19.3: "downgrades are not allowed"): no automatic way back (D109).
+  }, { rollBack: false });
 }
 
-/** A base service: created or updated, restarted if stopped, then waited for. */
-export async function ensureService(runtime: Runtime, changes: string[], spec: ContainerSpec): Promise<EnsureResult> {
+/**
+ * A base service whose container this pass created or recreated, and which
+ * did not become healthy: on a reconciler version on trial, the sign of a
+ * base image that does not work, so the version goes back (D109).
+ */
+export class BaseServiceError extends Error {}
+
+/**
+ * A base service: created or updated, restarted if stopped, then waited for.
+ * `rollBack: false` for a service whose older image cannot run on what the
+ * newer one left (Pocket ID refuses a database a newer version migrated):
+ * going back would not bring it back, and would stop a version that was
+ * only slow to migrate. Its failure is an ordinary failed pass, with an alert.
+ */
+export async function ensureService(runtime: Runtime, changes: string[], spec: ContainerSpec, options: { rollBack?: boolean } = {}): Promise<EnsureResult> {
   const result = await ensureContainer(runtime.docker, spec, runtime.pull, { restartStopped: true });
   if (result !== "unchanged") changes.push(`container ${spec.name} ${result}`);
-  await waitHealthy(runtime.docker, spec.name, runtime.healthTimeout);
+  try {
+    await waitHealthy(runtime.docker, spec.name, runtime.healthTimeout);
+  } catch (error) {
+    if (options.rollBack !== false && (result === "created" || result === "recreated")) {
+      throw new BaseServiceError(`${spec.name} (${spec.image}) did not become healthy once ${result}: ${(error as Error).message}`);
+    }
+    throw error;
+  }
   return result;
 }
 
