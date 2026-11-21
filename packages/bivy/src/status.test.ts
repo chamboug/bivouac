@@ -51,7 +51,7 @@ describe("bivy status", () => {
   it("names each thing worth a look, in one sentence", () => {
     const { problems } = describeState(state((value) => {
       value.lastPass = { at: "2026-11-21T11:00:00.000Z", status: "applied", changes: [], failures: [{ app: "colis", message: "health check failed" }] };
-      value.containers[0] = { ...value.containers[0]!, restarts: 2, oomKilled: true, health: "unhealthy" };
+      value.containers[0] = { ...value.containers[0]!, restarts: 2, oomKilled: true, health: "unhealthy", startedAt: "2026-11-21T09:00:00.000Z" };
       value.backup = { ...value.backup!, lastSuccessAt: "2026-11-19T02:01:00.000Z", lastError: "bucket missing", restoreTestWeekPassed: 2965 };
       value.incidents = [{ key: "disk:host", message: "Disk 85%", since: "2026-11-21T10:00:00.000Z" }];
       value.host.disk.availableBytes = 4 * GIB;
@@ -67,9 +67,16 @@ describe("bivy status", () => {
       "The weekly restore test has not passed for 3 weeks.",
       "bivouac-app-biblio is unhealthy.",
       "bivouac-app-biblio was killed for using too much memory.",
-      "bivouac-app-biblio restarted 2 times.",
+      "bivouac-app-biblio restarted 2 times, the last at Sat 21 Nov, 09:00.",
       "Open incident since Sat 21 Nov, 10:00: Disk 85%",
     ]);
+  });
+
+  it("leaves out old restarts of a container up for more than a day since", () => {
+    const { problems } = describeState(state((value) => {
+      value.containers[0] = { ...value.containers[0]!, restarts: 10, startedAt: "2026-11-08T09:53:00.000Z" };
+    }), "UTC");
+    expect(problems).toEqual([]);
   });
 
   it("says a stopped container and a server with no backup yet", () => {

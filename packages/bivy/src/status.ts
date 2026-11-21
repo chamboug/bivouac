@@ -77,6 +77,8 @@ const DAY = 24 * HOUR;
 const BACKUP_LATE_AFTER = 26 * HOUR;
 /** A pass runs every minute (D2). */
 const PASS_LATE_AFTER = 5 * 60_000;
+/** Restarts count as a problem while the container's current start is this recent. */
+const RESTARTS_RECENT_FOR = DAY;
 /** The disk alert's threshold (D45). */
 const DISK_FULL_SHARE = 0.8;
 
@@ -142,7 +144,9 @@ export function describeState(state: PlatformState, timeZone?: string): { lines:
     if (!running) problems.push(`${entry.name} is ${entry.state}.`);
     else if (!healthy) problems.push(`${entry.name} is ${entry.health}.`);
     if (entry.oomKilled) problems.push(`${entry.name} was killed for using too much memory.`);
-    if (entry.restarts > 0) problems.push(`${entry.name} restarted ${entry.restarts} time${entry.restarts > 1 ? "s" : ""}.`);
+    // Docker counts restarts since the container was created: old ones, of a
+    // container up for more than a day since, are history, not a problem.
+    if (entry.restarts > 0 && now - Date.parse(entry.startedAt) < RESTARTS_RECENT_FOR) problems.push(`${entry.name} restarted ${entry.restarts} time${entry.restarts > 1 ? "s" : ""}, the last at ${at(entry.startedAt)}.`);
   }
 
   for (const incident of state.incidents) problems.push(`Open incident${incident.since ? ` since ${at(incident.since)}` : ""}: ${incident.message}`);
