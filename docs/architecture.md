@@ -49,6 +49,7 @@ How Bivouac works today, part by part. The reasons are in the [decision log](dec
 - **SOPS + age in the instance repo** (`secrets/platform.sops.yaml`, D57): master secret, Pocket ID's `ENCRYPTION_KEY` and `STATIC_API_KEY`, backup credentials and restic password, Pushover token and group key, healthchecks.io ping URLs, the mail password, the GHCR token, Hetzner and OVH tokens if kept there.
 - **The age key** exists in three places: the server, the owner's password manager, the owner's Mac (`~/.config/sops/age/keys.txt`). Never in a repo or in GitHub Actions (D35).
 - **Derived secrets** (D14): `HMAC(master secret, purpose)`; never stored, recomputed after a rebuild.
+- **Changing one value**: `bivy secret set <path>` (D108); the master secret, Pocket ID's `ENCRYPTION_KEY` and the restic password are never changed that way.
 - **An app's own secrets** (D97): `secrets/apps/<app>.sops.yaml`, each name an environment variable of that app (runbook section 18).
 - **Pocket ID's `ENCRYPTION_KEY`** encrypts its token signing keys; losing it loses them (what happens exactly is undocumented). With `_FILE`, a trailing newline would become part of the key.
 
@@ -146,6 +147,7 @@ TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talk
 | `bivy login-link <user>` | A one-time sign-in link for an admin who lost every passkey, shown only at a terminal (D107) | built, tried on the miniature platform |
 | `bivy init` | Empty Hetzner project + domain → running platform (D99) | never run for real |
 | `bivy configure backups\|alerts\|mail` | Adds a missing part (D99) | built |
+| `bivy secret set <path>` | Changes one value of the platform secrets, typed hidden, every other value checked by hash; commits nothing (D108) | built |
 | `bivy rebuild --test` | Temporary server restored from backups, checked, destroyed (D91) | proven |
 | `bivy rebuild` | Same server or IPs, restored from backups (D91) | `--plan` only so far |
 | `bivy restore <app>` | One app's data back to a nightly copy (D101) | `--plan` only so far |

@@ -124,10 +124,10 @@ export interface RealState extends RunState {
 }
 
 /** The rebuild trusts the instance checkout (SSH keys, versions, apps): it must be exactly origin/main. */
-export function checkoutProblems(root: string): string[] {
+export function checkoutProblems(root: string, mayDiffer: string[] = []): string[] {
   const git = (...args: string[]) => spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
   if (git("fetch", "--quiet", "origin").status !== 0) return [`git fetch failed in ${root}`];
-  const dirty = git("status", "--porcelain").stdout.split("\n").filter((line) => line.trim() && !line.endsWith(".DS_Store"));
+  const dirty = git("status", "--porcelain").stdout.split("\n").filter((line) => line.trim() && !line.endsWith(".DS_Store") && !mayDiffer.includes(line.slice(3)));
   const problems = dirty.length > 0 ? [`${root} has uncommitted changes: ${dirty.slice(0, 3).join(", ")}`] : [];
   if (git("rev-parse", "HEAD").stdout.trim() !== git("rev-parse", "origin/main").stdout.trim()) problems.push(`${root} is not exactly origin/main: pull first`);
   return problems;

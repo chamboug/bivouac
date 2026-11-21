@@ -11,10 +11,10 @@ export const SOPS_IMAGE = "ghcr.io/getsops/sops:v3.13.3@sha256:857f5a151ac0b2bfc
 export class SopsError extends Error {}
 
 export interface Sops {
-  /** Encrypts a YAML document for one age recipient. Needs no secret. */
-  encrypt(yaml: string, recipient: string): string;
-  /** Decrypts a SOPS YAML document with the age identity given (the key file's content). */
-  decrypt(encrypted: string, identity: Buffer): string;
+  /** Encrypts a YAML (or JSON) document for one age recipient, into a SOPS YAML file. Needs no secret. */
+  encrypt(document: string, recipient: string, input?: "yaml" | "json"): string;
+  /** Decrypts a SOPS YAML file with the age identity given (the key file's content), as YAML or JSON. */
+  decrypt(encrypted: string, identity: Buffer, output?: "yaml" | "json"): string;
 }
 
 const BASE = ["run", "--rm", "--interactive", "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"];
@@ -28,15 +28,15 @@ function run(args: string[], input: string): string {
 }
 
 export const dockerSops: Sops = {
-  encrypt(yaml, recipient) {
+  encrypt(document, recipient, input = "yaml") {
     if (!/^age1[0-9a-z]{58}$/.test(recipient)) throw new SopsError(`'${recipient}' is not an age recipient`);
-    return run([SOPS_IMAGE, "encrypt", "--input-type", "yaml", "--output-type", "yaml", "--age", recipient, "/dev/stdin"], yaml);
+    return run([SOPS_IMAGE, "encrypt", "--input-type", input, "--output-type", "yaml", "--age", recipient, "/dev/stdin"], document);
   },
-  decrypt(encrypted, identity) {
+  decrypt(encrypted, identity, output = "yaml") {
     // Standard input carries the document, so the identity goes through
     // SOPS_AGE_KEY: `--env SOPS_AGE_KEY` names it only, and docker takes the
     // value from its own environment, never from a command line.
-    const result = spawnSync("docker", [...BASE, "--env", "SOPS_AGE_KEY", SOPS_IMAGE, "decrypt", "--input-type", "yaml", "--output-type", "yaml", "/dev/stdin"], {
+    const result = spawnSync("docker", [...BASE, "--env", "SOPS_AGE_KEY", SOPS_IMAGE, "decrypt", "--input-type", "yaml", "--output-type", output, "/dev/stdin"], {
       input: encrypted,
       encoding: "utf8",
       env: { ...process.env, SOPS_AGE_KEY: identity.toString("utf8") },

@@ -499,14 +499,15 @@ then:
    is refused; an unknown one gets "no user with that username or email".
 3. **(consent)** Remove `setupFrom`. Check 403 for everyone, the owner included,
    and exactly one user (`users` in database `bivouac_pocket_id`).
-4. Mail (D70). Add `mail` to `platform.yml` (`host`, `from`, `user`). Have the
-   owner type the mailbox password in a real terminal into a file of mode 600,
-   test it against the SMTP server with its output filtered to the status codes
-   (a verbose log contains the credentials), add `mail.password` to the secrets
-   file in one pipe (decrypt, append, encrypt), compare it after decryption
-   without printing it, and delete the file. A new `mail` block needs a
-   reconciler version that knows it; it moves to it before validating.
-5. **(consent, Pocket ID restarts, about a minute: D68)** Push. The owner clicks
+4. Mail (D70). `bivy configure mail` adds `mail` to `platform.yml` (`host`,
+   `from`, `user`) and `mail.password` to the secrets, after logging in to the
+   SMTP server with the password typed with hidden input (D99). A new `mail`
+   block needs a reconciler version that knows it; it moves to it before
+   validating. **Changing the password later** (the mailbox's was changed, or
+   it may be known): `bivy secret set mail.password`, section 12, "Changing one
+   secret" (D108).
+5. **(consent, Pocket ID restarts, about a minute: D68)** Push (`bivy
+   configure` pushes by itself: the consent comes before it runs). The owner clicks
    **Send test email** in Pocket ID's email settings. Read the message's
    `Authentication-Results`: SPF and DKIM must pass. Check the zone has one SPF
    record and a `p=none` DMARC.
@@ -587,18 +588,55 @@ the interface asks for it when a bucket is created there.
 bucket and key as above; `restic init` from the Mac on the new repository with
 the **same** restic password (the reconciler never creates a repository once a
 backup has succeeded, D74); force a last backup to the old one; replace
-`backup.b2_key_id` and `backup.b2_application_key` with
-`sops set --value-stdin` (compare by hash, never print) and
-`backup.repository` in one commit; force a backup and a restore test
+`backup.b2_key_id` and `backup.b2_application_key` with `bivy secret set`
+(below, "Changing one secret") and `backup.repository` in one commit; force a backup and a restore test
 (`.day=0 | del(.restoreWeek)`) and check the copy with `restore-app <app> --list`.
 Keeping the old account readable for a while is the owner's call: it holds the only history from before the move. Way back, while it exists: revert that commit.
 
-**Secrets**, added to `secrets/platform.sops.yaml` in one pipe (decrypt, add,
-encrypt), compared after decryption without printing them, plain files deleted:
-`backup.{restic_password, b2_key_id, b2_application_key}` and
+**Secrets**, added by `bivy configure backups` and `bivy configure alerts`
+(D99): `backup.{restic_password, b2_key_id, b2_application_key}` and
 `alerts.{pushover_token, pushover_user, healthchecks.{heartbeat, backup, restore}}`.
 The restic password also goes in the owner's password manager. In
 `platform.yml`: `backup.repository: s3:<endpoint>/<bucket>`.
+
+**Changing one secret** (D108), from the instance repo on the Mac, with the
+age key in `~/.config/sops/age/keys.txt`. First make the new value where it
+lives (a new key at B2, a new Pushover token, the mailbox's new password),
+then:
+
+```bash
+bivy secret set mail.password
+```
+
+The value is pasted (or typed) twice with hidden input, in a real terminal
+(never the chat's `!`); an empty value is refused. bivy decrypts the file, changes that value only, encrypts it
+again for `.sops.yaml`'s key, decrypts what it wrote and compares every value
+by its hash, never printing one; if anything differs, the previous file is
+put back. It commits nothing: commit and push (the diff shows names only),
+and the reconciler applies it within a minute. When Claude drives it, the
+owner pastes the value from the password manager into a file, in a real
+terminal; the line says how many characters it got, never the value, and
+writes nothing for an empty paste. bivy deletes that file once the change is
+checked (kept if it fails, so the command can be run again):
+
+```bash
+(umask 077; printf 'Paste the value, then Enter: '; read -rs v; echo; if [ -n "$v" ]; then printf '%s' "$v" > ~/.config/bivouac/new-secret && echo "Written: ${#v} characters."; else echo "Nothing pasted: nothing written."; fi; unset v)
+```
+
+```bash
+bivy secret set mail.password --from-file ~/.config/bivouac/new-secret
+```
+
+What each change does once pushed: `mail.password` and
+`pocket_id.static_api_key` restart Pocket ID (signing in pauses up to about a
+minute, D68; send a test mail after a mail change); `backup.b2_key_id` and
+`backup.b2_application_key` restart nothing and serve from the next backup
+(change both together for a new key, push once, then `bivy backup`);
+`alerts.*` restart nothing (try the channel, below); `ghcr.*` serve from the
+next pull. bivy changes only a value already set (a missing part is `bivy
+configure`) and never `master_secret` (every derived secret comes from it,
+D14), `pocket_id.encryption_key` (a new one loses Pocket ID's signing keys,
+D57) or `backup.restic_password` (the repository's own key must change first).
 
 **A backup now**, instead of waiting for 02:00 UTC, from the instance repo on
 the Mac (D105):
@@ -1130,9 +1168,13 @@ the apps' own secrets. But with FileVault on and the Mac off or locked, its
 disk cannot be read without the session password, and on Apple silicon that
 password cannot be guessed at speed. **By default, accept**: the access cut
 above is enough. Rotate only if the Mac was taken unlocked, or the session
-password may be known. There is no tested rotation procedure yet: a Claude
-session plans it, starting with what can be reached from outside (the mail
-password, the GHCR token, the restic password and its bucket key, the apps'
-session secrets), with consent at each step.
+password may be known. Rotation starts with what can be reached from
+outside: the mail password, the bucket key and the GHCR token are each made
+anew at their provider, then changed with `bivy secret set` (section 12,
+"Changing one secret", D108), the old one revoked once the new one works;
+an app's own secrets, section 18. The restic password, the master secret
+(and with it the apps' session secrets) and Pocket ID's encryption key are not
+one-value changes: there is no tested procedure for them yet, and a Claude
+session plans it with consent at each step.
 
 Record what was done in the operations log.

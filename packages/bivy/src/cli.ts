@@ -20,6 +20,10 @@ import { pin } from "./pin.js";
 import { loginLink } from "./login-link.js";
 import { StatusError, TOO_OLD, backupStep, describeState, readState, reconcilerCommand } from "./status.js";
 import { TerminalProgress, interactive, terminalGuide } from "./terminal.js";
+import { REFUSED, SETTABLE, SecretError, setSecret } from "./secret.js";
+import { RebuildError, instanceIdentity } from "./rebuild.js";
+import { checkoutProblems } from "./rebuild-real.js";
+import { SopsError, dockerSops } from "./sops.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -55,6 +59,17 @@ Commands:
                               credential: shown only to a person at a terminal,
                               never to a script or to Claude, and never written
                               anywhere.
+
+  secret set <path> [dir]     change one value of secrets/platform.sops.yaml (D108),
+                              typed twice with hidden input; every other value is
+                              kept and checked. Commits nothing. Paths: mail.password,
+                              pocket_id.static_api_key, backup.b2_key_id,
+                              backup.b2_application_key, alerts.pushover_token,
+                              alerts.pushover_user, alerts.healthchecks.<heartbeat|
+                              backup|restore>, ghcr.username, ghcr.token
+      --from-file <file>      read the value from a file of mode 600 the owner
+                              typed, outside the instance repo; deleted once done
+      --age-key <file>        default ~/.config/sops/age/keys.txt
 
   restore [app]               bring one app's data back to a backup copy, on the
                               running server (D101). Replaces live data: confirmed
@@ -130,6 +145,7 @@ async function main(argv: string[]): Promise<number> {
       instance: { type: "string" },
       json: { type: "boolean" },
       "restore-test": { type: "boolean" },
+      "from-file": { type: "string" },
     },
   });
   const [command, directory = "."] = positionals;
@@ -161,6 +177,8 @@ async function main(argv: string[]): Promise<number> {
       return backup(values.instance ? resolve(values.instance) : root, values["ssh-key"], values["restore-test"] === true);
     case "login-link":
       return loginLinkCli(positionals[1], values.instance ? resolve(values.instance) : resolve(positionals[2] ?? "."), values["ssh-key"]);
+    case "secret":
+      return secret(positionals.slice(1), values["from-file"], values["age-key"]);
     default:
       console.error(`Unknown command '${command}'.\n\n${USAGE}`);
       return 1;
@@ -482,6 +500,41 @@ function loginLinkCli(login: string | undefined, root: string, sshKey: string | 
     show: (text) => console.log(text),
     error: (text) => console.error(text),
   });
+}
+
+/** `bivy secret set <path> [dir]` (D108): one value changed, checked, nothing committed. */
+async function secret(args: string[], valueFile: string | undefined, ageKey: string | undefined): Promise<number> {
+  const [action, path, directory = "."] = args;
+  if (action !== "set" || !path) {
+    console.error(`Usage: bivy secret set <path> [dir]. Paths: ${Object.keys(SETTABLE).join(", ")}.`);
+    return 1;
+  }
+  const root = resolve(directory);
+  const keyFile = ageKey ?? join(homedir(), ".config", "sops", "age", "keys.txt");
+  try {
+    if (!Object.hasOwn(REFUSED, path) && Object.hasOwn(SETTABLE, path) && !existsSync(keyFile)) throw new SecretError(`no age key at ${keyFile}: pass the right one with --age-key <file>`);
+    const result = await setSecret({
+      sops: dockerSops,
+      identity: () => instanceIdentity(readFileSync(keyFile, "utf8"), readFileSync(join(root, ".sops.yaml"), "utf8")),
+      ask: askSecret,
+      // Two values changed one after the other are pushed together: the secrets file may already differ.
+      checkout: () => checkoutProblems(root, ["secrets/platform.sops.yaml"]),
+      log: console.log,
+    }, root, path, valueFile);
+    if (!result.changed) {
+      console.log(`✓ ${path} already holds that value: nothing was changed.`);
+      return 0;
+    }
+    console.log(`✓ ${path} changed in secrets/platform.sops.yaml; every other value checked unchanged.`);
+    console.log("  Nothing is committed: commit and push it from the instance repo.");
+    console.log(`  Once pushed: ${result.effect}`);
+    return 0;
+  } catch (error) {
+    if (!(error instanceof SecretError) && !(error instanceof SopsError) && !(error instanceof RebuildError)) throw error;
+    console.error(`✗ ${error.message}`);
+    if (valueFile && existsSync(valueFile)) console.error(`  The value is still in ${resolve(valueFile)}: run this again once fixed, or delete it.`);
+    return 1;
+  }
 }
 
 const config = (file: string) => join(homedir(), ".config", "bivouac", file);
