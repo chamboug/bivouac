@@ -79,9 +79,33 @@ test("signing out removes the session and ends the one at the identity provider"
   await expect(page.getByRole("heading", { name: "Hello Test User" })).toBeVisible();
   const reply = await page.request.post("/auth/logout", { maxRedirects: 0, headers: { origin: "http://localhost:3100" } });
   expect(reply.status()).toBe(303);
-  expect(reply.headers().location).toBe("http://localhost:4010/logout");
+  const target = new URL(reply.headers().location!);
+  expect(target.origin + target.pathname).toBe("http://localhost:4010/logout");
+  // The ID token as proof, so the provider signs out without asking (D102).
+  expect(target.searchParams.get("client_id")).toBe("test-client");
+  expect(target.searchParams.get("post_logout_redirect_uri")).toBe("http://localhost:3100/");
+  const atProvider = await page.request.get(target.href, { maxRedirects: 0 });
+  expect(atProvider.status()).toBe(302);
+  expect(atProvider.headers().location).toBe("http://localhost:3100/");
   expect((await context.cookies()).some((c) => c.name === "__Host-bivouac-session")).toBe(false);
   expect((await page.request.get("/api/me")).status()).toBe(401);
+});
+
+test("a user with many groups still signs in, and signs out by confirming at the provider", async ({ page, context }) => {
+  const groups = Array.from({ length: 60 }, (_, i) => `a-rather-long-group-name-${i}`).join(",");
+  await page.request.get(`http://localhost:4010/test/next-user?sub=user-many&name=Many&groups=${groups}`);
+  try {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Hello Many" })).toBeVisible();
+    const cookie = (await context.cookies()).find((c) => c.name === "__Host-bivouac-session");
+    expect(cookie!.name.length + cookie!.value.length).toBeLessThan(4096);
+    const reply = await page.request.post("/auth/logout", { maxRedirects: 0, headers: { origin: "http://localhost:3100" } });
+    const target = new URL(reply.headers().location!);
+    expect(target.searchParams.has("id_token_hint")).toBe(false);
+    expect((await page.request.get("/api/me")).status()).toBe(401);
+  } finally {
+    await page.request.get("http://localhost:4010/test/next-user");
+  }
 });
 
 test("a return address on another site is ignored", async ({ page }) => {

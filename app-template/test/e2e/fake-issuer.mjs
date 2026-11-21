@@ -2,7 +2,7 @@
 // It checks what a real one would: the redirect address and the PKCE proof.
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { SignJWT, exportJWK, generateKeyPair } from "jose";
+import { SignJWT, exportJWK, generateKeyPair, jwtVerify } from "jose";
 
 const port = Number(process.env.FAKE_ISSUER_PORT ?? 4010);
 const issuer = `http://localhost:${port}`;
@@ -102,6 +102,15 @@ createServer(async (req, res) => {
     return json(res, 200, { sub: user.sub, name: user.name, email: `${user.sub}@example.org`, groups: user.groups });
   }
   if (url.pathname === "/logout") {
+    // As Pocket ID does: with a valid ID token as proof, sign out at once and
+    // go back to the app's registered address; without it, ask to confirm.
+    const q = url.searchParams;
+    const back = `${new URL(redirectUri).origin}/`;
+    const proven = await jwtVerify(q.get("id_token_hint") ?? "", publicKey, { issuer, audience: clientId }).then(() => true, () => false);
+    if (proven && q.get("post_logout_redirect_uri") === back) {
+      res.writeHead(302, { location: back });
+      return res.end();
+    }
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     return res.end(`<p>Signed out of the fake identity provider. <a href="${new URL(redirectUri).origin}/">Back to the app</a></p>`);
   }

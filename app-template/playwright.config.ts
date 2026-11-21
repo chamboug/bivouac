@@ -8,6 +8,8 @@ export const storageDir = ".data/e2e-storage";
 // Needs a built app (npm run build) and a Postgres in DATABASE_URL.
 export default defineConfig({
   testDir: "test/e2e",
+  // One at a time: some tests change who the fake identity provider signs in.
+  workers: 1,
   use: { baseURL: `http://localhost:${appPort}` },
   webServer: [
     { command: "node test/e2e/fake-issuer.mjs", url: `http://localhost:${issuerPort}/jwks` },
