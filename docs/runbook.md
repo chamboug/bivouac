@@ -408,11 +408,14 @@ ssh "${O[@]}" core@<ipv4> '<command>'
    `/var/lib/bivouac/reconciler/image.env`, exits and comes back on the new
    image.
 
-   **Moving to a new version**: CI publishes `sha-<commit>`; write
-   `ghcr.io/<owner>/bivouac-reconciler:sha-<commit>@sha256:<digest>`, with
-   the digest of the index from
-   `docker buildx imagetools inspect ghcr.io/<owner>/bivouac-reconciler:sha-<commit>`
-   (`bivy validate` refuses a tag alone). The new version is **on trial**
+   **Moving to a new version**: once CI on the monorepo's `main` is green for
+   the commit (it publishes `sha-<commit>`), run `bivy pin reconciler
+   <commit>` in the instance repo (D106). It finds the digest of the index on
+   GHCR, writes
+   `ghcr.io/<owner>/bivouac-reconciler:sha-<commit>@sha256:<digest>` in
+   `reconciler.image` (that line only), runs the checks of `bivy validate`,
+   and prints the old and new values; then commit and push. The way back is
+   the old value, written back the same way. The new version is **on trial**
    (`reconciler/trial.env`) until its first pass; `journalctl -u
    bivouac-reconciler` shows "on trial: start n of 3" from
    `/opt/bivouac/reconciler-trial`. If it fails three starts, the fourth goes
@@ -941,12 +944,12 @@ socket and no database.
 **Turning it on** (no DNS change: the wildcard covers the name):
 
 1. CI on the monorepo's `main` publishes both images for the commit; each
-   job's summary gives the digest. Check them as for the reconciler (D61):
-   `docker buildx imagetools inspect ghcr.io/<owner>/bivouac-status:sha-<commit>`.
-2. Move the reconciler first (`reconciler.image` in `platform.yml`, with its
-   digest), and check that it passed: the API comes with it, and nothing
-   else changes for the apps.
-3. Then add to `platform.yml`:
+   job's summary gives the digest.
+2. Move the reconciler first (`bivy pin reconciler <commit>`, section 8),
+   and check that it passed: the API comes with it, and nothing else changes
+   for the apps.
+3. Then add to `platform.yml` (any published version), and run
+   `bivy pin status <commit>`, which writes its real digest:
 
    ```yaml
    status:
@@ -963,6 +966,8 @@ socket and no database.
 **Checks**: the page answers 200 on `/api/health` through Caddy; a member of
 another group is refused by Pocket ID; from an app container, the reconciler's
 port 8080 closes the connection.
+
+**A new version**: `bivy pin status <commit>`, then commit and push.
 
 **Turning it off**: remove the `status` block. The next pass drops its
 route; the container keeps running, unreachable, until removed by hand

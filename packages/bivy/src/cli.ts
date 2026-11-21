@@ -16,6 +16,7 @@ import { INIT_USAGE, initCli } from "./init-cli.js";
 import { printBanner } from "./banner.js";
 import { RemoteError, SshRemote, streamSsh } from "./remote.js";
 import { parseLines, restoreCommand } from "./restore.js";
+import { pin } from "./pin.js";
 import { StatusError, TOO_OLD, backupStep, describeState, readState, reconcilerCommand } from "./status.js";
 import { TerminalProgress, interactive, terminalGuide } from "./terminal.js";
 
@@ -25,6 +26,13 @@ Commands:
   validate [dir]              check an instance repo (manifests, keys, secrets, Butane, Caddyfile)
   ignition [dir] [-o file] [--ipv6 <address/64>]
                               print the server's Ignition config (JSON)
+
+  pin reconciler|status <commit>
+                              move the reconciler or the status page to the
+                              version CI published for a commit of main: finds
+                              its digest on GHCR, writes that one line of
+                              platform.yml, then validates (D106). Commits nothing.
+      --instance <dir>        the instance repo (default: the current directory)
 
   ssh [dir]                   open a shell on the server, as core
   exec [app] [-- command...]  run a command in an app's container; with no
@@ -137,6 +145,8 @@ async function main(argv: string[]): Promise<number> {
       return ssh(resolve(values.instance ?? "."), positionals[1] ?? null, inner, values["ssh-key"]);
     case "restore":
       return restore(resolve(values.instance ?? "."), positionals[1], values);
+    case "pin":
+      return pinImage(resolve(values.instance ?? "."), positionals[1], positionals[2]);
     case "status":
       return status(values.instance ? resolve(values.instance) : root, values["ssh-key"], values.json === true);
     case "backup":
@@ -224,6 +234,26 @@ function ignition(root: string, output: string | undefined, ipv6: string | undef
     console.error(error.message);
     return 1;
   }
+}
+
+/** `bivy pin` (D106): one line of platform.yml, then the checks of bivy validate. */
+function pinImage(root: string, part: string | undefined, commit: string | undefined): Promise<number> {
+  const file = join(root, "platform.yml");
+  if (!existsSync(file)) {
+    console.error(`No platform.yml in ${root}: run bivy from the instance repo, or pass --instance <dir>.`);
+    return Promise.resolve(1);
+  }
+  return pin(
+    {
+      read: () => readFileSync(file, "utf8"),
+      write: (text) => writeFileSync(file, text),
+      fetch: (...args) => globalThis.fetch(...args),
+      validate: () => validate(root),
+      log: (line) => console.log(line),
+    },
+    part,
+    commit,
+  );
 }
 
 /**

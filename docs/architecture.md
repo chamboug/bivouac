@@ -142,6 +142,7 @@ TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talk
 | `bivy ssh`, `bivy exec` | Reach the server or an app without knowing SSH | built |
 | `bivy status` | Containers, last pass, backups, host, incidents, and what is worth a look; only reads (D105) | built |
 | `bivy backup` | A backup now, followed to its end, before a change that can lose data (D105) | built |
+| `bivy pin reconciler\|status <commit>` | Moves a platform image to a commit's version, pinned by its GHCR digest; edits one line of `platform.yml`, commits nothing (D106) | built |
 | `bivy init` | Empty Hetzner project + domain → running platform (D99) | never run for real |
 | `bivy configure backups\|alerts\|mail` | Adds a missing part (D99) | built |
 | `bivy rebuild --test` | Temporary server restored from backups, checked, destroyed (D91) | proven |

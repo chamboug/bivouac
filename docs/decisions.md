@@ -114,6 +114,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D103 | Apps installable on a phone, with a theme choice | |
 | D104 | Claude works through `bivy`; a gap becomes a command | replaces D32 |
 | D105 | `bivy status` and `bivy backup` | |
+| D106 | `bivy pin reconciler\|status <commit>` | |
 
 ---
 
@@ -609,3 +610,9 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 - **Guard**: an older reconciler would take an unknown command for its main loop and start a second reconciler beside the first; `bivy` checks the compiled code names the command before sending it, and the reconciler now refuses any command it does not know.
 - **Accepted**: an extra ping to healthchecks.io between two nightly ones (harmless to a cron check, which waits for the next scheduled time, from memory); a request picked up within a minute, not at once.
 - **Rejected**: a write on the internal API (the status page's token would then start backups, and D3 keeps sync as its only action); editing the scheduler's state from outside (it is written back on every pass); a separate process running the backup (two runs could overlap the night's).
+
+### D106 — `bivy pin reconciler|status <commit>`
+- **Context** (21 Nov. 2026, D104): moving the reconciler or the status page meant `docker buildx imagetools inspect` by hand, copying the index digest and writing a long line into `platform.yml` (D61); a typo, or another publisher's image, was caught late or not at all.
+- **Choice**: `bivy pin` asks GHCR itself (D31): an anonymous pull token from `https://ghcr.io/token` (the packages are public), then the manifest of `sha-<7 characters>` with the index and manifest media types in `Accept`. The digest is the SHA-256 of the bytes received, refused if the registry's `Docker-Content-Digest` header says otherwise: the same digest `imagetools` prints (checked on a real version). The owner is the one already in `platform.yml`, the package is fixed by the part: another publisher's image cannot be written. Only the value on the block's `image:` line changes, as text (never re-serialized, D48); then the checks of `bivy validate` run, and a failure puts the file back. It prints the old and new values and commits nothing.
+- **Verified**: OCI distribution spec (manifest by tag, `Accept`, digest header to verify if used); Docker token authentication spec (`token` or `access_token`); GitHub docs (public images pull anonymously); a missing tag answers 404, a missing or private package refuses the token.
+- **Rejected**: running `docker buildx imagetools` or `crane` (a CLI, D31); reading the digest from the CI job summary (needs `gh`, and is not what the registry serves); committing and pushing from the command (the commit message is where the session says why, rule 7).
