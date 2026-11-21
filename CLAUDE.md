@@ -106,7 +106,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 
 ## Where things stand (21 November 2026)
 
-- **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99) and `bivy restore` (D101). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
+- **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99), `bivy restore` (D101), and the commands D104 asked for: `bivy status`, `bivy backup` (D105, used for real on 21 Nov. 2026), `bivy pin` (D106), `bivy login-link` (D107), `bivy secret set` (D108). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
 - **Proven**: `bivy rebuild --test` (14 and 19 Nov. 2026, D91); `restore-app` rehearsed on the server (D90); every alert received on the owner's phone (D82).
 
 ## Open items
@@ -116,8 +116,7 @@ Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to p
 ### To do
 
 - **Base images updated without relying on Claude** (D95): Caddy, Postgres and Pocket ID are updated only when Claude thinks of it. Renovate is not set up on the instance repo (the instance template has no `renovate.json`, so D29's "never a Postgres major" rule exists nowhere yet). The owner enables Renovate on that repo (D81), then a config follows.
-- **Runbook steps become `bivy` commands** (D104): `bivy status` and `bivy backup` are built (D105), not deployed yet: the server's reconciler predates them, and moving it waits for the owner's go. `bivy pin` (D106), `bivy login-link` (D107) and `bivy secret set` (D108) are built.
-- **Pocket ID sign-in lasting 30 days**: ready on the `pocket-id-30-days` branch, not merged yet.
+- **Pocket ID sign-in lasting 30 days** (D102): ready on the `pocket-id-30-days` branch, not merged; it waits for every app to be on `app-layers-v1.3.0`, whose sign-out also ends the Pocket ID session (see the instance repo's operations log).
 
 ### When a need comes
 
@@ -137,7 +136,7 @@ Nothing to do until the trigger in bold.
 
 - **Next `bivy rebuild --test`**: February 2027, with the app check of runbook section 13; warn the users of apps with their own scheduled jobs (a duplicate push summary, D91).
 - **To observe**: zram swap after the next reboot (D94); mail deliverability with a real invitation (D70); `update-ssh-keys` with `sk-*` keys; HTTP/3 from outside; whether a connector added on claude.ai shows in the phone app (D85).
-- **Never run yet, the owner's decision each**: the real `bivy rebuild` (D91); `bivy restore` on a real app (D101); announcing the prod phase (D95).
+- **Never run yet, the owner's decision each**: the real `bivy rebuild` (D91); `bivy restore` on a real app (D101); `bivy login-link` and `bivy secret set` on the real platform, when needed (D107, D108); announcing the prod phase (D95).
 - **Unknown**: what Pocket ID does if its `ENCRYPTION_KEY` is lost (undocumented; the key is in SOPS).
 - **Accepted risks to revisit**: the deployment token's holders are root (D64, D92), if more people get write access; no email login code (D37), when an app opens to the general public or the community outgrows help by hand; GitHub Free cannot block a red PR (D95).
 
