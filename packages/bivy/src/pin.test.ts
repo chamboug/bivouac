@@ -106,8 +106,8 @@ describe("bivy pin", () => {
     expect(output).toMatch(/Nothing is committed or pushed/);
     expect(output).toMatch(/way back/);
     // Anonymous: no credential is ever sent but the registry's own pull token.
-    expect(fake.requests[0].url).toBe("https://ghcr.io/token?service=ghcr.io&scope=repository%3Aowner%2Fbivouac-reconciler%3Apull");
-    expect(fake.requests[1].headers.Accept).toContain("application/vnd.oci.image.index.v1+json");
+    expect(fake.requests[0]?.url).toBe("https://ghcr.io/token?service=ghcr.io&scope=repository%3Aowner%2Fbivouac-reconciler%3Apull");
+    expect(fake.requests[1]?.headers.Accept).toContain("application/vnd.oci.image.index.v1+json");
   });
 
   it("pins the status page, keeping its quotes", async () => {
