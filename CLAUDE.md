@@ -82,9 +82,10 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | Backups | restic to B2 EU Central nightly; the server's key cannot delete; weekly restore test | D73, D74, D75 |
 | Identity | Pocket ID, passkeys only, no email code, a sign-in lasts 30 days; mail through the OVH mailbox | D37, D52, D70, D102 |
 | Auth modes | `oidc`, `public`, `local` (Better Auth) built; `forward` (Tinyauth) not | D10, D79, D97 |
-| Reconciler | Polls Git every minute; bases, databases, OIDC clients, Caddy, containers; self-update by digest | D2, D50–D61 |
+| Reconciler | Polls Git every minute; bases, databases, OIDC clients, Caddy, containers; self-update by digest, on trial | D2, D50–D61, D109 |
 | Deployment | App CI builds, `propose.yml` opens a PR, merged by itself if the layers did not change | D5, D64, D86, D92 |
 | Apps | Nuxt template with shared layers by commit, installable on a phone, theme choice; Renovate for the layers only | D79, D80, D81, D103 |
+| Base updates | Renovate once a month: monorepo base images, then the instance's reconciler (`v1.0.<n>`); rollback on a broken Caddy or Postgres; alert after 45 days | D109 |
 | App MCPs | `mcp: true` opens `/mcp`, signed in through Pocket ID | D85 |
 | Alerts | Pushover from the server, healthchecks.io as dead man's switch, normal priority | D45, D76, D82 |
 | Status page | `status.apps.example.org`, through the reconciler's internal API | D8, D96 |
@@ -93,7 +94,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 
 ## Conventions for Claude
 
-- **Claude acts on the server through `bivy`** (D104). A session starts with `bivy status`; the backup D89 asks for before a change that can lose data is `bivy backup` (D105). Improvising over `bivy ssh`/`exec` is for reading; a change goes through a written command or Git. Each improvisation asks: worth a command? Easy without Claude's privileged access? If not, say so in the session and propose the command.
+- **Claude acts on the server through `bivy`** (D104). A session starts with `bivy status` and the open Renovate PRs of both repos (runbook section 21, D109); the backup D89 asks for before a change that can lose data is `bivy backup` (D105). Improvising over `bivy ssh`/`exec` is for reading; a change goes through a written command or Git. Each improvisation asks: worth a command? Easy without Claude's privileged access? If not, say so in the session and propose the command.
 - **App contract** (any framework): an image that listens on `port`, answers on the health endpoint, reads the standard variables the platform provides, and applies additive migrations at startup (D19, D21).
 - **User files** (D72): never `fs` directly, only the storage module. The database stores keys (`photos/123.jpg`), never paths or URLs. Files are served through an app route that checks access (`/api/files/...`).
 - **App work happens on the Mac** with `npm run dev:local`: light, dark and phone width checked before pushing, never on the real server (D83). The miniature platform (`npm run platform:up`) is for the platform itself (D59).
@@ -115,7 +116,7 @@ Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to p
 
 ### To do
 
-- **Base images updated without relying on Claude** (D95): Caddy, Postgres and Pocket ID are updated only when Claude thinks of it. Renovate is not set up on the instance repo (the instance template has no `renovate.json`, so D29's "never a Postgres major" rule exists nowhere yet). The owner enables Renovate on that repo (D81), then a config follows.
+- **A way back for Pocket ID after an update that broke its database** (D109): `bivy restore pocket-id`, from the night's copy, as `restore-platform` does for that one database. Until then it is done by hand (runbook section 21), the owner consenting.
 
 ### When a need comes
 
@@ -133,6 +134,7 @@ Nothing to do until the trigger in bold.
 
 ### Appointments and the owner's decisions
 
+- **First automatic base update** (D109): 1 December 2026 on the monorepo, then the instance; check both went through and the server moved.
 - **Next `bivy rebuild --test`**: February 2027, with the app check of runbook section 13; warn the users of apps with their own scheduled jobs (a duplicate push summary, D91).
 - **To observe**: zram swap after the next reboot (D94); mail deliverability with a real invitation (D70); `update-ssh-keys` with `sk-*` keys; HTTP/3 from outside; whether a connector added on claude.ai shows in the phone app (D85).
 - **Never run yet, the owner's decision each**: the real `bivy rebuild` (D91); `bivy restore` on a real app (D101); `bivy login-link` and `bivy secret set` on the real platform, when needed (D107, D108); announcing the prod phase (D95).

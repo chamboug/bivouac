@@ -409,18 +409,24 @@ ssh "${O[@]}" core@<ipv4> '<command>'
    image.
 
    **Moving to a new version**: once CI on the monorepo's `main` is green for
-   the commit (it publishes `sha-<commit>`), run `bivy pin reconciler
-   <commit>` in the instance repo (D106). It finds the digest of the index on
-   GHCR, writes
-   `ghcr.io/<owner>/bivouac-reconciler:sha-<commit>@sha256:<digest>` in
-   `reconciler.image` (that line only), runs the checks of `bivy validate`,
+   the commit (it publishes `sha-<commit>` and `v1.0.<n>`), run `bivy pin
+   reconciler <commit>` in the instance repo (D106). It finds the digest of
+   the index on GHCR and the release tag with the same digest, writes
+   `ghcr.io/<owner>/bivouac-reconciler:v1.0.<n>@sha256:<digest>` in
+   `reconciler.image` (that line only; Renovate follows that tag, D109; a
+   version from before 21 Nov. 2026 has only its `sha-` tag, written with a
+   warning), runs the checks of `bivy validate`,
    and prints the old and new values; then commit and push. The way back is
    the old value, written back the same way. The new version is **on trial**
    (`reconciler/trial.env`) until its first pass; `journalctl -u
    bivouac-reconciler` shows "on trial: start n of 3" from
    `/opt/bivouac/reconciler-trial`. If it fails three starts, the fourth goes
-   back to the previous version, which logs "crashed at start: rolled back"
+   back to the previous version, which logs "failed its trial: rolled back"
    and alerts until `platform.yml` names another version (`refused.env`).
+   A version whose first pass leaves a Caddy or Postgres it recreated
+   unhealthy goes back the same way by itself, with the reason in
+   `refused.env` (D109). Not for Pocket ID: an older one refuses the
+   database a newer one migrated.
    **By hand** (never delete `image.env`: the unit's own version can be
    months old): `sudo sh -c 'umask 077; echo BIVOUAC_RECONCILER_IMAGE=<image>
    > /var/lib/bivouac/reconciler/image.env; rm -f
@@ -1184,3 +1190,52 @@ one-value changes: there is no tested procedure for them yet, and a Claude
 session plans it with consent at each step.
 
 Record what was done in the operations log.
+
+## 21. Monthly base updates (D109)
+
+Nothing to do when it works. On the 1st (Paris time), Renovate opens
+`renovate/base-images` on the monorepo (Caddy, Postgres digests, Pocket ID,
+restic) and merges it once CI is green, on a weekday between 9:00 and 17:00.
+CI publishes `v1.0.<n>`; between the 1st and the 10th, Renovate moves
+`reconciler.image` and `status.image` in the instance repo and merges once
+Validate is green. The server moves within a minute; Pocket ID restarts
+(about a minute of failed sign-ins, D68).
+
+**At the start of every session**: `bivy status`, then the open Renovate
+PRs and the Dependency Dashboard issue of both repos (`gh pr list --author
+app/renovate`, `gh issue list --search Dashboard`, with the right `GH_TOKEN`).
+A PR still open means a red check, a major, or a minor step of the
+platform: read why before anything else.
+
+**Alerts and what they mean**:
+- "The new reconciler version … was refused: … did not become healthy, and
+  the server went back to …": a new Caddy or Postgres image did not start;
+  the previous version is back with its own images. Read the image's
+  release notes and the container's logs (`bivy status`, then the status
+  page's logs), fix in the monorepo, and the next version moves on its own.
+- "A reconciler pass failed: bivouac-pocket-id … not healthy" after an
+  update: the new Pocket ID does not start, and nothing goes back by itself
+  (the previous one refuses a database the new one migrated: "downgrades
+  are not allowed"). Look at its logs first: a slow migration may just need
+  time. If it is broken: sign-in stays down until its database comes back
+  from the night's copy and the previous reconciler is pinned, with the
+  owner's consent (rule 5, D89). There is no command for it yet: restore the
+  `pocket-id` dump as `restore-platform` does (section 15), Pocket ID
+  stopped, after taking a copy of the current database; what changed in
+  Pocket ID since the night is lost.
+- "The reconciler running here was built N days ago": nothing moved for 45
+  days. Look at the PRs above, at Mend's status for the repos, and whether
+  the instance's `platform.yml` still has a `v1.0.<n>` tag (a `sha-` tag
+  written by hand stops Renovate: `bivy pin` again).
+- A backup that fails after an update: restic changed; it is not rolled
+  back. Pin the previous reconciler (`bivy pin reconciler <commit>`) until
+  fixed.
+
+**An urgent security fix** (seen in a session, before the 1st): update the
+image in `packages/manifest/src/platform.ts` (tag and digest, `docker
+buildx imagetools inspect`), push to `main` once CI is green, then `bivy pin
+reconciler <commit>` and `bivy pin status <commit>` in the instance repo.
+
+**A version that must not go out alone**: keep it on a branch, or have the
+instance's PR wait by stepping the minor (`v1.1.0` in `ci.yml`): only
+`v1.0.<n>` steps merge by themselves.

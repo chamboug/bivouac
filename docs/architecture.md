@@ -101,20 +101,24 @@ How Bivouac works today, part by part. The reasons are in the [decision log](dec
   ```
   The platform injects `DATABASE_URL`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `MCP_RESOURCE` (D85), `SESSION_SECRET` (`local`), and the app's own secrets. `SMTP_*` waits for a send-only relay (D70).
 - **Static sites** (*not built*, D22): `sites/<name>/` and `sites/<name>.yml`, served by Caddy's `file_server`.
-- **Renovate** (Mend's free plan, one run every 4 hours): in app repos, the shared layers only (D81). On the instance repo it is planned for third-party images (minors merged if green, majors as PRs, never a Postgres major, D29) but **not set up**: the template has no `renovate.json`, and base images are updated by Claude (D95).
+- **Renovate** (Mend's free plan, one run every 4 hours): in app repos, the shared layers only (D81). Base images, once a month (D109), in two steps:
+  1. **monorepo** (`renovate.json`): on the 1st, one grouped PR `renovate/base-images` on `packages/manifest/src/platform.ts` (Caddy, Postgres digests, Pocket ID, restic); Renovate merges it once CI is green, weekdays 9:00-17:00 Paris; majors wait for the owner, Postgres majors are never proposed (D29). CI then publishes the reconciler and the status page as `sha-<commit>` and `v1.0.<run number>`;
+  2. **instance repo** (`renovate.json`, from `template/`): from the 1st to the 10th, one grouped PR moves `reconciler.image` and `status.image` to the newest `v1.0.<n>` with its digest, merged once Validate is green, same hours; `v1.1.0` or `v2.0.0` waits for the owner. App images are never touched (D5).
+
+  Both repos have Renovate's Dependency Dashboard issue; a PR still open at the start of a session is the first thing to look at.
 
 ## The reconciler
 
-TypeScript on Node LTS (`packages/reconciler`), image `ghcr.io/chamboug/bivouac-reconciler:sha-<commit>@sha256:…` (D50, D61). It polls Git every minute with the read-only deploy key (D2); `POST /sync` triggers a pass now (D3). Each pass (D54, D55):
+TypeScript on Node LTS (`packages/reconciler`), image `ghcr.io/chamboug/bivouac-reconciler:v1.0.<n>@sha256:…` (or `sha-<commit>`, D50, D61, D109). It polls Git every minute with the read-only deploy key (D2); `POST /sync` triggers a pass now (D3). Each pass (D54, D55):
 
-1. moves itself to the version named in `platform.yml` if it differs (D61);
+1. moves itself to the version named in `platform.yml` if it differs (D61); a new version stays on trial until its first pass: if it crashes at start the host script puts the previous one back, and if that pass leaves a Caddy or Postgres it recreated unhealthy, it goes back by itself (not for Pocket ID, D109);
 2. validates the commit (an invalid one applies nothing);
 3. writes the SSH key list (D63);
 4. decrypts secrets;
 5. base services: networks, Postgres, Pocket ID, Caddy;
 6. per app: database, role, extensions; OIDC client (and MCP client, D85) through Pocket ID's API; container with the right image, health-checked;
 7. regenerates the Caddyfile and reloads Caddy;
-8. checks the metadata block, the disk, and sends alerts and the heartbeat.
+8. checks the metadata block, the disk, its own age (an image built more than 45 days ago means the monthly update is stuck, D109), and sends alerts and the heartbeat.
 
 It also runs the nightly backup, the weekly retention and restore test (D74, D75), `restore-app` (D90), `restore-platform` (D91), and the internal API for the status page (D96). Beside it, through `docker exec`: `status` (what the status page shows, with the last pass it saves in `reconciler/last-pass.json`) and `backup-now` (D105). Any other command is refused, so an unknown one never starts a second loop; `bivy` checks the reconciler knows a command before sending it.
 
@@ -144,7 +148,7 @@ TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talk
 | `bivy ssh`, `bivy exec` | Reach the server or an app without knowing SSH | built |
 | `bivy status` | Containers, last pass, backups, host, incidents, and what is worth a look; only reads (D105) | built |
 | `bivy backup` | A backup now, followed to its end, before a change that can lose data (D105) | built |
-| `bivy pin reconciler\|status <commit>` | Moves a platform image to a commit's version, pinned by its GHCR digest; edits one line of `platform.yml`, commits nothing (D106) | built |
+| `bivy pin reconciler\|status <commit>` | Moves a platform image to a commit's version, pinned by its GHCR digest, written with its `v1.0.<n>` tag for Renovate; edits one line of `platform.yml`, commits nothing (D106, D109) | built |
 | `bivy login-link <user>` | A one-time sign-in link for an admin who lost every passkey, shown only at a terminal (D107) | built, tried on the miniature platform |
 | `bivy init` | Empty Hetzner project + domain → running platform (D99) | never run for real |
 | `bivy configure backups\|alerts\|mail` | Adds a missing part (D99) | built |
