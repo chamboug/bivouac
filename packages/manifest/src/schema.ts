@@ -4,9 +4,10 @@ import { ALLOWED_EXTENSIONS } from "./platform.js";
 
 /**
  * Names that can never be used for an app or a site, because the platform
- * already serves them on the same domain (D34, D40).
+ * already serves them on the same domain (D34, D40), or because `bivy restore`
+ * names the platform's own data with them (`pocket-id`, D110).
  */
-export const RESERVED_NAMES = ["auth", "gate", "status"] as const;
+export const RESERVED_NAMES = ["auth", "gate", "status", "pocket-id"] as const;
 
 /**
  * Environment variables the platform injects itself (D19). An app's `env`

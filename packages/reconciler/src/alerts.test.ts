@@ -313,4 +313,10 @@ describe("what a pass means", () => {
     const observation = observePass({ result: { status: "invalid", commit: "abc", errors: [{ file: "apps/x.yml", message: "bad" }] } });
     expect(observation.incidents[0]).toMatchObject({ key: "pass:invalid", message: expect.stringContaining("apps/x.yml: bad") });
   });
+
+  it("checks only the platform while a restore holds Pocket ID: the pass and app incidents stay open (D110)", () => {
+    const held = observePass({ result: { status: "unchanged", commit: "abc", changes: [], failures: [], pocketIdHeld: true } });
+    expect(held.checked).toEqual(["platform"]);
+    expect(observePass({ result: { status: "unchanged", commit: "abc", changes: [], failures: [] } }).checked).toEqual(["pass", "app", "platform"]);
+  });
 });

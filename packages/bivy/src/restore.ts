@@ -9,6 +9,10 @@ import { shellQuote } from "./ssh.js";
  * `bivy exec`; bivy only asks, shows the plan the server computes, takes the
  * typed confirmation and follows the steps.
  *
+ * `bivy restore pocket-id` does the same for Pocket ID's database, through
+ * the reconciler's `restore-pocket-id` (D110, runbook section 22): the way
+ * back after an update of Pocket ID that broke it.
+ *
  * Every question has a flag or a safe default, so a script or Claude can
  * read the plan (`--plan`); the restore itself is confirmed by typing the
  * app's name in a terminal, never by a flag (rule 5).
@@ -62,9 +66,13 @@ export const COPIES_OFFERED = 14;
 const RECONCILER = "bivouac-reconciler";
 const COPY_ID = /^[0-9a-f]{8,64}$/;
 
+/** What `bivy restore pocket-id` names: Pocket ID's database, not an app (no app may take this name). */
+export const POCKET_ID = "pocket-id";
+
 /** The command the server runs: the reconciler's own restore-app, its arguments quoted one by one. */
 export function restoreAppCommand(app: string, args: readonly string[]): string {
-  return ["docker", "exec", RECONCILER, "node", "packages/reconciler/dist/main.js", "restore-app", app, ...args].map(shellQuote).join(" ");
+  const command = app === POCKET_ID ? ["restore-pocket-id"] : ["restore-app", app];
+  return ["docker", "exec", RECONCILER, "node", "packages/reconciler/dist/main.js", ...command, ...args].map(shellQuote).join(" ");
 }
 
 interface Line {
@@ -112,6 +120,10 @@ export interface Plan {
   busy?: string;
   interrupted: boolean;
   deployedAt?: string;
+  /** Pocket ID's plan only: the image it runs, its state, and its accounts today (null: not readable). */
+  image?: string;
+  pocketId?: string;
+  users?: number | null;
 }
 
 /** The server's reason for refusing, as restore-app logs it. */
@@ -197,10 +209,12 @@ export async function restoreCommand(deps: RestoreDeps, request: RestoreRequest)
 }
 
 async function restore(deps: RestoreDeps, request: RestoreRequest): Promise<number> {
-  const { remote, guide, log } = deps;
+  const { guide, log } = deps;
   if (request.snapshot !== undefined && !COPY_ID.test(request.snapshot)) throw new RestoreError("--snapshot takes a copy's ID, as the list of copies shows it");
   if (request.snapshot !== undefined && request.before !== undefined) throw new RestoreError("--snapshot and --before cannot be used together");
   if (request.only !== undefined && request.only !== "database" && request.only !== "files") throw new RestoreError("--only takes 'database' or 'files'");
+  if (request.app === POCKET_ID && request.only !== undefined) throw new RestoreError("--only is for apps: Pocket ID has only a database");
+  if (request.app === POCKET_ID) return restorePocketId(deps, request);
 
   // 1. Which app: only those with data to bring back.
   const candidates = deps.apps.filter((app) => hasDatabase(app) || hasFiles(app)).sort((a, b) => a.name.localeCompare(b.name));
@@ -210,25 +224,18 @@ async function restore(deps: RestoreDeps, request: RestoreRequest): Promise<numb
     throw new RestoreError(known ? `${request.app} has no database and no volume: nothing to restore` : `no app '${request.app}' in this instance. Apps with data: ${candidates.map((entry) => entry.name).join(", ") || "none"}`);
   }
   if (!app) {
-    if (!guide) throw new RestoreError(`which app? bivy restore <app>. Apps with data: ${candidates.map((entry) => entry.name).join(", ") || "none"}`);
-    if (candidates.length === 0) throw new RestoreError("no app of this instance has a database or a volume");
-    const name = await guide.select("Which app's data should go back to a backup copy?", candidates.map((entry) => ({ value: entry.name, label: entry.name })));
+    if (!guide) throw new RestoreError(`which app? bivy restore <app>. Apps with data: ${candidates.map((entry) => entry.name).join(", ") || "none"} (or ${POCKET_ID}, the sign-in)`);
+    const name = await guide.select("Which app's data should go back to a backup copy?", [
+      ...candidates.map((entry) => ({ value: entry.name, label: entry.name })),
+      { value: POCKET_ID, label: "Pocket ID", hint: "the sign-in: accounts and passkeys" },
+    ]);
+    if (name === POCKET_ID) return restorePocketId(deps, request);
     app = candidates.find((entry) => entry.name === name) as AppManifest;
   }
   const name = app.name;
 
   // 2. Which copy: from the server's own list, unless named.
-  let snapshot = request.snapshot;
-  if (snapshot === undefined && request.before === undefined && guide) {
-    const listed = remote.run(restoreAppCommand(name, ["--list"]));
-    if (listed.status !== 0) throw new RestoreError(`cannot read the backup copies: ${failure(listed)}`);
-    const nightly = readCopies(listed.stdout).filter((copy) => copy.tags.includes("nightly")).slice(0, COPIES_OFFERED);
-    if (nightly.length === 0) throw new RestoreError("the server has no nightly copy yet");
-    snapshot = await guide.select(
-      `Which nightly copy? (your computer's time; older ones: --snapshot <id>)`,
-      nightly.map((copy, index) => ({ value: copy.id, label: when(copy.time, deps.timeZone), hint: index === 0 ? `the latest, ${copy.id}` : copy.id })),
-    );
-  }
+  const snapshot = await chooseCopy(deps, name, request);
 
   // 3. Which part, when the app has both.
   let only = request.only as "database" | "files" | undefined;
@@ -242,13 +249,7 @@ async function restore(deps: RestoreDeps, request: RestoreRequest): Promise<numb
   }
 
   // 4. The plan, as the server computes it: nothing changes yet.
-  const choice = [
-    ...(snapshot ? ["--snapshot", snapshot] : request.before ? ["--before", request.before] : []),
-    ...(only ? ["--only", only] : []),
-  ];
-  const planned = remote.run(restoreAppCommand(name, choice));
-  if (planned.status !== 0) throw new RestoreError(failure(planned));
-  const plan = readPlan(planned.stdout);
+  const plan = readPlanFor(deps, name, [...copyArgs(snapshot, request), ...(only ? ["--only", only] : [])]);
   const taken = when(plan.taken, deps.timeZone);
 
   log("");
@@ -260,8 +261,7 @@ async function restore(deps: RestoreDeps, request: RestoreRequest): Promise<numb
   log(`  · ${name} is stopped meanwhile: usually under a minute, longer for a large volume`);
   log(`  · disk: about ${size(plan.neededBytes)} needed, ${size(plan.freeBytes)} free`);
 
-  if (plan.busy) throw new RestoreError(`a ${plan.busy} is running on the server: try again once it is over. Nothing was changed.`);
-  if (plan.freeBytes < plan.neededBytes) throw new RestoreError("not enough free disk on the server for this restore. Nothing was changed.");
+  refuseBusy(plan);
   if (plan.interrupted) {
     if (only) throw new RestoreError(`an earlier restore of ${name} was interrupted: only a restore of all its data (without --only) starts it again. Nothing was changed.`);
     log(`  · an earlier restore of ${name} was interrupted: the app has been stopped since, and this one starts it again`);
@@ -282,23 +282,108 @@ async function restore(deps: RestoreDeps, request: RestoreRequest): Promise<numb
     }
   }
 
+  if (!(await confirm(deps, request, name, plan, only, `${name}'s data`))) return 0;
+
+  // 7. The restore itself, on exactly the copy of the plan: a nightly copy finishing meanwhile changes nothing.
+  return run(deps, name, name, plan, only);
+}
+
+/** The copy: the one named, or chosen from the server's list in a terminal; undefined lets the server take the latest. */
+async function chooseCopy(deps: RestoreDeps, name: string, request: RestoreRequest): Promise<string | undefined> {
+  if (request.snapshot !== undefined || request.before !== undefined || !deps.guide) return request.snapshot;
+  const listed = deps.remote.run(restoreAppCommand(name, ["--list"]));
+  if (listed.status !== 0) throw new RestoreError(`cannot read the backup copies: ${failure(listed)}`);
+  const nightly = readCopies(listed.stdout).filter((copy) => copy.tags.includes("nightly")).slice(0, COPIES_OFFERED);
+  if (nightly.length === 0) throw new RestoreError("the server has no nightly copy yet");
+  return deps.guide.select(
+    `Which nightly copy? (your computer's time; older ones: --snapshot <id>)`,
+    nightly.map((copy, index) => ({ value: copy.id, label: when(copy.time, deps.timeZone), hint: index === 0 ? `the latest, ${copy.id}` : copy.id })),
+  );
+}
+
+const copyArgs = (snapshot: string | undefined, request: RestoreRequest) =>
+  snapshot ? ["--snapshot", snapshot] : request.before ? ["--before", request.before] : [];
+
+function readPlanFor(deps: RestoreDeps, name: string, args: string[]): Plan {
+  const planned = deps.remote.run(restoreAppCommand(name, args));
+  if (planned.status !== 0) throw new RestoreError(failure(planned));
+  return readPlan(planned.stdout);
+}
+
+function refuseBusy(plan: Plan): void {
+  if (plan.busy) throw new RestoreError(`a ${plan.busy} is running on the server: try again once it is over. Nothing was changed.`);
+  if (plan.freeBytes < plan.neededBytes) throw new RestoreError("not enough free disk on the server for this restore. Nothing was changed.");
+}
+
+/**
+ * With --plan, says how to restore and stops (false); otherwise the name typed
+ * in a terminal (rule 5), the only way to go on (true).
+ */
+async function confirm(deps: RestoreDeps, request: RestoreRequest, name: string, plan: Plan, only: string | undefined, what: string): Promise<boolean> {
+  const { log } = deps;
   if (request.plan) {
     log("");
     log(`Nothing was changed (--plan). To restore: bivy restore ${name} --snapshot ${plan.copy}${only ? ` --only ${only}` : ""}, in a terminal.`);
-    return 0;
+    return false;
   }
   if (!deps.typed) throw new RestoreError("a restore replaces live data: it is confirmed by typing in a terminal, and there is none here. Nothing was changed.");
-
-  // 6. The typed confirmation (rule 5).
   log("");
-  const answer = await deps.typed(`To replace ${name}'s data with the copy of ${taken}, type the app's name (${name}):`);
+  const answer = await deps.typed(`To replace ${what} with the copy of ${when(plan.taken, deps.timeZone)}, ${name === POCKET_ID ? `type ${name}` : `type the app's name (${name})`}:`);
   if (answer.trim() !== name) throw new RestoreError("not confirmed: nothing was changed.");
-
-  // 7. The restore itself, on exactly the copy of the plan: a nightly copy finishing meanwhile changes nothing.
-  return run(deps, name, plan, only);
+  return true;
 }
 
-async function run(deps: RestoreDeps, name: string, plan: Plan, only: "database" | "files" | undefined): Promise<number> {
+/**
+ * Pocket ID's database back to a nightly copy (D110). What matters to a person:
+ * everyone's sign-in changes since the copy are gone, and if an update is the
+ * cause, the previous reconciler must run first.
+ */
+async function restorePocketId(deps: RestoreDeps, request: RestoreRequest): Promise<number> {
+  const { guide, log } = deps;
+  const snapshot = await chooseCopy(deps, POCKET_ID, request);
+  const plan = readPlanFor(deps, POCKET_ID, copyArgs(snapshot, request));
+  const taken = when(plan.taken, deps.timeZone);
+  const state = plan.pocketId ?? "unknown";
+
+  log("");
+  log(`Restoring Pocket ID, the sign-in, to the copy ${plan.copy}, taken ${taken}:`);
+  log(`  · its database goes back to that copy; today's is kept aside, as ${plan.database.replace(/^.* kept as (\S+)\)$/, "$1")}`);
+  log(`  · accounts, passkeys, invitations and sign-ins made since ${taken} will no longer be there: whoever joined`);
+  log("    or added a passkey since does it again, and everyone signed in since signs in again. Nothing is lost:");
+  log("    a safety copy of today's database is sent first, so this restore can be undone");
+  log("  · sign-in is down meanwhile, usually a minute or two; the apps keep running for those already signed in");
+  log(`  · Pocket ID now: ${state}${plan.image ? `, ${plan.image.replace(/@sha256:.*$/, "")}` : ""}${typeof plan.users === "number" ? `, ${plan.users} account${plan.users === 1 ? "" : "s"}` : ""}`);
+  log(`  · disk: about ${size(plan.neededBytes)} needed, ${size(plan.freeBytes)} free`);
+  refuseBusy(plan);
+  if (plan.interrupted) log("  · an earlier restore of Pocket ID was interrupted: it has been stopped since, and this one starts it again");
+
+  // The order matters: restored under the new version, the database would be migrated again.
+  if (plan.deployedAt && Date.parse(plan.deployedAt) > Date.parse(plan.taken)) {
+    log("");
+    log(`! Pocket ID was started on a new container on ${when(plan.deployedAt, deps.timeZone)}, after this copy.`);
+    log("  If an update of Pocket ID broke it, a reconciler with the previous Pocket ID must run first");
+    log("  (runbook section 22: the image put back in the monorepo, then bivy pin reconciler <commit>): otherwise");
+    log("  the new version migrates the restored database again. With the previous Pocket ID back, it failing");
+    log("  to start until this restore is expected.");
+    if (guide) {
+      const go = await guide.select("Carry on?", [
+        { value: "carry on", label: "Carry on: the previous version is back, or no update is the cause" },
+        { value: "stop", label: "Stop here: I'll put the previous Pocket ID back first" },
+      ]);
+      if (go === "stop") throw new Cancelled();
+    }
+  }
+  if (state === "healthy") {
+    log("");
+    log("! Pocket ID works right now: restore it only to undo a mistake made since the copy.");
+  }
+
+  if (!(await confirm(deps, request, POCKET_ID, plan, undefined, "Pocket ID's database"))) return 0;
+  return run(deps, POCKET_ID, "Pocket ID", plan, undefined);
+}
+
+/** `name` is what the commands take, `label` what a person reads. */
+async function run(deps: RestoreDeps, name: string, label: string, plan: Plan, only: "database" | "files" | undefined): Promise<number> {
   const { log } = deps;
   const steps = new Steps(deps.progress);
   const volumes = Array.isArray(plan.volumes) ? plan.volumes.length : 0;
@@ -313,13 +398,13 @@ async function run(deps: RestoreDeps, name: string, plan: Plan, only: "database"
 
   log("");
   log("A restore cannot be stopped halfway: once begun, it carries on on the server to its end.");
-  steps.start(`Stopping ${name}`);
+  steps.start(`Stopping ${label}`);
   const result = await deps.remote.stream(restoreAppCommand(name, ["--snapshot", plan.copy, "--yes", ...(only ? ["--only", only] : [])]), (text) => {
     const line = parseLine(text);
     if (!line) return;
     switch (line.message) {
       case "app stopped":
-        steps.start(`Sending a safety copy of ${name}'s current data`);
+        steps.start(`Sending a safety copy of ${label}'s current data`);
         break;
       case "safety copy sent":
         safety = typeof line.copy === "string" && COPY_ID.test(line.copy) ? line.copy : undefined;
@@ -336,7 +421,7 @@ async function run(deps: RestoreDeps, name: string, plan: Plan, only: "database"
         break;
       case "restore done":
         finished = true;
-        steps.start(`Starting ${name} and waiting for its health check`);
+        steps.start(`Starting ${label} and waiting for its health check`);
         break;
       case "restore stopped":
         changed = line.changed !== false;
@@ -351,7 +436,7 @@ async function run(deps: RestoreDeps, name: string, plan: Plan, only: "database"
   if (result.status === 0 && finished) {
     steps.done();
     log("");
-    log(`✓ ${name} is back to the copy of ${when(plan.taken, deps.timeZone)}.`);
+    log(`✓ ${label} is back to the copy of ${when(plan.taken, deps.timeZone)}.`);
     if (undo) log(`  To undo it: ${undo}`);
     if (kept) log(`  The replaced database is kept as ${kept}: not backed up, it takes room on the disk until you ask to drop it.`);
     return 0;
@@ -363,8 +448,8 @@ async function run(deps: RestoreDeps, name: string, plan: Plan, only: "database"
   }
   steps.fail(result.status === 255 ? "the connection to the server was lost" : `the server stopped without a word (exit ${result.status})`);
   log(`  The restore may still be running on the server. In a few minutes, bivy restore ${name} --plan says`);
-  log("  whether it is still running, or was interrupted (the app then stays stopped until a restore completes).");
-  log("  If it still says a restore is running long after, see the runbook, section 14 (\"If it stops halfway\").");
+  log(`  whether it is still running, or was interrupted (${name === POCKET_ID ? "Pocket ID" : "the app"} then stays stopped until a restore completes).`);
+  log(`  If it still says a restore is running long after, see the runbook, section ${name === POCKET_ID ? "22" : "14 (\"If it stops halfway\")"}.`);
   if (undo) log(`  The data from before this restore is in the safety copy ${safety}.`);
   return 1;
 }

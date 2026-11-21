@@ -25,6 +25,7 @@ import type { SelfUpdater } from "./self-update.js";
 import { sshKeysProblem, writeSshKeys } from "./ssh-keys.js";
 import { isReachable } from "./metadata-check.js";
 import { readRebuildState, type RebuildState } from "./rebuild.js";
+import { pocketIdHeld } from "./lock.js";
 
 export interface PassConfig {
   source: GitSource;
@@ -53,6 +54,11 @@ export type PassResult =
       rebuild?: RebuildState;
       /** The status page's token for the internal API, from the secrets of this pass. */
       apiToken?: string;
+      /**
+       * Pocket ID held stopped by a restore of its database: the pass stopped
+       * after Postgres, so the apps were not checked, and must not count as healthy.
+       */
+      pocketIdHeld?: true;
     }
   | { status: "invalid"; commit: string; errors: ValidationError[] }
   /** platform.yml names a new reconciler version, ready to run: exit so systemd restarts on it. */
@@ -85,6 +91,7 @@ export function prepare(config: Pick<PassConfig, "source" | "checkout">): Prepar
  *   0. a new reconciler version in platform.yml stops the pass there;
  *   1. the SSH keys, applied on the host by a path unit (D12);
  *   2. secrets decrypted, network, Postgres, Pocket ID (each healthy first);
+ *      while Pocket ID's database is being restored, the pass stops after Postgres;
  *   3. for each app: database, role and extensions; OIDC client; container;
  *   4. Caddyfile with the routes of the healthy apps, then Caddy.
  *
@@ -115,12 +122,25 @@ export async function runPass(config: PassConfig, runtime: Runtime, selfUpdater?
   } catch (error) {
     alertsProblem = `the alert credentials could not be saved: ${(error as Error).message}`;
   }
+  // Stopped on purpose by a restore of its database (restore-pocket-id): left alone meanwhile.
+  const pocketId = pocketIdHeld(runtime.stateDir);
   // A test server sends no mail: it is a copy of the platform, not the platform.
-  await ensureBase(runtime, secrets, domain, test ? undefined : instance.platform.mail, changes, { postgresOnly: rebuild?.waiting === true });
+  await ensureBase(runtime, secrets, domain, test ? undefined : instance.platform.mail, changes, { postgresOnly: rebuild?.waiting === true || pocketId !== undefined });
   if (rebuild?.waiting) {
     // Nothing else until restore-platform has brought the data back: no
     // Pocket ID, no app, no Caddy, no backup.
     return { status: changes.length > 0 ? "applied" : "unchanged", commit, changes, failures: await platformChecks(runtime, alertsProblem), rebuild };
+  }
+  if (pocketId) {
+    // Without Pocket ID the apps' OIDC clients cannot be checked: the apps and
+    // Caddy are left as they run, as when Pocket ID fails to start. The nightly
+    // backup still runs.
+    const failures = await platformChecks(runtime, alertsProblem);
+    if (pocketId === "interrupted") {
+      failures.push({ app: "(platform)", message: "a restore of Pocket ID's database was interrupted: Pocket ID stays stopped until it is restored again (runbook section 22)" });
+    }
+    const backup = test ? undefined : backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
+    return { status: changes.length > 0 ? "applied" : "unchanged", commit, changes, failures, ...(backup ? { backup } : {}), ...(rebuild ? { rebuild } : {}), apiToken: apiToken(secrets), pocketIdHeld: true };
   }
 
   const context = {

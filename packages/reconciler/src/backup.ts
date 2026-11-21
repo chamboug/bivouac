@@ -331,7 +331,7 @@ export const RESTORE_APP_CONTAINERS = ["bivouac-restore-app-read", "bivouac-rest
 export const REBUILD_CONTAINERS = ["bivouac-rebuild-read", "bivouac-rebuild-restic", "bivouac-rebuild-load"];
 const RESTORE_STUCK_AFTER = 3 * HOUR;
 const USER_TABLES = "SELECT count(*) AS count FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema')";
-const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
+export const POCKET_ID_USERS = "SELECT count(*) AS count FROM public.users";
 export const POCKET_ID_USERS_IS_TABLE =
   "SELECT count(*) AS count FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relname = 'users' AND c.relkind = 'r'";
 /** A restore needs room for the dumps and for the database rebuilt from them. */

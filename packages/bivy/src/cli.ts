@@ -72,10 +72,12 @@ Commands:
                               typed, outside the instance repo; deleted once done
       --age-key <file>        default ~/.config/sops/age/keys.txt
 
-  restore [app]               bring one app's data back to a backup copy, on the
-                              running server (D101). Replaces live data: confirmed
-                              by typing the app's name in a terminal. In a
-                              terminal, it asks what the options below say.
+  restore [app|pocket-id]     bring one app's data back to a backup copy, on the
+                              running server (D101); pocket-id: the sign-in's
+                              database, after an update that broke it (D110).
+                              Replaces live data: confirmed by typing the name in
+                              a terminal. In a terminal, it asks what the options
+                              below say.
       --plan                  only read, and say what it would do
       --snapshot <id>         this copy (default: the latest nightly one)
       --before <date>         the latest nightly copy at or before that day (UTC)

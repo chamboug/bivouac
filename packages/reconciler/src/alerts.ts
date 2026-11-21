@@ -120,7 +120,9 @@ export function observePass(outcome: PassOutcome): Observation {
     incidents: result.failures.map((failure) => failure.app === "(platform)"
       ? { key: `platform:${failure.message.slice(0, 120)}` as const, message: failure.message }
       : { key: `app:${failure.app}` as const, message: `App ${failure.app} failed: ${failure.message}` }),
-    checked: ["pass", "app", "platform"],
+    // While a restore holds Pocket ID, the pass stopped after Postgres: neither
+    // it nor the apps were checked, so their open incidents stay open (D110).
+    checked: "pocketIdHeld" in result && result.pocketIdHeld ? ["platform"] : ["pass", "app", "platform"],
   };
 }
 

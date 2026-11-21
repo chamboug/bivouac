@@ -8,6 +8,7 @@ import { API_PORT, loadInstance } from "@bivouac/manifest";
 import { BackupScheduler, backupPlan, readBackupRequest, requestBackup, runBackup, runMaintenance, runRestoreTest, type BackupRequest } from "./backup.js";
 import { appBeingRestored, readLock } from "./lock.js";
 import { parseRestoreArgs, restoreApp } from "./restore.js";
+import { parsePocketIdRestoreArgs, restorePocketId } from "./restore-pocket-id.js";
 import { DEFAULT_MARKER, parsePlatformRestoreArgs, readRebuildState, restorePlatform } from "./rebuild.js";
 import { PLATFORM_SECRETS_FILE, decryptSecrets } from "./secrets.js";
 import { BaseServiceError, checkStateMount, type Runtime } from "./base.js";
@@ -59,6 +60,10 @@ import { SelfUpdater } from "./self-update.js";
  * `main.js restore-app <app> [options]` restores one app's data from a
  * backup (restore.ts, runbook section 14), beside the running reconciler:
  * `docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-app …`.
+ *
+ * `main.js restore-pocket-id [--list] [--snapshot <id> | --before <date>] [--yes]`
+ * brings Pocket ID's database back to a nightly copy, the same way
+ * (restore-pocket-id.ts, runbook section 22).
  *
  * `main.js restore-platform [--list] [--snapshot <id>] [--yes]` brings the
  * whole platform's data back on a server being rebuilt (rebuild.ts, D91).
@@ -232,14 +237,15 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
-  if (argv[0] === "restore-app") {
+  if (argv[0] === "restore-app" || argv[0] === "restore-pocket-id") {
     // Started over SSH by bivy restore (D101): a lost connection must not cut a
     // restore short. Its output may then have nowhere to go; the work carries on.
     process.stdout.on("error", () => undefined);
     process.stderr.on("error", () => undefined);
     process.on("SIGHUP", () => undefined);
     try {
-      const options = parseRestoreArgs(argv.slice(1));
+      const pocketId = argv[0] === "restore-pocket-id";
+      const options = pocketId ? parsePocketIdRestoreArgs(argv.slice(1)) : parseRestoreArgs(argv.slice(1));
       // It first sends a safety copy to the repository: never from a test
       // server, nor before the platform's data is back (D91).
       const rebuild = readRebuildState(config.rebuildMarker, config.runtime.stateDir);
@@ -252,7 +258,8 @@ async function main(argv: string[]): Promise<number> {
       const secrets = decryptSecrets(join(config.checkout, PLATFORM_SECRETS_FILE), config.ageKey);
       const plan = backupPlan(instance.platform, instance.apps, secrets, config.backupRepository);
       if (!plan) throw new Error("backups are not configured on this platform");
-      await restoreApp({ runtime: config.runtime, plan, secrets, apps: instance.apps, log }, options);
+      if (pocketId) await restorePocketId({ runtime: config.runtime, plan, secrets, log }, options);
+      else await restoreApp({ runtime: config.runtime, plan, secrets, apps: instance.apps, log }, options as ReturnType<typeof parseRestoreArgs>);
       return 0;
     } catch (error) {
       log("restore failed", { error: (error as Error).message });

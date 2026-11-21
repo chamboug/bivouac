@@ -79,7 +79,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | Database | One Postgres 18 with PostGIS, one database and role per app | D51, D56, D29 |
 | Files | Declared volumes; apps use the storage module (S3-ready) | D72 |
 | Secrets | SOPS + age in the instance repo; derived secrets; an app's own secrets | D14, D35, D57, D97 |
-| Backups | restic to B2 EU Central nightly; the server's key cannot delete; weekly restore test | D73, D74, D75 |
+| Backups | restic to B2 EU Central nightly; the server's key cannot delete; weekly restore test; one app or Pocket ID back to a copy | D73, D74, D75, D101, D110 |
 | Identity | Pocket ID, passkeys only, no email code, a sign-in lasts 30 days; mail through the OVH mailbox | D37, D52, D70, D102 |
 | Auth modes | `oidc`, `public`, `local` (Better Auth) built; `forward` (Tinyauth) not | D10, D79, D97 |
 | Reconciler | Polls Git every minute; bases, databases, OIDC clients, Caddy, containers; self-update by digest, on trial | D2, D50–D61, D109 |
@@ -89,7 +89,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | App MCPs | `mcp: true` opens `/mcp`, signed in through Pocket ID | D85 |
 | Alerts | Pushover from the server, healthchecks.io as dead man's switch, normal priority | D45, D76, D82 |
 | Status page | `status.apps.example.org`, through the reconciler's internal API | D8, D96 |
-| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore`, `status`, `backup`, `secret set`, `login-link`, `ssh`, `exec`, `validate`, `pin` | D31, D91, D93, D99, D101, D104, D105, D106, D107, D108 |
+| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore [app\|pocket-id]`, `status`, `backup`, `secret set`, `login-link`, `ssh`, `exec`, `validate`, `pin` | D31, D91, D93, D99, D101, D104, D105, D106, D107, D108, D110 |
 | Rebuild | `bivy rebuild --test` every 3 months, the only proof the platform comes back | D39, D91 |
 
 ## Conventions for Claude
@@ -107,7 +107,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 
 ## Where things stand (21 November 2026)
 
-- **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99), `bivy restore` (D101), and the commands D104 asked for: `bivy status`, `bivy backup` (D105, used for real on 21 Nov. 2026), `bivy pin` (D106), `bivy login-link` (D107), `bivy secret set` (D108), and a Pocket ID sign-in lasting 30 days (D102, since 21 Nov. 2026). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
+- **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99), `bivy restore` (D101), and the commands D104 asked for: `bivy status`, `bivy backup` (D105, used for real on 21 Nov. 2026), `bivy pin` (D106), `bivy login-link` (D107), `bivy secret set` (D108), `bivy restore pocket-id` (D110, tried on the miniature platform only), and a Pocket ID sign-in lasting 30 days (D102, since 21 Nov. 2026). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
 - **Proven**: `bivy rebuild --test` (14 and 19 Nov. 2026, D91); `restore-app` rehearsed on the server (D90); every alert received on the owner's phone (D82).
 
 ## Open items
@@ -117,7 +117,6 @@ Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to p
 ### To do
 
 - **`bivy status` dates an open incident 1 Jan. 1970**: the reconciler's API gives the incident's pass count as its date (`openIncidents` in `api.ts`); keep a first-seen time instead. Small.
-- **A way back for Pocket ID after an update that broke its database** (D109): `bivy restore pocket-id`, from the night's copy, as `restore-platform` does for that one database. Until then it is done by hand (runbook section 21), the owner consenting.
 
 ### When a need comes
 

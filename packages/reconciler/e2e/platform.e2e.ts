@@ -999,6 +999,112 @@ describe("k. restoring one app's data (runbook section 14)", () => {
   });
 });
 
+describe("k2. restoring Pocket ID's database (runbook section 22, D110)", () => {
+  const RESTIC = PLATFORM_IMAGES.restic;
+  const repository = () => `${platform.state}/restic-repo`;
+  const env = () => ({ BIVOUAC_BACKUP_REPOSITORY: repository() });
+  const restore = (...args: string[]) => runOnce(platform, { command: "restore-pocket-id", args, env: env() });
+  const restic = (...args: string[]) =>
+    docker("run", "--rm", "--env", `RESTIC_PASSWORD=${RESTIC_PASSWORD}`, "--env", "RESTIC_REPOSITORY=/repo", "--volume", `${repository()}:/repo`, RESTIC, ...args);
+  // Pocket ID's own role, as an update migrating its database would act.
+  const pocketId = (sql: string) => psql("bivouac_pocket_id", derive(platform.masterSecret, "db:bivouac_pocket_id"), "bivouac_pocket_id", sql);
+  const superuser = (database: string, sql: string) => psql("postgres", derive(platform.masterSecret, "postgres:superuser"), database, sql);
+  const migratedSince = () => pocketId("SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = 'public' AND tablename = 'migrated_since'").stdout.trim();
+  const users = () => superuser("bivouac_pocket_id", "SELECT count(*) FROM public.users").stdout.trim();
+  const state = (name: string) => inspect<{ State: ContainerState["State"] & { StartedAt: string } }>(name).State;
+  const messages = (pass: PassOutput) => pass.logs.map((line) => line.message);
+  let accounts = "";
+  let recettesStarted = "";
+  let safety = "";
+
+  beforeAll(() => {
+    expect(runOnce(platform, { args: ["--backup"], env: env() }).status).toBe(0);
+    // What a new version leaves after the copy: its own migration.
+    expect(pocketId("CREATE TABLE public.migrated_since(step int)").stderr).toBe("");
+    accounts = users();
+    recettesStarted = state("bivouac-app-recettes").StartedAt;
+  });
+
+  it("without --yes, says what it would do, with what Pocket ID runs, and changes nothing", () => {
+    const pass = restore();
+    expect(pass.status).toBe(0);
+    expect(messages(pass)).toEqual(expect.arrayContaining(["restore plan", "nothing changed: add --yes to restore"]));
+    const plan = pass.logs.find((line) => line.message === "restore plan") as Record<string, unknown>;
+    expect(plan).toMatchObject({ app: "pocket-id", restores: { database: true, files: false }, interrupted: false, pocketId: "healthy", users: Number(accounts) });
+    expect(String(plan.image)).toContain("pocket-id");
+    expect(plan.databaseBytes).toBeGreaterThan(0);
+    expect(migratedSince()).toBe("1");
+    expect(state("bivouac-pocket-id").Running).toBe(true);
+  });
+
+  it("refuses --only: Pocket ID has only a database", () => {
+    const pass = restore("--only", "files");
+    expect(pass.status).toBe(1);
+    expect(JSON.stringify(pass.logs)).toContain("Pocket ID has only a database");
+  });
+
+  it("a pass leaves Pocket ID stopped while it is restored, and the apps as they run", () => {
+    writeStateFile(platform, "backup/lock.json", JSON.stringify({ job: "restore", app: "bivouac-pocket-id", startedAt: Date.now() }));
+    docker("stop", "bivouac-pocket-id");
+    const pass = runOnce(platform);
+    removeStateFile(platform, "backup/lock.json");
+    expect(pass.status).toBe(0);
+    expect(state("bivouac-pocket-id").Running).toBe(false);
+    expect(state("bivouac-app-recettes").StartedAt).toBe(recettesStarted);
+  });
+
+  it("an interrupted restore keeps Pocket ID stopped and reported, without touching the apps", () => {
+    writeStateFile(platform, "backup/restore-interrupted-bivouac-pocket-id.json", JSON.stringify({ job: "restore", app: "bivouac-pocket-id", startedAt: Date.now() }));
+    const pass = runOnce(platform);
+    expect(pass.status).toBe(1);
+    expect(JSON.stringify(pass.logs)).toContain("a restore of Pocket ID's database was interrupted");
+    expect(state("bivouac-pocket-id").Running).toBe(false);
+    expect(state("bivouac-app-recettes").Running).toBe(true);
+    expect(throughCaddy(`recettes.${DOMAIN}`, "/api/health").status).toBe(200);
+  });
+
+  it("brings the database back to the latest copy, starts Pocket ID and completes the interrupted restore", () => {
+    const pass = restore("--yes");
+    // The whole log on purpose: when this fails, it is the only trace of why.
+    expect(JSON.stringify(pass.logs)).toContain("restore done");
+    expect(pass.status).toBe(0);
+    expect(migratedSince()).toBe("0");
+    expect(users()).toBe(accounts);
+    expect(state("bivouac-pocket-id").Health?.Status).toBe("healthy");
+    expect(readStateFile(platform, "backup/restore-interrupted-bivouac-pocket-id.json")).toBeUndefined();
+    expect(readStateFile(platform, "backup/lock.json")).toBeUndefined();
+    safety = String((pass.logs.find((line) => line.message === "safety copy sent") as { copy?: string } | undefined)?.copy ?? "");
+    expect(safety).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("restores it owned by Pocket ID's role, closed to others, with its extensions", () => {
+    expect(superuser("postgres", "SELECT pg_get_userbyid(datdba), has_database_privilege('public', 'bivouac_pocket_id', 'CONNECT') FROM pg_database WHERE datname = 'bivouac_pocket_id'").stdout.trim()).toBe("bivouac_pocket_id|f");
+    expect(pocketId("SELECT extname FROM pg_extension WHERE extname IN ('citext', 'pgcrypto') ORDER BY extname").stdout.trim()).toBe("citext\npgcrypto");
+  });
+
+  it("keeps the replaced database and a safety copy, and the next pass applies cleanly", () => {
+    const previous = superuser("postgres", "SELECT datname FROM pg_database WHERE datname LIKE 'bivouac_r%_bivouac_pocket_id'").stdout.trim();
+    expect(previous).toMatch(/^bivouac_r\d{12}_bivouac_pocket_id$/);
+    expect(superuser(previous, "SELECT count(*) FROM pg_catalog.pg_tables WHERE tablename = 'migrated_since'").stdout.trim()).toBe("1");
+    const copies = JSON.parse(restic("snapshots", "--tag", "pre-restore", "--json")) as { short_id: string; tags: string[] }[];
+    expect(copies.find((copy) => copy.short_id === safety)?.tags).toEqual(expect.arrayContaining(["pre-restore", "platform:pocket-id"]));
+    const listing = restic("ls", safety);
+    expect(listing).toContain("/source/dumps/bivouac_pocket_id.dump");
+    expect(listing).not.toContain("recettes");
+    // The apps' OIDC clients, checked through Pocket ID's API, still apply.
+    expect(runOnce(platform).status).toBe(0);
+    expect(docker("ps", "--all", "--quiet", "--filter", "name=^bivouac-restore-app")).toBe("");
+  });
+
+  it("can be undone with its safety copy", () => {
+    const pass = restore("--snapshot", safety, "--yes");
+    expect(JSON.stringify(pass.logs)).toContain("restore done");
+    expect(migratedSince()).toBe("1");
+    expect(state("bivouac-pocket-id").Health?.Status).toBe("healthy");
+    expect(pocketId("DROP TABLE public.migrated_since").stderr).toBe("");
+  });
+});
+
 describe("z. turning an app's MCP off (D85)", () => {
   it("removes Claude's client and its API, and the app's MCP_RESOURCE", () => {
     platform.commit({ "apps/recettes.yml": RECETTES.replace("mcp: true\n", "") }, "recettes without MCP");

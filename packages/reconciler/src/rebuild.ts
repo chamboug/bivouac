@@ -162,9 +162,9 @@ export interface PlatformRestoreContext {
  * declared ones, and only from the allowlist (D56). Read in a container with
  * no network.
  */
-async function dumpExtensions(runtime: Runtime, dumpDir: string, database: string): Promise<string[]> {
+export async function dumpExtensions(runtime: Runtime, dumpDir: string, database: string, name: string = LOAD_CONTAINER): Promise<string[]> {
   const result = await runOneOff(runtime, {
-    name: LOAD_CONTAINER,
+    name,
     image: PLATFORM_IMAGES.postgres,
     cmd: ["sh", "-c", 'pg_restore --list "/dumps/$1.dump" | sed -n "s/^[0-9]*; [0-9]* [0-9]* EXTENSION - \\([a-z0-9_]*\\) .*$/\\1/p"', "sh", database],
     mounts: [{ type: "bind", source: dumpDir, target: "/dumps", readOnly: true }],

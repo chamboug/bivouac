@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { PLATFORM_CONTAINERS } from "@bivouac/manifest";
 
 /**
  * One job at a time touches the backups: the nightly backup (with its
@@ -9,7 +10,11 @@ import { dirname, join } from "node:path";
  */
 export interface JobLock {
   job: "backup" | "restore";
-  /** For a restore: the app being restored, which passes leave alone meanwhile. */
+  /**
+   * For a restore: the app being restored, which passes leave alone meanwhile;
+   * Pocket ID's container name for a restore of Pocket ID (no app can be named
+   * `bivouac-…`, so the two never meet).
+   */
   app?: string;
   startedAt: number;
 }
@@ -76,3 +81,15 @@ export function clearStaleLock(stateDir: string): JobLock | undefined {
 
 /** Whether a restore of this app was interrupted, leaving its data half restored. */
 export const interruptedRestore = (stateDir: string, app: string) => existsSync(interruptedFile(stateDir, app));
+
+/** What a restore of Pocket ID's database holds in the lock and in its interrupted marker. */
+export const POCKET_ID_RESTORE = PLATFORM_CONTAINERS.pocketId;
+
+/**
+ * Whether passes must leave Pocket ID stopped: a restore of its database is
+ * running, or one was interrupted (its database may then be half swapped).
+ */
+export function pocketIdHeld(stateDir: string): "restoring" | "interrupted" | undefined {
+  if (appBeingRestored(stateDir) === POCKET_ID_RESTORE) return "restoring";
+  return interruptedRestore(stateDir, POCKET_ID_RESTORE) ? "interrupted" : undefined;
+}

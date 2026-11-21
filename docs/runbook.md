@@ -1217,11 +1217,8 @@ platform: read why before anything else.
   update: the new Pocket ID does not start, and nothing goes back by itself
   (the previous one refuses a database the new one migrated: "downgrades
   are not allowed"). Look at its logs first: a slow migration may just need
-  time. If it is broken: sign-in stays down until its database comes back
-  from the night's copy and the previous reconciler is pinned, with the
-  owner's consent (rule 5, D89). There is no command for it yet: restore the
-  `pocket-id` dump as `restore-platform` does (section 15), Pocket ID
-  stopped, after taking a copy of the current database; what changed in
+  time. If it is broken: section 22 (the previous Pocket ID as a new version,
+  then `bivy restore pocket-id` with the owner's consent); what changed in
   Pocket ID since the night is lost.
 - "The reconciler running here was built N days ago": nothing moved for 45
   days. Look at the PRs above, at Mend's status for the repos, and whether
@@ -1256,3 +1253,81 @@ instance" on 21 Nov. 2026).
 **A version that must not go out alone**: keep it on a branch, or have the
 instance's PR wait by stepping the minor (`v1.1.0` in `ci.yml`): only
 `v1.0.<n>` steps merge by themselves.
+
+## 22. Bringing Pocket ID back after an update that broke it (consent)
+
+Built with D110. Pocket ID migrates its database when a new version starts;
+an older version then refuses that database ("downgrades are not allowed",
+D109). So when an update of Pocket ID breaks it, going back takes two
+things, in this order: the previous Pocket ID, then its database from the
+night before the update. Sign-in is down until both are done; the apps keep
+running, and people already signed in keep using them.
+
+**1. Read before acting.** The alert says "A reconciler pass failed:
+bivouac-pocket-id … not healthy". `bivy status`, then Pocket ID's logs (the
+status page's logs, or `bivy exec` on `bivouac-pocket-id` for reading). A
+migration that is only slow passes on its own within a few minutes: wait for
+the next passes. A "dirty" database, or a crash at every start, is broken.
+
+**2. The previous Pocket ID, as a new version** (no consent needed: it is the
+ordinary way a version reaches the server, D109). In the monorepo, put the
+previous Pocket ID line back in `packages/manifest/src/platform.ts` (its tag
+and digest, from Git history), and add to `renovate.json` a package rule
+keeping Renovate on the working line until a fixed version comes out (a
+regex: Docker versioning has no ranges, so `<2.20.0` is not supported,
+verified in Renovate's docs; `v?` because the docs do not say whether the
+`v` is stripped before matching):
+
+```json
+{ "matchPackageNames": ["ghcr.io/pocket-id/pocket-id"], "allowedVersions": "/^v?2\\.19\\./" }
+```
+
+Push to `main`; once CI is green, `bivy pin reconciler <commit>` in the
+instance repo, commit and push. Always forward: an older `v1.0.<n>` pinned by
+hand would be moved again by Renovate between the 1st and the 10th. Within a
+minute the server runs the previous Pocket ID, which refuses today's
+database: Pocket ID keeps failing until step 3, as expected.
+
+**3. The database back** (consent: what changed in Pocket ID since the copy
+is no longer there). From the Mac, in the instance repo:
+
+```bash
+bivy restore pocket-id --plan                 # what it would do: the copy, Pocket ID now, its accounts
+bivy restore pocket-id                        # asks the copy, shows the plan, then asks to type pocket-id
+```
+
+Choose the last nightly copy taken **before** the update (the plan says when
+Pocket ID's container was created). Claude only runs `--plan`; the owner
+types the confirmation. It is the reconciler's `restore-pocket-id`, the same
+steps as `restore-app` (section 14) for one database: the lock shared with the
+backup; Pocket ID stopped, and passes stopping after Postgres while it runs
+(apps and Caddy left as they are); a safety copy tagged `pre-restore` and
+`platform:pocket-id`; the copy's dump loaded as Pocket ID's own role into
+`bivouac_restoring_bivouac_pocket_id`, its `users` checked to be a plain table,
+then swapped in one transaction; the replaced database kept as
+`bivouac_r<YYMMDDhhmmss>_bivouac_pocket_id`; Pocket ID started and its health
+checked (a container still on another image than the reconciler names is
+removed instead, and the next pass creates it). While it runs, alerts about
+the pass and the apps stay open rather than resolved. By hand on the server:
+`docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-pocket-id [--list] [--snapshot <id> | --before <date>] [--yes]`.
+
+**What is lost**, and is in the safety copy and the kept database: accounts,
+passkeys, invitations and groups changed since the copy, and every sign-in
+since (people sign in again). Someone who joined or added a passkey that day
+does it again (a new invitation, or `bivy login-link` for an admin, D107).
+OIDC clients of apps deployed since the copy come back at the next pass.
+
+**If Pocket ID is still not healthy afterwards**: the version running is not
+the previous one (step 2 not done, or not yet on the server). Do step 2, then
+run the restore again: it takes a new safety copy and starts from the same
+nightly copy.
+
+**If it stops halfway** (an error after the swap began, or the reconciler
+restarted during it): Pocket ID stays stopped and every pass reports "a
+restore of Pocket ID's database was interrupted" until a restore completes
+(`backup/restore-interrupted-bivouac-pocket-id.json`). Run it again, or
+restore the safety copy the error names.
+
+**Afterwards**: once a fixed Pocket ID is out, remove the package rule; the
+next monthly update moves it. The kept `bivouac_r…` database is not backed up
+and stays until the owner asks to drop it (`DROP DATABASE`, consent).

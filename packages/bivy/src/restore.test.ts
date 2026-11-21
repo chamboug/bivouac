@@ -137,8 +137,8 @@ describe("bivy restore, with a person at the terminal", () => {
     const at = person(ANSWERS);
     const code = await restoreCommand({ apps: APPS, remote: server.remote, ...out, guide: at.guide, typed: at.typed, timeZone: "Europe/Paris" }, request());
     expect(code).toBe(0);
-    // Only apps with data are offered; at most 14 nightly copies, never a safety copy.
-    expect(at.questions[0]?.choices.map((choice) => choice.value)).toEqual(["biblio", "recettes"]);
+    // Only apps with data are offered, then Pocket ID; at most 14 nightly copies, never a safety copy.
+    expect(at.questions[0]?.choices.map((choice) => choice.value)).toEqual(["biblio", "recettes", "pocket-id"]);
     const copies = at.questions[1]?.choices.map((choice) => choice.value) ?? [];
     expect(copies).toHaveLength(COPIES_OFFERED);
     expect(copies[0]).toBe("aaaa1111");
@@ -306,5 +306,108 @@ describe("bivy restore, when the run goes wrong", () => {
     expect(text).toContain("the connection to the server was lost");
     expect(text).toContain("bivy restore biblio --plan says");
     expect(text).toContain("runbook, section 14");
+  });
+});
+
+describe("bivy restore pocket-id (D110)", () => {
+  const POCKET_PLAN = {
+    app: "pocket-id",
+    copy: "aaaa1111",
+    taken: "2026-11-19T02:10:00Z",
+    database: "bivouac_pocket_id (the current one kept as bivouac_r261120100000_bivouac_pocket_id)",
+    volumes: "untouched",
+    restores: { database: true, files: false },
+    databaseBytes: GIB / 100,
+    neededBytes: 1.1 * GIB,
+    freeBytes: 20 * GIB,
+    interrupted: false,
+    deployedAt: "2026-11-19T18:00:00Z",
+    image: "ghcr.io/pocket-id/pocket-id:v2.20.0@sha256:abc",
+    pocketId: "unhealthy",
+    users: 7,
+  };
+  const POCKET_RUN = [
+    line("app stopped", { app: "pocket-id", wasRunning: true }),
+    line("safety copy sent", { copy: "eeee5555" }),
+    line("database restored", { database: "bivouac_pocket_id", kept: "bivouac_r261120100000_bivouac_pocket_id", users: 7 }),
+    line("restore done", { app: "pocket-id", copy: "aaaa1111" }),
+  ];
+  const pocketAnswers = { "Which app": "pocket-id", "Which nightly copy": "aaaa1111", "Carry on": "carry on" };
+
+  it("runs the reconciler's restore-pocket-id", () => {
+    expect(restoreAppCommand("pocket-id", ["--snapshot", "aaaa1111", "--yes"])).toBe(
+      "docker exec bivouac-reconciler node packages/reconciler/dist/main.js restore-pocket-id --snapshot aaaa1111 --yes",
+    );
+  });
+
+  it("is offered beside the apps, warns about the order after an update, and restores once pocket-id is typed", async () => {
+    const server = fakeServer({ plan: POCKET_PLAN, run: POCKET_RUN });
+    const out = recorder();
+    const at = person(pocketAnswers, "pocket-id");
+    const code = await restoreCommand({ apps: APPS, remote: server.remote, ...out, guide: at.guide, typed: at.typed, timeZone: "Europe/Paris" }, request());
+    expect(code).toBe(0);
+    expect(at.questions[0]?.choices.map((choice) => choice.value)).toEqual(["biblio", "recettes", "pocket-id"]);
+    // Never asked which part: Pocket ID has only a database.
+    expect(at.questions.some((question) => question.message.startsWith("What should go back"))).toBe(false);
+    expect(server.commands.at(-1)).toMatch(/restore-pocket-id --snapshot aaaa1111$/);
+    expect(server.streamed).toEqual([expect.stringMatching(/restore-pocket-id --snapshot aaaa1111 --yes$/)]);
+    expect(at.typings[0]).toContain("type pocket-id:");
+    const text = out.said.join("\n");
+    expect(text).toContain("Restoring Pocket ID, the sign-in, to the copy aaaa1111");
+    expect(text).toContain("Pocket ID now: unhealthy, ghcr.io/pocket-id/pocket-id:v2.20.0, 7 accounts");
+    expect(text).toContain("bivy pin reconciler <commit>");
+    expect(text).not.toContain("works right now");
+    expect(text).toContain("✓ Stopping Pocket ID");
+    expect(text).toContain("✓ Bringing the database back");
+    expect(text).toContain("✓ Starting Pocket ID and waiting for its health check");
+    expect(text).toContain("✓ Pocket ID is back to the copy of Thu 19 Nov, 03:10.");
+    expect(text).toContain("To undo it: bivy restore pocket-id --snapshot eeee5555");
+  });
+
+  it("stops when the previous reconciler is not back yet", async () => {
+    const server = fakeServer({ plan: POCKET_PLAN });
+    const at = person({ ...pocketAnswers, "Carry on": "stop" }, "pocket-id");
+    expect(await restoreCommand({ apps: APPS, remote: server.remote, ...recorder(), guide: at.guide, typed: at.typed }, request({ app: "pocket-id" }))).toBe(1);
+    expect(at.typings).toEqual([]);
+    expect(server.streamed).toEqual([]);
+  });
+
+  it("says when Pocket ID works right now", async () => {
+    const server = fakeServer({ plan: { ...POCKET_PLAN, pocketId: "healthy", deployedAt: "2026-11-01T00:00:00Z" } });
+    const out = recorder();
+    const at = person(pocketAnswers, "pocket-id");
+    await restoreCommand({ apps: APPS, remote: server.remote, ...out, guide: at.guide, typed: at.typed }, request({ app: "pocket-id", plan: true }));
+    expect(out.said.join("\n")).toContain("Pocket ID works right now");
+  });
+
+  it("reads the plan without a terminal, and never restores there", async () => {
+    const server = fakeServer({ plan: POCKET_PLAN });
+    const out = recorder();
+    expect(await restoreCommand({ apps: APPS, remote: server.remote, ...out }, request({ app: "pocket-id", plan: true }))).toBe(0);
+    expect(server.commands).toEqual([expect.stringMatching(/restore-pocket-id$/)]);
+    expect(out.said.join("\n")).toContain("To restore: bivy restore pocket-id --snapshot aaaa1111, in a terminal");
+    expect(await restoreCommand({ apps: APPS, remote: server.remote, ...recorder() }, request({ app: "pocket-id", snapshot: "aaaa1111" }))).toBe(1);
+    expect(server.streamed).toEqual([]);
+  });
+
+  it("refuses --only, and a name typed wrong", async () => {
+    const out = recorder();
+    expect(await restoreCommand({ apps: APPS, remote: fakeServer().remote, ...out }, request({ app: "pocket-id", only: "files" }))).toBe(1);
+    expect(out.said.join("\n")).toContain("Pocket ID has only a database");
+    const server = fakeServer({ plan: POCKET_PLAN });
+    const at = person(pocketAnswers, "pocket id");
+    expect(await restoreCommand({ apps: APPS, remote: server.remote, ...recorder(), guide: at.guide, typed: at.typed }, request({ app: "pocket-id" }))).toBe(1);
+    expect(server.streamed).toEqual([]);
+  });
+
+  it("points to section 22 after a lost connection", async () => {
+    const server = fakeServer({ plan: POCKET_PLAN, run: POCKET_RUN.slice(0, 2), runStatus: 255 });
+    const out = recorder();
+    const at = person(pocketAnswers, "pocket-id");
+    expect(await restoreCommand({ apps: APPS, remote: server.remote, ...out, guide: at.guide, typed: at.typed }, request({ app: "pocket-id" }))).toBe(1);
+    const text = out.said.join("\n");
+    expect(text).toContain("bivy restore pocket-id --plan says");
+    expect(text).toContain("Pocket ID then stays stopped");
+    expect(text).toContain("runbook, section 22");
   });
 });
