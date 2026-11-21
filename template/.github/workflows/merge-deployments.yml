@@ -72,8 +72,18 @@ jobs:
           [ "$branch" = "deploy/$app-${new_sha::7}" ] || leave "#$number: branch $branch does not match $app and its image"
 
           # Merge only the commit Validate passed, as a merge commit like the owner's.
-          gh pr merge "$number" --repo "$REPO" --merge --match-head-commit "$HEAD_SHA" ||
-            leave "#$number could not be merged (conflict, or changed since Validate)"
+          # Several apps deploying at once merge into the same main: GitHub then
+          # refuses with "Base branch was modified" until it has caught up, so
+          # that one error is tried again, a few times; any other one is left.
+          for attempt in 1 2 3 4 5; do
+            if error=$(gh pr merge "$number" --repo "$REPO" --merge --match-head-commit "$HEAD_SHA" 2>&1); then
+              break
+            fi
+            grep -qF "Base branch was modified" <<<"$error" && [ "$attempt" -lt 5 ] ||
+              leave "#$number could not be merged (conflict, or changed since Validate): $error"
+            echo "main moved during the merge of #$number; trying again ($attempt)"
+            sleep $((attempt * 5))
+          done
           gh api -X DELETE "repos/$REPO/git/refs/heads/$branch" >/dev/null ||
             echo "::warning::#$number merged, but its branch $branch was not deleted"
           echo "Merged #$number: $app now at $new_repo:sha-$new_sha"
