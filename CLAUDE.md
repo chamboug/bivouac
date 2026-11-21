@@ -80,7 +80,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | Files | Declared volumes; apps use the storage module (S3-ready) | D72 |
 | Secrets | SOPS + age in the instance repo; derived secrets; an app's own secrets | D14, D35, D57, D97 |
 | Backups | restic to B2 EU Central nightly; the server's key cannot delete; weekly restore test | D73, D74, D75 |
-| Identity | Pocket ID, passkeys only, no email code; mail through the OVH mailbox | D37, D52, D70 |
+| Identity | Pocket ID, passkeys only, no email code, a sign-in lasts 30 days; mail through the OVH mailbox | D37, D52, D70, D102 |
 | Auth modes | `oidc`, `public`, `local` (Better Auth) built; `forward` (Tinyauth) not | D10, D79, D97 |
 | Reconciler | Polls Git every minute; bases, databases, OIDC clients, Caddy, containers; self-update by digest | D2, D50–D61 |
 | Deployment | App CI builds, `propose.yml` opens a PR, merged by itself if the layers did not change | D5, D64, D86, D92 |
@@ -106,7 +106,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 
 ## Where things stand (21 November 2026)
 
-- **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99), `bivy restore` (D101), and the commands D104 asked for: `bivy status`, `bivy backup` (D105, used for real on 21 Nov. 2026), `bivy pin` (D106), `bivy login-link` (D107), `bivy secret set` (D108). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
+- **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99), `bivy restore` (D101), and the commands D104 asked for: `bivy status`, `bivy backup` (D105, used for real on 21 Nov. 2026), `bivy pin` (D106), `bivy login-link` (D107), `bivy secret set` (D108), and a Pocket ID sign-in lasting 30 days (D102, since 21 Nov. 2026). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
 - **Proven**: `bivy rebuild --test` (14 and 19 Nov. 2026, D91); `restore-app` rehearsed on the server (D90); every alert received on the owner's phone (D82).
 
 ## Open items
@@ -116,7 +116,6 @@ Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to p
 ### To do
 
 - **Base images updated without relying on Claude** (D95): Caddy, Postgres and Pocket ID are updated only when Claude thinks of it. Renovate is not set up on the instance repo (the instance template has no `renovate.json`, so D29's "never a Postgres major" rule exists nowhere yet). The owner enables Renovate on that repo (D81), then a config follows.
-- **Pocket ID sign-in lasting 30 days** (D102): ready on the `pocket-id-30-days` branch, not merged; it waits for every app to be on `app-layers-v1.3.0`, whose sign-out also ends the Pocket ID session (see the instance repo's operations log).
 
 ### When a need comes
 
