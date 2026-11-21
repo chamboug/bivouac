@@ -104,22 +104,41 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 - **Never run against the real server without the owner's decision**: `bivy rebuild` (only `--plan`), `bivy restore` (only `--plan`), `bivy init` on real infrastructure.
 - **Pitfalls already met**: macOS has no `timeout` command; a YAML 1.2 parser reads `mode: 0600` as decimal, so the Butane file is never re-serialized (D48); in Caddy's image `localhost` is `::1` (D55); Pocket ID's `PUT` on a client replaces it whole (D52); changing a healthchecks.io schedule so a check is already overdue marks it down without notifying (D82); a deploy key added with a PAT disappears with that PAT (D91); `npm run build` while `dev:local` runs breaks the dev server (D83).
 
-## Where things stand (20 November 2026)
+## Where things stand (21 November 2026)
 
 - **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99) and `bivy restore` (D101). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
 - **Proven**: `bivy rebuild --test` (14 and 19 Nov. 2026, D91); `restore-app` rehearsed on the server (D90); every alert received on the owner's phone (D82).
-- **Not built, on demand**: archiving on app removal (D18), automatic rollback to the previous image (D21), static sites (D22), Tinyauth and `forward` (D10), resource history (D42), `bivy machine add` (D38), Web Push module (D84), a send-only mail relay for apps (D70), an overview with diagrams (D93).
 
-## Open items and deadlines
+## Open items
 
-- **Before Tinyauth (`forward`)**: apps reach each other without Caddy; isolate them first (D94).
+Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to plan; the second waits for its trigger and costs nothing until then.
+
+### To do
+
+- **Base images updated without relying on Claude** (D95): Caddy, Postgres and Pocket ID are updated only when Claude thinks of it. Renovate is not set up on the instance repo (the instance template has no `renovate.json`, so D29's "never a Postgres major" rule exists nowhere yet). The owner enables Renovate on that repo (D81), then a config follows.
+- **Runbook steps become `bivy` commands** (D104): hand-typed SSH and `docker` lines that change something on the server are turned into commands.
+- **Pocket ID sign-in lasting 30 days**: ready on the `pocket-id-30-days` branch, not merged yet.
+
+### When a need comes
+
+Nothing to do until the trigger in bold.
+
+- **Before Tinyauth (`forward`)**: apps reach each other without Caddy; isolate them first (D94), then build `forward` (D10).
 - **Before the first app with a Postgres extension**: extensions must not be recreated as superuser in the app's own schema (D94).
-- **Never run yet, the owner's decision each**: the real `bivy rebuild` (D91); `bivy init` on an empty Hetzner project and a test domain (D99); `bivy restore` on a real app (D101).
+- **Before any app sends mail**: choose a send-only relay (D70); this is also the last prod condition.
+- **Before removing an app**: its database and volumes leave the nightly copies at once (the backup lists current manifests only), and older copies age out of retention in about six months; until archiving exists (D18), take a final copy by hand, with the owner's consent.
+- **When a failed deployment is a real nuisance**: automatic rollback to the previous image (D21); today the app is stopped, with an alert.
+- **When the owner wants the domain's home page back**: static sites (D22).
+- **When a new machine needs SSH access**: `bivy machine add` (D38); meanwhile runbook section 20.
+- **When someone else installs Bivouac, or for the proof**: a real `bivy init` on an empty Hetzner project and a test domain (D99), the owner's decision.
+- **On the owner's wish**: resource history (D42), Web Push module (D84), an overview with diagrams (D93), a user guide for `bivy`, the status page in another language.
+
+### Appointments and the owner's decisions
+
 - **Next `bivy rebuild --test`**: February 2027, with the app check of runbook section 13; warn the users of apps with their own scheduled jobs (a duplicate push summary, D91).
 - **To observe**: zram swap after the next reboot (D94); mail deliverability with a real invitation (D70); `update-ssh-keys` with `sk-*` keys; HTTP/3 from outside; whether a connector added on claude.ai shows in the phone app (D85).
+- **Never run yet, the owner's decision each**: the real `bivy rebuild` (D91); `bivy restore` on a real app (D101); announcing the prod phase (D95).
 - **Unknown**: what Pocket ID does if its `ENCRYPTION_KEY` is lost (undocumented; the key is in SOPS).
-- **Removing an app** drops its database and volumes from the nightly copies at once (the backup lists current manifests only), and older copies age out of retention in about six months; until archiving exists (D18), take a final copy by hand before removing a manifest, with the owner's consent.
-- **Renovate on the instance repo** is not set up (the instance template has no `renovate.json`, so D29's "never a Postgres major" rule exists nowhere yet): base images are updated by Claude (D95).
 - **Accepted risks to revisit**: the deployment token's holders are root (D64, D92), if more people get write access; no email login code (D37), when an app opens to the general public or the community outgrows help by hand; GitHub Free cannot block a red PR (D95).
 
 ## Before the prod phase
