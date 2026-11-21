@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Monthly update of the base images the reconciler runs (D109). Only packages/manifest/src/platform.ts is watched: one grouped pull request on the first of the month, merged by Renovate when CI is green, on a weekday between 9:00 and 17:00 (Paris). Majors wait for the owner; Postgres majors are never proposed (D29).",
+  "enabledManagers": ["custom.regex"],
+  "timezone": "Europe/Paris",
+  "schedule": ["* * 1 * *"],
+  "automergeSchedule": ["* 9-16 * * 1-5"],
+  "dependencyDashboard": { "enabled": true },
+  "vulnerabilityAlerts": { "enabled": false },
+  "automerge": true,
+  "automergeType": "pr",
+  "platformAutomerge": false,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Base images, pinned as \"<image>:<tag>@sha256:<digest>\".",
+      "managerFilePatterns": ["/^packages/manifest/src/platform\\.ts$/"],
+      "matchStrings": ["\"(?<depName>[a-z0-9][a-z0-9./-]*):(?<currentValue>[A-Za-z0-9._-]+)@(?<currentDigest>sha256:[a-f0-9]{64})\""],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["custom.regex"],
+      "groupName": "base images"
+    },
+    {
+      "description": "A major version waits for a session with the owner.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "Postgres majors go through dump and restore, never through Renovate (D29).",
+      "matchPackageNames": ["postgis/postgis"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    }
+  ]
+}

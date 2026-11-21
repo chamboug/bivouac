@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Moves the reconciler and the status page to the latest version the monorepo published (D109). Only platform.yml is watched: from the 1st to the 10th of the month, one grouped pull request, merged by Renovate when Validate is green, on a weekday between 9:00 and 17:00 (Paris). Only v1.0.<n> steps merge by themselves; a minor or major step waits for the owner. App images are never touched (D5).",
+  "enabledManagers": ["custom.regex"],
+  "timezone": "Europe/Paris",
+  "schedule": ["* * 1-10 * *"],
+  "automergeSchedule": ["* 9-16 * * 1-5"],
+  "dependencyDashboard": { "enabled": true },
+  "vulnerabilityAlerts": { "enabled": false },
+  "automerge": true,
+  "automergeType": "pr",
+  "platformAutomerge": false,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "reconciler.image and status.image, pinned as \"<image>:v<x.y.z>@sha256:<digest>\" (bivy pin).",
+      "managerFilePatterns": ["/^platform\\.yml$/"],
+      "matchStrings": ["\\n  image: (?<depName>ghcr\\.io/[a-z0-9-]+/bivouac-(?:reconciler|status)):(?<currentValue>v\\d+\\.\\d+\\.\\d+)@(?<currentDigest>sha256:[a-f0-9]{64})"],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["custom.regex"],
+      "groupName": "Bivouac platform"
+    },
+    {
+      "description": "Only patch steps (v1.0.<n>) and new digests merge by themselves.",
+      "matchUpdateTypes": ["major", "minor"],
+      "automerge": false
+    }
+  ]
+}
