@@ -8,7 +8,7 @@ import { deriveSecret } from "./secrets.js";
 
 describe("Pocket ID settings from Git", () => {
   it("keeps mail unset when no account is declared", () => {
-    expect(pocketIdConfigEnv(undefined)).toEqual({ UI_CONFIG_DISABLED: "true", ALLOW_USER_SIGNUPS: "withToken" });
+    expect(pocketIdConfigEnv(undefined)).toEqual({ UI_CONFIG_DISABLED: "true", ALLOW_USER_SIGNUPS: "withToken", SESSION_DURATION: "43200" });
   });
 
   it("always asks for STARTTLS and passes the password as a file", () => {

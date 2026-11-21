@@ -1069,7 +1069,13 @@ else. These give direct control, without decrypting anything:
    the server (D12).
 2. Hetzner: delete the project's Read & Write token (Security → API tokens).
 3. OVH: revoke the platform's API keys (D49).
-4. Then the server's SSH keys, as in step 4 below, from the new machine.
+4. Pocket ID, only if the Mac was taken unlocked: a sign-in lasts 30 days
+   and the owner's is admin (D102). On the server, with consent:
+   `docker exec -it bivouac-pocket-id /app/pocket-id key-rotate --session-key`
+   (it asks to confirm), then `docker restart bivouac-pocket-id`; everyone
+   signs in again. Then, in Pocket ID, remove passkeys and API keys nobody
+   recognises.
+5. Then the server's SSH keys, as in step 4 below, from the new machine.
 
 **Then, on the new machine** (both cases):
 

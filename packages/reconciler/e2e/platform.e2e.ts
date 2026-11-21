@@ -152,6 +152,7 @@ describe("a. base services", () => {
   it("takes Pocket ID's mail settings from Git, the password as a file", () => {
     const env = inspect<ContainerState>("bivouac-pocket-id").Config.Env;
     expect(env).toContain("UI_CONFIG_DISABLED=true");
+    expect(env).toContain("SESSION_DURATION=43200");
     expect(env).toContain("SMTP_HOST=smtp.example.invalid");
     expect(env).toContain("SMTP_TLS=starttls");
     expect(env.some((line) => line.includes(MAIL_PASSWORD))).toBe(false);
