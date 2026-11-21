@@ -88,7 +88,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | App MCPs | `mcp: true` opens `/mcp`, signed in through Pocket ID | D85 |
 | Alerts | Pushover from the server, healthchecks.io as dead man's switch, normal priority | D45, D76, D82 |
 | Status page | `status.apps.example.org`, through the reconciler's internal API | D8, D96 |
-| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore`, `status`, `backup`, `ssh`, `exec`, `validate`, `pin` | D31, D91, D93, D99, D101, D104, D105, D106 |
+| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore`, `status`, `backup`, `login-link`, `ssh`, `exec`, `validate`, `pin` | D31, D91, D93, D99, D101, D104, D105, D106, D107 |
 | Rebuild | `bivy rebuild --test` every 3 months, the only proof the platform comes back | D39, D91 |
 
 ## Conventions for Claude
@@ -116,7 +116,7 @@ Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to p
 ### To do
 
 - **Base images updated without relying on Claude** (D95): Caddy, Postgres and Pocket ID are updated only when Claude thinks of it. Renovate is not set up on the instance repo (the instance template has no `renovate.json`, so D29's "never a Postgres major" rule exists nowhere yet). The owner enables Renovate on that repo (D81), then a config follows.
-- **Runbook steps become `bivy` commands** (D104): `bivy status` and `bivy backup` are built (D105), not deployed yet: the server's reconciler predates them, and moving it waits for the owner's go. `bivy pin` is built (D106; it runs on the Mac only). Left, in that order: changing a platform secret with hidden input and a hash check (sections 10 and 12; a rule 6 review); an emergency sign-in link for an admin who lost every passkey (section 10).
+- **Runbook steps become `bivy` commands** (D104): `bivy status` and `bivy backup` are built (D105), not deployed yet: the server's reconciler predates them, and moving it waits for the owner's go. `bivy pin` is built (D106; it runs on the Mac only). Left, in that order: changing a platform secret with hidden input and a hash check (sections 10 and 12; a rule 6 review). `bivy login-link` is built (D107).
 - **Pocket ID sign-in lasting 30 days**: ready on the `pocket-id-30-days` branch, not merged yet.
 
 ### When a need comes

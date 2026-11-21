@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PLATFORM_IMAGES } from "../../manifest/src/platform.ts";
+import { LoginLinkError, loginLinkCommand, readLink } from "../../bivy/src/login-link.ts";
 import {
   CADDY_ADDRESS,
   DOMAIN,
@@ -272,6 +273,47 @@ describe("d. an OIDC client per app", () => {
       data: { client: { id: string }; userDelegatedAccess: boolean; clientAccess: boolean }[];
     }).data;
     expect(grants).toEqual([expect.objectContaining({ client: expect.objectContaining({ id: "recettes-mcp" }), userDelegatedAccess: true, clientAccess: false })]);
+  });
+});
+
+describe("d2. a sign-in link for an admin who lost every passkey (bivy login-link, D107)", () => {
+  // The very command bivy sends over SSH, run here by a shell as on the server.
+  const linkFor = (login: string) => readLink(run("sh", ["-c", loginLinkCommand(login)]), DOMAIN);
+  const exchange = (link: string, headers: string[] = []) =>
+    throughCaddy(`auth.${DOMAIN}`, `/api/one-time-access-token/${link.split("/lc/")[1]}`, "POST", headers, true);
+
+  beforeAll(() => {
+    expect(pocketIdApi(platform, "POST", "/api/users", { username: "lost-admin", email: "lost-admin@example.invalid", firstName: "Lost", lastName: "Admin", isAdmin: true }).status).toBe(201);
+    expect(pocketIdApi(platform, "POST", "/api/users", { username: "gone", email: "gone@example.invalid", firstName: "Gone", lastName: "User", disabled: true }).status).toBe(201);
+  });
+
+  it("gives a link on Pocket ID's address that signs the user in once, with a session that can add a passkey", () => {
+    const link = linkFor("lost-admin@example.invalid");
+    expect(link).toMatch(new RegExp(`^https://auth\\.${DOMAIN.replaceAll(".", "\\.")}/lc/[A-Za-z0-9]{12}$`));
+    const first = exchange(link);
+    expect(first.status).toBe(200);
+    expect(first.body).toContain('"username":"lost-admin"');
+    const session = /^set-cookie: ((?:__Host-)?access_token=[^;]+)/im.exec(first.body)?.[1];
+    expect(session).toBeTruthy();
+    expect(throughCaddy(`auth.${DOMAIN}`, "/api/webauthn/register/start", "GET", [`Cookie: ${session}`]).status).toBe(200);
+    expect(exchange(link).status).toBe(401);
+  });
+
+  it("finds the user by username too", () => {
+    expect(exchange(linkFor("lost-admin")).status).toBe(200);
+  });
+
+  it("says when no user has that username or email", () => {
+    expect(() => linkFor("nobody")).toThrow(new LoginLinkError("Pocket ID has no user with that username or email."));
+  });
+
+  it("makes a link for a disabled user that Pocket ID then refuses", () => {
+    expect(exchange(linkFor("gone")).status).toBe(403);
+  });
+
+  it("never writes the link to Pocket ID's logs", () => {
+    const token = linkFor("lost-admin").split("/lc/")[1]!;
+    expect(run("docker", ["logs", "bivouac-pocket-id"]).stdout + run("docker", ["logs", "bivouac-pocket-id"]).stderr).not.toContain(token);
   });
 });
 

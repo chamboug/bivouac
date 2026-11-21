@@ -488,11 +488,15 @@ then:
    or QR code; open it on the phone, then **Add Passkey** in the account page.
    The same **Login Code** link is how anyone who lost their passkeys gets
    back in: the admin sends it through any messaging app; there is no email
-   login code (D37). **If the admin lost every passkey**:
-   `docker exec bivouac-pocket-id /app/pocket-id one-time-access-token <username or email>`
-   over SSH prints a sign-in link valid one hour (Pocket ID v2.19.2 source;
-   not yet tried). It is a credential: the owner runs it and opens the link,
-   then adds a passkey at once.
+   login code (D37). **If the admin lost every passkey**: the owner runs
+   `bivy login-link <username or email>` in a terminal, from the instance
+   repo (D107). It prints a sign-in link that works once, within one hour.
+   It is a credential: `bivy` refuses to show it to a script or a pipe, Claude's
+   ordinary shell included. Run it in a terminal app of its own, not in a
+   terminal panel shared with Claude, which Claude can read; Claude never
+   runs it. Give the username rather than the email (see D107). The owner opens the link, then
+   adds a passkey at once (account page, **Add Passkey**). A disabled account
+   is refused; an unknown one gets "no user with that username or email".
 3. **(consent)** Remove `setupFrom`. Check 403 for everyone, the owner included,
    and exactly one user (`users` in database `bivouac_pocket_id`).
 4. Mail (D70). Add `mail` to `platform.yml` (`host`, `from`, `user`). Have the

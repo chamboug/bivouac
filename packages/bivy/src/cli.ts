@@ -17,6 +17,7 @@ import { printBanner } from "./banner.js";
 import { RemoteError, SshRemote, streamSsh } from "./remote.js";
 import { parseLines, restoreCommand } from "./restore.js";
 import { pin } from "./pin.js";
+import { loginLink } from "./login-link.js";
 import { StatusError, TOO_OLD, backupStep, describeState, readState, reconcilerCommand } from "./status.js";
 import { TerminalProgress, interactive, terminalGuide } from "./terminal.js";
 
@@ -47,6 +48,13 @@ Commands:
                               the night, and follow it to its end; before any
                               change that can lose data (D89)
       --restore-test          also run the weekly restore test right after
+
+  login-link <user> [dir]     a one-time sign-in link for a Pocket ID user, by
+                              username or email, for an admin who lost every
+                              passkey (D107). Valid once, for one hour. It is a
+                              credential: shown only to a person at a terminal,
+                              never to a script or to Claude, and never written
+                              anywhere.
 
   restore [app]               bring one app's data back to a backup copy, on the
                               running server (D101). Replaces live data: confirmed
@@ -151,6 +159,8 @@ async function main(argv: string[]): Promise<number> {
       return status(values.instance ? resolve(values.instance) : root, values["ssh-key"], values.json === true);
     case "backup":
       return backup(values.instance ? resolve(values.instance) : root, values["ssh-key"], values["restore-test"] === true);
+    case "login-link":
+      return loginLinkCli(positionals[1], values.instance ? resolve(values.instance) : resolve(positionals[2] ?? "."), values["ssh-key"]);
     default:
       console.error(`Unknown command '${command}'.\n\n${USAGE}`);
       return 1;
@@ -371,7 +381,7 @@ async function restore(root: string, app: string | undefined, values: Record<str
 }
 
 /** The server, found and checked as for bivy exec; undefined after saying why it cannot be reached. */
-async function server(root: string, sshKey: string | undefined): Promise<{ host: string; identity: string; knownHosts: string } | undefined> {
+async function server(root: string, sshKey: string | undefined): Promise<{ host: string; identity: string; knownHosts: string; domain: string } | undefined> {
   const instance = loadInstance(root);
   if (!instance.platform) {
     console.error(`No valid platform.yml in ${root}: run bivy from the instance repo, or pass it (bivy status <dir>).`);
@@ -388,7 +398,7 @@ async function server(root: string, sshKey: string | undefined): Promise<{ host:
     return undefined;
   }
   try {
-    return { host: await serverAddress(instance.platform.domain, resolve4), identity, knownHosts };
+    return { host: await serverAddress(instance.platform.domain, resolve4), identity, knownHosts, domain: instance.platform.domain };
   } catch (error) {
     if (!(error instanceof SshError)) throw error;
     console.error(`✗ ${error.message}`);
@@ -447,6 +457,31 @@ async function backup(root: string, sshKey: string | undefined, restoreTest: boo
   } finally {
     process.off("SIGINT", leave);
   }
+}
+
+/** `bivy login-link <user>` (D107): login-link.ts, with the server found as for bivy status. */
+function loginLinkCli(login: string | undefined, root: string, sshKey: string | undefined): Promise<number> {
+  return loginLink(login, {
+    interactive: interactive(),
+    server: async () => {
+      const target = await server(root, sshKey);
+      if (!target) return undefined;
+      const ssh = new SshRemote(target.host, target.identity, target.knownHosts);
+      return {
+        domain: target.domain,
+        run: (command) => {
+          try {
+            return ssh.run(command, { timeoutMs: 60_000 });
+          } catch (error) {
+            if (!(error instanceof RemoteError)) throw error;
+            return { status: 255, stdout: "", stderr: error.message };
+          }
+        },
+      };
+    },
+    show: (text) => console.log(text),
+    error: (text) => console.error(text),
+  });
 }
 
 const config = (file: string) => join(homedir(), ".config", "bivouac", file);

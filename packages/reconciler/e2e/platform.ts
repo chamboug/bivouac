@@ -265,9 +265,9 @@ export function startReconciler(platform: Platform, ports: string, env: Record<s
  * Caddy serves `*.localhost` names with its own local certificate authority
  * (verified, Caddy 2.11.9), hence `--insecure`.
  */
-export function throughCaddy(host: string, path: string, method = "GET", headers: string[] = []): { status: number; body: string } {
+export function throughCaddy(host: string, path: string, method = "GET", headers: string[] = [], include = false): { status: number; body: string } {
   const result = run("docker", ["run", "--rm", "--network", INTERNAL_NETWORK, CURL_IMAGE,
-    "--silent", "--insecure", "--path-as-is", "--max-time", "10", "--write-out", "\n%{http_code}",
+    "--silent", "--insecure", "--path-as-is", "--max-time", "10", "--write-out", "\n%{http_code}", ...(include ? ["--include"] : []),
     ...headers.flatMap((header) => ["--header", header]),
     "--request", method, "--resolve", `${host}:443:${CADDY_ADDRESS}`, `https://${host}${path}`]);
   const lines = result.stdout.split("\n");
@@ -288,9 +288,10 @@ export function encryptForPlatform(platform: Platform, yaml: string): string {
 }
 
 /** A call to Pocket ID's API, straight to its container (not through Caddy). */
-export function pocketIdApi(platform: Platform, method: string, path: string): { status: number; body: unknown } {
+export function pocketIdApi(platform: Platform, method: string, path: string, json?: unknown): { status: number; body: unknown } {
   const result = run("docker", ["run", "--rm", "--network", INTERNAL_NETWORK, CURL_IMAGE,
     "--silent", "--max-time", "10", "--write-out", "\n%{http_code}", "--request", method,
+    ...(json === undefined ? [] : ["--header", "Content-Type: application/json", "--data", JSON.stringify(json)]),
     "--header", `X-API-KEY: ${platform.staticApiKey}`, `http://bivouac-pocket-id:1411${path}`]);
   const lines = result.stdout.split("\n");
   const status = Number(lines.pop());

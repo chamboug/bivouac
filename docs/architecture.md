@@ -68,7 +68,7 @@ How Bivouac works today, part by part. The reasons are in the [decision log](dec
   - sign-up tokens: at most 31 days, 1 to 100 uses, attached to groups;
   - per-client group restriction, groups in the ID token with the `groups` scope;
   - admin API with `STATIC_API_KEY`; a client's chosen secret set through `POST /api/oidc/clients/{id}/secrets`; `PUT` replaces the whole client (D52);
-  - several passkeys per account (users are advised to have at least two, phone and computer, or one synced passkey); one-time **Login Code** links made by the admin for someone who lost theirs; no email code (D37);
+  - several passkeys per account (users are advised to have at least two, phone and computer, or one synced passkey); one-time **Login Code** links made by the admin for someone who lost theirs, and `bivy login-link` for an admin who lost every passkey (D107); no email code (D37);
   - the first admin is created at `/setup` by whoever gets there first (D15).
 - **Mail for Pocket ID only**: an OVH mailbox through `smtp.mail.ovh.net:587`, STARTTLS, password as a file; settings from Git (`UI_CONFIG_DISABLED=true`). Hetzner blocks outbound 25 and 465. **Apps never get that password** (D70).
 - **Auth modes** (D10), in the manifest:
@@ -143,6 +143,7 @@ TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talk
 | `bivy status` | Containers, last pass, backups, host, incidents, and what is worth a look; only reads (D105) | built |
 | `bivy backup` | A backup now, followed to its end, before a change that can lose data (D105) | built |
 | `bivy pin reconciler\|status <commit>` | Moves a platform image to a commit's version, pinned by its GHCR digest; edits one line of `platform.yml`, commits nothing (D106) | built |
+| `bivy login-link <user>` | A one-time sign-in link for an admin who lost every passkey, shown only at a terminal (D107) | built, tried on the miniature platform |
 | `bivy init` | Empty Hetzner project + domain → running platform (D99) | never run for real |
 | `bivy configure backups\|alerts\|mail` | Adds a missing part (D99) | built |
 | `bivy rebuild --test` | Temporary server restored from backups, checked, destroyed (D91) | proven |
