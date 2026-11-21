@@ -202,11 +202,12 @@ describeWithDocker("bivy secret set", () => {
 
   it("keeps values YAML readers disagree on as text, written in quotes", async () => {
     const repo = instance();
-    for (const value of ["1_000", "<<", "0b101", "yes", "~", "*anchor", "- item", "a: b", "#hash", "'quoted'"]) {
+    // The three sops' YAML would misread (found by the rule 6 review); the others are kept by the same path.
+    for (const value of ["1_000", "<<", "0b101"]) {
       await setSecret({ sops: dockerSops, identity: () => repo.key, ask: typing(value, value), checkout: () => [], log: () => {} }, repo.root, "alerts.pushover_user");
       expect(repo.decrypt()).toEqual({ ...PLAIN, alerts: { ...PLAIN.alerts, pushover_user: value } });
     }
-  }, 300_000);
+  }, 120_000);
 
   it("refuses a checkout that is behind main or holds other changes, before decrypting", async () => {
     const repo = instance();

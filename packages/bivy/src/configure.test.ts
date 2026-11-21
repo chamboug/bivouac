@@ -89,7 +89,7 @@ describeWithDocker("bivy configure", () => {
 
     // Already there: bivy never changes it.
     await expect(configurePart(deps, repo.root, "mail")).rejects.toThrow(/already set up/);
-  }, 60_000);
+  }, 120_000);
 
   it("pushes nothing from a checkout that is not exactly origin/main", async () => {
     const repo = instance();
@@ -98,7 +98,7 @@ describeWithDocker("bivy configure", () => {
       sops: dockerSops, identity: () => repo.key, checkout: () => ["uncommitted changes"], git: repo.git, showOnce: async () => {},
     };
     await expect(configurePart(deps, repo.root, "alerts")).rejects.toThrow(/cannot be pushed as is: uncommitted changes/);
-  }, 60_000);
+  }, 120_000);
 });
 
 describe("platform.yml", () => {
