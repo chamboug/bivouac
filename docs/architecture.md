@@ -105,7 +105,7 @@ How Bivouac works today, part by part. The reasons are in the [decision log](dec
   1. **monorepo** (`renovate.json`): on the 1st, one grouped PR `renovate/base-images` on `packages/manifest/src/platform.ts` (Caddy, Postgres digests, Pocket ID, restic); Renovate merges it once CI is green, weekdays 9:00-17:00 Paris; majors wait for the owner, Postgres majors are never proposed (D29). CI then publishes the reconciler and the status page as `sha-<commit>` and `v1.0.<run number>`;
   2. **instance repo** (`renovate.json`, from `template/`): from the 1st to the 10th, one grouped PR moves `reconciler.image` and `status.image` to the newest `v1.0.<n>` with its digest, merged once Validate is green, same hours; `v1.1.0` or `v2.0.0` waits for the owner. App images are never touched (D5).
 
-  Both repos have Renovate's Dependency Dashboard issue; a PR still open at the start of a session is the first thing to look at.
+  Renovate is installed on the owner's account for these two repos only. Mend's page of each repo shows what it detected and what waits for its schedule; a PR still open at the start of a session is the first thing to look at.
 
 ## The reconciler
 

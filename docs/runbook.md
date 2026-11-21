@@ -1231,7 +1231,18 @@ platform: read why before anything else.
   back. Pin the previous reconciler (`bivy pin reconciler <commit>`) until
   fixed.
 
-**An urgent security fix** (seen in a session, before the 1st): update the
+**What Renovate sees**: Mend's page of each repo
+(`https://developer.mend.io/github/<owner>/<repo>`, the owner's sign-in)
+lists the detected dependencies, the updates "Awaiting Schedule" and the
+last jobs. The monorepo must show the four base images in
+`packages/manifest/src/platform.ts` only; the instance repo, the reconciler
+and the status page in `platform.yml` only.
+
+**An urgent security fix** (seen in a session, before the 1st): on Mend's
+page of the monorepo, tick the "base images" update and press
+"Create/Rebase" (the checkbox bypasses `schedule`, verified in Renovate's
+source; the merge still waits for green CI and the weekday hours), then the
+same on the instance repo once CI has published. Or by hand: update the
 image in `packages/manifest/src/platform.ts` (tag and digest, `docker
 buildx imagetools inspect`), push to `main` once CI is green, then `bivy pin
 reconciler <commit>` and `bivy pin status <commit>` in the instance repo.
