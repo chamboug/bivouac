@@ -130,7 +130,8 @@ Nothing to do until the trigger in bold.
 - **When the owner wants the domain's home page back**: static sites (D22).
 - **When a new machine needs SSH access**: `bivy machine add` (D38); meanwhile runbook section 20.
 - **When someone else installs Bivouac, or for the proof**: a real `bivy init` on an empty Hetzner project and a test domain (D99), the owner's decision.
-- **On the owner's wish**: resource history (D42), Web Push module (D84), an overview with diagrams (D93), a user guide for `bivy`, the status page in another language.
+- **On the owner's wish**: resource history (D42), Web Push module (D84), an overview with diagrams (D93), the status page in another language.
+- **When the owner opens the session for it**: a user guide for `bivy`, in a session of its own. The owner's idea: GitHub Pages with a doc generator (off the server, so it cannot break the platform). The longest part is agreeing on the tone, accessible and as clear as possible: start from one real page (e.g. `bivy backup`) written in two or three tones, the owner picks, then write the rest. To settle then: the reader (someone installing Bivouac from scratch, the owner's first choice on 22 Nov. 2026), how a newcomer installs `bivy` (today, a clone and a build), and that `bivy init` has never run for real (D99).
 
 ### Appointments and the owner's decisions
 
