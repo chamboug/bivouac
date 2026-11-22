@@ -1120,9 +1120,32 @@ already created at Hetzner stays, and is found again by name).
 adds a part the platform does not have yet; a part already set up is
 changed by hand (sections 10 and 12).
 
-**Not yet run against real infrastructure** (19 November 2026): tested
-against fake APIs and a local Git repo only. A first real run is a decision
-of the owner's (an empty project, a test domain, a few cents).
+**Typed confirmations**: a mistyped domain at the cost confirmation stops
+the run with nothing created; run again, it resumes at that question.
+After `done`, the first-admin page closes when the server next reads Git
+(a minute or two).
+
+**Trying it without touching a platform you have**: run it with an empty
+home, so bivy sees none of your credentials or host keys, and give that
+home a git identity first (without one, git invents `you@machine.local`):
+
+```bash
+mkdir -p ~/bivy-trial && cd ~/bivy-trial && HOME=$PWD git config --global user.email you@users.noreply.github.com && HOME=$PWD git config --global user.name "Your Name"
+```
+
+```bash
+cd ~/bivy-trial && HOME=$PWD node <monorepo>/packages/bivy/dist/cli.js init
+```
+
+`git push` still uses your own SSH key (OpenSSH reads the account's real
+home, not `HOME`). Give the OVH keys a one-day validity. Afterwards, delete
+in this order: lift the delete protection of the server and both Primary
+IPs, delete the server, the IPs, the firewall and the Flatcar snapshot,
+check the project lists nothing, then delete the tokens, the project, the
+repo and the DNS records (a record left on a deleted IP could be taken over
+by whoever gets that IP next).
+
+**Proven** (22 November 2026): a first real run, end to end, as above (D99).
 
 ## 20. A lost or broken Mac (consent)
 

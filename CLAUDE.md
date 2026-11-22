@@ -102,13 +102,13 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 - **New apps**: the `new-app` skill, shipped as a plugin (`/plugin marketplace add chamboug/bivouac`, `/plugin install bivouac@bivouac`, then `/bivouac:new-app`) (D98). When the first app of a repo starts using Renovate, install it with "Only select repositories" on that repo only, except in the owner's organization (D81, D92).
 - **`gh` on the owner's Mac is for Claude's own work** (D78): reading CI and logs on the monorepo and the instance repo (`gh run list`, `gh run watch`, `gh run view --log-failed`), opening and commenting on PRs. It cannot push, merge, rerun or set secrets; pushes go through Git over SSH. If `gh` answers 401, the token has expired: ask the owner for a new one. `bivy` never depends on it (D31).
 - **Security reviews** (rule 6) use a fresh agent and a checklist; findings are checked again on the code or the server before being presented; the owner chooses what to fix and what to accept knowingly, with the risk stated.
-- **Never run against the real server without the owner's decision**: `bivy rebuild` (only `--plan`), `bivy restore` (only `--plan`), `bivy init` on real infrastructure.
+- **Never run against the real server without the owner's decision**: `bivy rebuild` (only `--plan`), `bivy restore` (only `--plan`), `bivy init` on real infrastructure (proven once on a throwaway project, D99).
 - **Pitfalls already met**: macOS has no `timeout` command; a YAML 1.2 parser reads `mode: 0600` as decimal, so the Butane file is never re-serialized (D48); in Caddy's image `localhost` is `::1` (D55); Pocket ID's `PUT` on a client replaces it whole (D52); changing a healthchecks.io schedule so a check is already overdue marks it down without notifying (D82); a deploy key added with a PAT disappears with that PAT (D91); `npm run build` while `dev:local` runs breaks the dev server (D83).
 
-## Where things stand (21 November 2026)
+## Where things stand (22 November 2026)
 
 - **Built and running**: layers 1 to 5 of D44 (foundations, base on the VPS, safety net, first real apps, rebuilding without memory), plus the status page (D96), `local` apps (D97), app MCPs (D85), `bivy init`/`configure` (D99), `bivy restore` (D101), and the commands D104 asked for: `bivy status`, `bivy backup` (D105, used for real on 21 Nov. 2026), `bivy pin` (D106), `bivy login-link` (D107), `bivy secret set` (D108), `bivy restore pocket-id` (D110, tried on the miniature platform only), and a Pocket ID sign-in lasting 30 days (D102, since 21 Nov. 2026). Apps hold data the owner keeps since 11 Nov. 2026. Interim phase (D89, D95).
-- **Proven**: `bivy rebuild --test` (14 and 19 Nov. 2026, D91); `restore-app` rehearsed on the server (D90); every alert received on the owner's phone (D82).
+- **Proven**: `bivy init` on a throwaway project (22 Nov. 2026, D99); `bivy rebuild --test` (14 and 19 Nov. 2026, D91); `restore-app` rehearsed on the server (D90); every alert received on the owner's phone (D82).
 
 ## Open items
 
@@ -129,9 +129,9 @@ Nothing to do until the trigger in bold.
 - **When a failed deployment is a real nuisance**: automatic rollback to the previous image (D21); today the app is stopped, with an alert.
 - **When the owner wants the domain's home page back**: static sites (D22).
 - **When a new machine needs SSH access**: `bivy machine add` (D38); meanwhile runbook section 20.
-- **When someone else installs Bivouac, or for the proof**: a real `bivy init` on an empty Hetzner project and a test domain (D99), the owner's decision.
+- **When someone else installs Bivouac**: `bivy configure backups|alerts|mail` against real services (`bivy init` itself was proven on 22 Nov. 2026, D99); the friction points a newcomer hits are in the instance repo's operations log of that day, for the guide (D111).
 - **On the owner's wish**: resource history (D42), Web Push module (D84), an overview with diagrams (D93), the status page in another language.
-- **When the owner opens the session for it**: a user guide for `bivy`, in a session of its own: Starlight on GitHub Pages, with an `llms.txt` (D111). The longest part is agreeing on the tone, accessible and as clear as possible: start from one real page (e.g. `bivy backup`) written in two or three tones, the owner picks, then write the rest. To settle then: the reader (someone installing Bivouac from scratch, the owner's first choice on 22 Nov. 2026), how a newcomer installs `bivy` (today, a clone and a build), and that `bivy init` has never run for real (D99).
+- **When the owner opens the session for it**: a user guide for `bivy`, in a session of its own: Starlight on GitHub Pages, with an `llms.txt` (D111). The longest part is agreeing on the tone, accessible and as clear as possible: start from one real page (e.g. `bivy backup`) written in two or three tones, the owner picks, then write the rest. To settle then: the reader (someone installing Bivouac from scratch, the owner's first choice on 22 Nov. 2026), how a newcomer installs `bivy` (today, a clone and a build), and the friction points noted during the real `bivy init` trial (operations log, 22 Nov. 2026).
 
 ### Appointments and the owner's decisions
 

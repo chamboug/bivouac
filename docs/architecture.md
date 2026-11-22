@@ -150,7 +150,7 @@ TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talk
 | `bivy backup` | A backup now, followed to its end, before a change that can lose data (D105) | built |
 | `bivy pin reconciler\|status <commit>` | Moves a platform image to a commit's version, pinned by its GHCR digest, written with its `v1.0.<n>` tag for Renovate; edits one line of `platform.yml`, commits nothing (D106, D109) | built |
 | `bivy login-link <user>` | A one-time sign-in link for an admin who lost every passkey, shown only at a terminal (D107) | built, tried on the miniature platform |
-| `bivy init` | Empty Hetzner project + domain → running platform (D99) | never run for real |
+| `bivy init` | Empty Hetzner project + domain → running platform (D99) | proven 22 Nov. 2026 |
 | `bivy configure backups\|alerts\|mail` | Adds a missing part (D99) | built |
 | `bivy secret set <path>` | Changes one value of the platform secrets, typed hidden, every other value checked by hash; commits nothing (D108) | built |
 | `bivy rebuild --test` | Temporary server restored from backups, checked, destroyed (D91) | proven |

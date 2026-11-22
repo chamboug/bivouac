@@ -108,7 +108,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D96 | Status page and internal API | |
 | D97 | `local` apps and an app's own secrets | |
 | D98 | The "new app" skill as a plugin | |
-| D99 | `bivy init` and `bivy configure` | never run for real |
+| D99 | `bivy init` and `bivy configure` | `init` proven 22 Nov. 2026; `configure` never run for real |
 | D100 | Visual identity | |
 | D101 | `bivy restore <app>` | |
 | D102 | A Pocket ID sign-in lasts 30 days | |
@@ -586,7 +586,8 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
   - **`bivy configure backups|alerts|mail`** adds a missing part, checked against the real service. A part already set up is never changed by `bivy` (owner's choice).
 - **Rejected**: reinstalling an existing server from `bivy init`; a temporary GitHub token for two clicks; flags for consents; the main Hetzner token for the snapshot tool.
 - **Accepted**: typed consents rely on a terminal being detected (discipline, as rule 4).
-- **Not verified**: no run against real infrastructure. A trial needs an empty Hetzner project, a test domain and a machine user with no `~/.config/bivouac` (about €0.02 an hour); it would also show how OVH returns TXT values, Pocket ID's `/setup` once allowed, and other S3 providers' regions. The owner's decision.
+- **Proven** (22 Nov. 2026, with the owner): a first real run, end to end on the first try, from a machine user with an empty home (`HOME=<empty folder>`), a new Hetzner project, a throwaway private repo and a spare domain at OVH; about 35 minutes, a few cents, everything deleted afterwards and checked through the API. Verified on the way: OVH returns a TXT value wrapped in double quotes (bivy already compared without them); `/setup` answers 200 once allowed and 403 once closed; the image tool, run by bivy, cleans up after itself. Three small fixes: `~/.ssh` made for a new key, a message before each wait on the first-admin page, the new-repo link not printed again on a resumed run.
+- **Not verified**: `bivy configure` against real services; other S3 providers' regions; backups, alerts and mail set up from `bivy init` (left for later in the trial).
 
 ### D100 — Visual identity
 - **Choice**: a tent with its light on (shelter, and someone always awake: "never silent"), in `canvas` orange, `glow` amber, `night` and `snow`; IBM Plex Sans and Mono; borders rather than shadows; states as a word and an icon, never a colour alone; text contrast at least 4.5:1. Files and rules in `docs/brand/`. `bivy` prints an ASCII tent in a terminal, without colour under `NO_COLOR`.
