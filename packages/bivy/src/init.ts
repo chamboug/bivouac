@@ -183,7 +183,7 @@ async function questions(deps: InitDependencies, state: InitState, ask: Asker): 
   });
   if (!state.done.includes("pushed to GitHub")) {
     const remote = deps.git(".", ["ls-remote", repository]);
-    if (remote.status !== 0) throw new InitError(`your git cannot read ${repository}: is your SSH key on GitHub, and the repo created? (${remote.stderr.trim().split("\n").pop() ?? ""})`);
+    if (remote.status !== 0) throw new InitError(`your git cannot read ${repository}: is your SSH key on GitHub, and the repo created (${NEW_REPO_LINK})? (${remote.stderr.trim().split("\n").pop() ?? ""})`);
     if (remote.stdout.trim()) throw new InitError(`${repository} is not empty: bivy init needs a new, empty repo`);
   }
 

@@ -291,6 +291,16 @@ describeWithDocker("bivy init", () => {
     expect(existsSync(run.dir)).toBe(false);
   });
 
+  it("does not print the new-repo link again when a run resumes after the repo was answered", async () => {
+    const run = setup({ answers: {}, typed: ["apps.example.com"] });
+    await expect(init(run.deps)).rejects.toThrow(/not confirmed/);
+    expect(run.logs.filter((line) => line.includes("EMPTY PRIVATE repo"))).toHaveLength(1);
+    run.logs.length = 0;
+    run.deps.asker = scriptedAsker({ answers: {}, typed: ["apps.example.com"] }, (message) => run.logs.push(message), run.asked);
+    await expect(init(run.deps)).rejects.toThrow(/not confirmed/);
+    expect(run.logs.filter((line) => line.includes("EMPTY PRIVATE repo"))).toHaveLength(0);
+  });
+
   it("never asks a script to agree: the cost confirmation needs a terminal", async () => {
     const run = setup({ answers: {}, typed: [], tty: false });
     await expect(init(run.deps)).rejects.toThrow(/needs a terminal/);
