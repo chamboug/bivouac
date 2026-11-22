@@ -175,7 +175,8 @@ async function questions(deps: InitDependencies, state: InitState, ask: Asker): 
   ]);
   const sshPublicKey = found.find((entry) => entry.path === keyChoice)?.publicKey ?? (existsSync(`${keyChoice}.pub`) ? readFileSync(`${keyChoice}.pub`, "utf8").trim() : deps.makeSshKey(keyChoice));
 
-  ask.log(`Create an EMPTY PRIVATE repo for the configuration (no README, no licence), here:\n  ${NEW_REPO_LINK}`);
+  // Only before the repo is answered: a resumed run does not ask for it again.
+  if (state.recorded.repository === undefined) ask.log(`Create an EMPTY PRIVATE repo for the configuration (no README, no licence), here:\n  ${NEW_REPO_LINK}`);
   const repository = await ask.text("repository", "Its SSH address (Code → SSH):", {
     placeholder: "git@github.com:you/bivouac-platform.git",
     check: (value) => (repositorySchema.safeParse(value).success ? undefined : "like git@github.com:you/bivouac-platform.git"),
