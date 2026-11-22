@@ -441,6 +441,7 @@ async function run(deps: InitDependencies, state: InitState): Promise<InitState>
       if (!isPublicAddress(address) || address.includes(":")) throw new InitError(`this machine's address ${address} is not a public IPv4: the first-admin page cannot be opened for it alone (D67)`);
       setSetupFrom(answers.dir, address);
       commitAndPush(deps, answers.dir, "Open Pocket ID's first-admin page to the owner's address (bivy init, D15)");
+      deps.log("  opening the first-admin page to your address: the server picks the change up within a minute or two…");
       await waitUntil(deps, "the first-admin page", 10 * 60_000, () => deps.probeReal(auth, "/setup").status === 200);
       ask.log([
         "",
@@ -459,6 +460,7 @@ async function run(deps: InitDependencies, state: InitState): Promise<InitState>
     }
     setSetupFrom(answers.dir, undefined);
     commitAndPush(deps, answers.dir, "Close Pocket ID's first-admin page (bivy init, D15)");
+    deps.log("  closing the first-admin page again: the server picks the change up within a minute or two…");
     await waitUntil(deps, "the first-admin page closed", 10 * 60_000, () => deps.probeReal(auth, "/setup").status === 403);
     const count = users();
     if (count !== 1) throw new InitError(`Pocket ID has ${count} accounts, not one: someone else may have used the page. Look before anything else (D69)`);

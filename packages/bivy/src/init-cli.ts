@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { AskError, type Asker, terminalAsker } from "./ask.js";
 import { ConfigureError, PARTS, type PartName, configurePart } from "./configure.js";
@@ -92,6 +92,8 @@ function sshKeys(): { path: string; publicKey: string }[] {
 
 function makeSshKey(path: string): string {
   if (!tty) throw new AskError(`a new SSH key is made in a terminal (its passphrase is yours to choose): run bivy init in one, or pass --ssh-key <file>`);
+  // A machine user that never used SSH has no ~/.ssh: ssh-keygen does not make it.
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const made = spawnSync("ssh-keygen", ["-t", "ed25519", "-f", path, "-C", `bivouac-${homedir().split("/").pop() ?? "machine"}`], { stdio: "inherit" });
   if (made.status !== 0) throw new InitError("ssh-keygen did not make the key");
   console.log(`If you gave it a passphrase, add it to the agent now (bivy never asks for it): ssh-add ${process.platform === "darwin" ? "--apple-use-keychain " : ""}${path}`);
