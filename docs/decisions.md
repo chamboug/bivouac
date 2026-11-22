@@ -120,6 +120,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D108 | `bivy secret set`: one platform secret changed | |
 | D109 | Base images updated once a month by Renovate; rollback on a broken Caddy or Postgres | |
 | D110 | `bivy restore pocket-id`: Pocket ID's database back to a nightly copy | |
+| D111 | The `bivy` user guide: Starlight on GitHub Pages | not built |
 
 ---
 
@@ -667,3 +668,10 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 - **Review** (rule 6, fresh agent, 21 Nov. 2026): no high finding. Fixed: a Pocket ID container left on another image than the running reconciler names (possible after an interrupted restore, since held passes never recreate it) is removed after the swap rather than started, and the next pass creates it on the right image, so the broken version cannot migrate the restored database again; a pass stopped by the hold no longer counts as a healthy pass for the alerts, so "not healthy" and app incidents stay open instead of being sent as resolved; a copy with no account is refused when Pocket ID has some today. Accepted: a restart before the swap still keeps Pocket ID stopped until a restore completes (conservative, reported); a `--plan` run at the same instant can make a restore fail before any change (shared read container, as for `restore-app`).
 - **Accepted**: what changed in Pocket ID since the copy is no longer there (accounts, passkeys, invitations, sign-ins), and is in the safety copy and the kept database; sign-in is down from the failed update until the restore, the apps running meanwhile.
 
+### D111 — The `bivy` user guide: Starlight on GitHub Pages
+- **Context** (the owner, 22 Nov. 2026): `bivy --help` lists every command but reads like a directory, and the runbook is written for Claude. The owner wants a user guide that is accessible and as clear as possible, published with GitHub Pages and a doc generator, written in a session of its own that starts by agreeing on the tone. Its first reader: someone installing Bivouac from scratch.
+- **Choice** (the owner's): **Starlight** (Astro), built in the monorepo's CI and published on GitHub Pages, off the server: a broken doc site never touches the platform or its data. An `llms.txt` (community plugin `starlight-llms-txt`) gives the whole guide to a model as plain text; no MCP server, since GitHub Pages serves files only and hosting one on the platform would take the guide down with it.
+- **Verified** (npm and PyPI registries, 22 Nov. 2026): `@astrojs/starlight` 0.43.1 published 13 Nov. 2026, still before 1.0, with breaking changes in minor versions (0.39.3's changelog); VitePress's stable line is 1.6.4 from Aug. 2025, its 2.0 in alpha (2.0.0-alpha.21); `mkdocs-material` 9.8.2 published 19 Nov. 2026, in maintenance mode since Nov. 2025, its successor Zensical at 0.1.3. None has a built-in `llms.txt` or MCP; each has community plugins for `llms.txt`.
+- **From memory, to check when built**: each has an official GitHub Pages guide; Starlight's `llms.txt` plugin is written by one of its core maintainers.
+- **Accepted**: before 1.0, a Starlight update can break the site's build; Renovate and CI show it at once, and the worst case is a guide a few days out of date.
+- **Rejected**: VitePress (stable line idle for 15 months, a 2.0 migration ahead); MkDocs Material (Python beside an all-Node repo, rule 9, and its authors moving to Zensical, whose plugins do not run MkDocs ones yet); a single Markdown page on GitHub (Claude's first proposal; the owner wants a real site); an MCP server for the guide (above).
