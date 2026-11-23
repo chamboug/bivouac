@@ -852,8 +852,11 @@ the people they reach before the test. The instance's operations log lists the
 known ones.
 
 ```bash
-bivy rebuild --test <instance-dir> --ssh-key ~/.ssh/<key>
+bivy rebuild --test <instance-dir>
 ```
+
+`--ssh-key ~/.ssh/<key>` only for another key than the one `bivy` remembers
+(D112).
 
 **In a terminal, it asks** (D93), each question with the arrow keys, the
 recommended answer first: what to do with an unfinished test (carry on,
@@ -932,9 +935,12 @@ copy that day (B2: check the download caps, D91); a terminal where the owner
 can type.
 
 ```bash
-bivy rebuild --plan <instance-dir> --ssh-key ~/.ssh/<key>   # only reads
-bivy rebuild <instance-dir> --ssh-key ~/.ssh/<key>
+bivy rebuild --plan <instance-dir>   # only reads
+bivy rebuild <instance-dir>
 ```
+
+`--ssh-key ~/.ssh/<key>` only for another key than the one `bivy` remembers
+(D112).
 
 In a terminal, every choice below is a question with the arrow keys (D93);
 the flag in brackets answers it without one. The typed confirmation has no

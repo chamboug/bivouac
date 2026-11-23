@@ -141,6 +141,8 @@ Verified: GHCR accepts only classic PATs; on GitHub Free organization secrets do
 
 TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talks to official APIs directly and depends on neither `gh`, `hcloud` nor `sops` (D31); it asks for each credential itself and keeps it in `~/.config/bivouac/` (D93). Adapters behind written contracts: [`docs/adapters.md`](adapters.md).
 
+The commands that reach the server log in with `--ssh-key`, else the key remembered in `~/.config/bivouac/ssh-key`, else the one key in `~/.ssh`; with several, a person at a terminal picks one from a list, once, and `bivy init` remembers the key it set up; without a terminal, `~/.ssh/id_ed25519` as before (`ssh-key.ts`, D112).
+
 | Command | What it does | State |
 |---|---|---|
 | `bivy validate` | The instance repo's checks (D48) | used by CI |

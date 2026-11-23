@@ -492,6 +492,6 @@ export function summary(state: InitState): string {
     ...(later.length > 0 ? [`  Left for later: ${later.map((part) => `bivy configure ${part}`).join(", ")}${later.includes("backups") ? ". Without backups, keep no real data on it" : ""}.`] : []),
     ...(answers.parts.mail ? ["  Check the mail: Pocket ID → Application Configuration → Email → Send test email."] : []),
     ...(answers.parts.backups ? ["  The first backup runs tonight at 02:00 UTC (D74)."] : []),
-    "  Reach the server with: bivy ssh " + answers.dir + ` --ssh-key ${answers.sshKey}`,
+    `  Reach the server with: bivy ssh ${answers.dir} (with ${answers.sshKey}, remembered for the next commands).`,
   ].join("\n");
 }

@@ -89,7 +89,7 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 | App MCPs | `mcp: true` opens `/mcp`, signed in through Pocket ID | D85 |
 | Alerts | Pushover from the server, healthchecks.io as dead man's switch, normal priority | D45, D76, D82 |
 | Status page | `status.apps.example.org`, through the reconciler's internal API | D8, D96 |
-| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore [app\|pocket-id]`, `status`, `backup`, `secret set`, `login-link`, `ssh`, `exec`, `validate`, `pin` | D31, D91, D93, D99, D101, D104, D105, D106, D107, D108, D110 |
+| CLI | `bivy init`, `configure`, `rebuild [--test]`, `restore [app\|pocket-id]`, `status`, `backup`, `secret set`, `login-link`, `ssh`, `exec`, `validate`, `pin` | D31, D91, D93, D99, D101, D104, D105, D106, D107, D108, D110, D112 |
 | Rebuild | `bivy rebuild --test` every 3 months, the only proof the platform comes back | D39, D91 |
 
 ## Conventions for Claude

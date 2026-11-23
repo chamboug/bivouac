@@ -24,6 +24,7 @@ import { REFUSED, SETTABLE, SecretError, setSecret } from "./secret.js";
 import { RebuildError, instanceIdentity } from "./rebuild.js";
 import { checkoutProblems } from "./rebuild-real.js";
 import { SopsError, dockerSops } from "./sops.js";
+import { machineSshKey } from "./ssh-key.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -44,7 +45,7 @@ Commands:
   exec [app] [-- command...]  run a command in an app's container; with no
                               command, a shell; with no app, choose it from a list
       --instance <dir>        the instance repo (default: the current directory)
-      --ssh-key <file>        default ~/.ssh/id_ed25519
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
 
   status [dir]                how the platform is: containers, last pass, backups,
                               host, open incidents; only reads (D104)
@@ -83,7 +84,7 @@ Commands:
       --before <date>         the latest nightly copy at or before that day (UTC)
       --only database|files   one part only (default: both)
       --instance <dir>        the instance repo (default: the current directory)
-      --ssh-key <file>        default ~/.ssh/id_ed25519
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
 
   rebuild [dir]               rebuild the real server from its backups, on the
                               same IPs (D91). Erases the server: a decision of its
@@ -95,7 +96,7 @@ Commands:
                               written since its last nightly copy
       --snapshot <id>         bring back this backup copy, not the latest
       --abandon               forget a rebuild that stopped before erasing anything
-      --ssh-key <file>        default ~/.ssh/id_ed25519
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
       --age-key <file>        default ~/.config/sops/age/keys.txt (in a terminal,
                               it can also be pasted)
 
@@ -108,7 +109,7 @@ Commands:
       --location, --server-type   where the test server goes (default: cx23
                               where it can be ordered)
       --snapshot <id>         bring back this backup copy, not the latest
-      --ssh-key <file>        default ~/.ssh/id_ed25519
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
       --age-key <file>        default ~/.config/sops/age/keys.txt
       --hetzner-token <file>  default ~/.config/bivouac/hetzner-token
       --github-token <file>   default ~/.config/bivouac/github-rebuild-token
@@ -298,12 +299,9 @@ async function ssh(root: string, app: string | null | undefined, command: string
     return 1;
   }
   const tty = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  const identity = sshKey ?? join(homedir(), ".ssh", "id_ed25519");
+  const identity = await machineSshKey(sshKey);
+  if (!identity) return 1;
   const knownHosts = config("known_hosts");
-  if (!existsSync(identity)) {
-    console.error(`No SSH key at ${identity}: pass the right one with --ssh-key <file>.`);
-    return 1;
-  }
   if (!existsSync(knownHosts)) {
     console.error(`No known host key for the platform in ${knownHosts}: without it, nothing proves the server is ours (runbook section 8).`);
     return 1;
@@ -349,12 +347,9 @@ async function restore(root: string, app: string | undefined, values: Record<str
     return 1;
   }
   const text = (name: string) => (typeof values[name] === "string" ? (values[name] as string) : undefined);
-  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
+  const identity = await machineSshKey(text("ssh-key"));
+  if (!identity) return 1;
   const knownHosts = config("known_hosts");
-  if (!existsSync(identity)) {
-    console.error(`No SSH key at ${identity}: pass the right one with --ssh-key <file>.`);
-    return 1;
-  }
   if (!existsSync(knownHosts)) {
     console.error(`No known host key for the platform in ${knownHosts}: without it, nothing proves the server is ours (runbook section 8).`);
     return 1;
@@ -408,12 +403,9 @@ async function server(root: string, sshKey: string | undefined): Promise<{ host:
     console.error(`No valid platform.yml in ${root}: run bivy from the instance repo, or pass it (bivy status <dir>).`);
     return undefined;
   }
-  const identity = sshKey ?? join(homedir(), ".ssh", "id_ed25519");
+  const identity = await machineSshKey(sshKey);
+  if (!identity) return undefined;
   const knownHosts = config("known_hosts");
-  if (!existsSync(identity)) {
-    console.error(`No SSH key at ${identity}: pass the right one with --ssh-key <file>.`);
-    return undefined;
-  }
   if (!existsSync(knownHosts)) {
     console.error(`No known host key for the platform in ${knownHosts}: without it, nothing proves the server is ours (runbook section 8).`);
     return undefined;

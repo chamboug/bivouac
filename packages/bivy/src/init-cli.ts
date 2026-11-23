@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -18,6 +18,7 @@ import { SshRemote, scanHostKey } from "./remote.js";
 import { HetznerProvider } from "./server-provider.js";
 import { checkSmtp } from "./smtp.js";
 import { dockerSops } from "./sops.js";
+import { SSH_KEY_MEMORY, findSshKeys, rememberSshKey } from "./ssh-key.js";
 import { printBanner } from "./banner.js";
 import { buildButane, compileButane } from "./ignition.js";
 
@@ -79,15 +80,6 @@ async function dnsProvider(id: string, ask: Asker, zone: string): Promise<DnsPro
   const applicationSecret = await ask.secret({ path: config("ovh-application-secret"), what: "the OVH application secret" });
   const consumerKey = await ask.secret({ path: config("ovh-consumer-key"), what: "the OVH consumer key" });
   return new OvhDns({ applicationKey, applicationSecret, consumerKey });
-}
-
-function sshKeys(): { path: string; publicKey: string }[] {
-  const dir = join(homedir(), ".ssh");
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((file) => file.endsWith(".pub") && existsSync(join(dir, file.slice(0, -4))))
-    .map((file) => ({ path: join(dir, file.slice(0, -4)), publicKey: readFileSync(join(dir, file), "utf8").trim() }))
-    .filter((entry) => /^(ssh-ed25519|ecdsa-sha2-nistp\d+|sk-ssh-ed25519@openssh\.com) /.test(entry.publicKey));
 }
 
 function makeSshKey(path: string): string {
@@ -163,7 +155,7 @@ export async function initCli(argv: string[]): Promise<number> {
       probeReal: (host, path) => curlProbe(host, undefined, path, false),
       publicIpv4,
       git,
-      sshKeys,
+      sshKeys: () => findSshKeys(join(homedir(), ".ssh")),
       makeSshKey,
       ageKeyFile: AGE_KEY_FILE,
       newSshKeyPath: join(homedir(), ".ssh", "bivouac"),
@@ -174,6 +166,8 @@ export async function initCli(argv: string[]): Promise<number> {
       now: Date.now,
     };
     const state = await init(deps);
+    // The key chosen here is the one the next commands log in with (D112).
+    if (state.answers) rememberSshKey(SSH_KEY_MEMORY, state.answers.sshKey);
     console.log(`\n${summary(state)}`);
     return 0;
   } catch (error) {

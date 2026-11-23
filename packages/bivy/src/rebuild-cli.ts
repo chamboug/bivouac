@@ -13,6 +13,7 @@ import { newHostKey } from "./hostkey.js";
 import { RebuildError, cleanup, curlProbe, ignitionFor, instanceIdentity, readState, rebuildTest, unfinishedTest, type TestState } from "./rebuild.js";
 import { checkoutProblems, rebuildReal, type RealState } from "./rebuild-real.js";
 import { SshRemote, scanHostKey } from "./remote.js";
+import { machineSshKey } from "./ssh-key.js";
 import { TerminalProgress, duration, interactive, onInterrupt, terminalGuide } from "./terminal.js";
 
 /**
@@ -112,7 +113,9 @@ async function testRebuild(root: string, values: Values, hetznerToken: (path: st
   const githubTokenPath = text("github-token") ?? DEFAULT_GITHUB_TOKEN;
   const stateFile = config("rebuild-test.json");
   const knownHosts = config("known_hosts-rebuild-test");
-  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
+  // --cleanup only deletes through Hetzner's API: no key asked for.
+  const identity = values.cleanup ? "" : await machineSshKey(text("ssh-key"));
+  if (identity === undefined) return 1;
   const { progress, guide, log } = terminal();
 
   log(values.cleanup
@@ -227,7 +230,9 @@ async function realRebuild(root: string, values: Values, hetznerToken: (path: st
   }
   const instance = loadInstance(root);
   const repository = instance.platform ? repositoryPath(instance.platform.repository) : "<owner>/<instance repo>";
-  const identity = text("ssh-key") ?? join(homedir(), ".ssh", "id_ed25519");
+  // --abandon only forgets an unfinished rebuild: no key asked for.
+  const identity = values.abandon ? "" : await machineSshKey(text("ssh-key"));
+  if (identity === undefined) return 1;
   const knownHosts = config("known_hosts");
   const stateFile = config("rebuild.json");
   const { progress, guide, log } = terminal();
