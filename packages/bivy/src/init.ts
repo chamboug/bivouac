@@ -326,6 +326,11 @@ async function run(deps: InitDependencies, state: InitState): Promise<InitState>
   if (!state.done.includes("server") && existsSync(deps.knownHosts)) {
     throw new InitError(`this machine already reaches a platform (${deps.knownHosts}). bivy init makes a new one: run it as another user, or move ${dirname(deps.knownHosts)} aside first`);
   }
+  // Without one, git makes up an address from the machine's name for every commit bivy makes (D99 trial).
+  const unset = ["user.name", "user.email"].filter((key) => deps.git(".", ["config", key]).stdout.trim() === "");
+  if (unset.length > 0) {
+    throw new InitError(`git has no ${unset.join(" or ")} on this machine, and bivy commits to your instance repo in your name. Set them first, then run again:\n  git config --global user.name "Your Name"\n  git config --global user.email you@example.org\nGitHub's private address works too (GitHub → Settings → Emails).`);
+  }
   const ask = recording(deps, state);
   const { answers, parts } = await questions(deps, state, ask);
   // What was confirmed is what gets built: a flag cannot change it afterwards (rule 5).
@@ -347,7 +352,7 @@ async function run(deps: InitDependencies, state: InitState): Promise<InitState>
       `Then it pushes the configuration to ${answers.repository}, and asks again before touching the DNS of ${answers.zone}.`,
       `Parts left for later: ${PARTS.filter((part) => !answers.parts[part]).join(", ") || "none"}.`,
     ].join("\n"));
-    if (!(await ask.typed(`Type the platform domain (${answers.domain}) to go ahead:`, answers.domain))) throw new InitError("not confirmed: nothing was created");
+    while (!(await ask.typed(`Type the platform domain (${answers.domain}) to go ahead:`, answers.domain))) ask.log("  not the domain: type it again, or Ctrl-C to stop (nothing was created).");
     state.confirmed = true;
     saveState(deps.stateFile, state);
   }
@@ -424,7 +429,7 @@ async function run(deps: InitDependencies, state: InitState): Promise<InitState>
     const hasDmarc = held.some((value) => value.replace(/^"|"$/g, "").startsWith("v=DMARC1"));
     const records = wantedRecords(answers.domain, answers.zone, ipv4, hasDmarc);
     ask.log(["", `The DNS of ${answers.zone} gets:`, ...records.map((record) => `  ${fqdn(record.name, answers.zone)} ${record.type} ${record.value}`), "Nothing else is changed or removed. From then on, the sign-in page is public: its first-admin page stays refused until the next step (D15, D69)."].join("\n"));
-    if (!(await ask.typed(`Type the platform domain (${answers.domain}) to write these records:`, answers.domain))) throw new InitError("not confirmed: the DNS was not touched. Run again when ready");
+    while (!(await ask.typed(`Type the platform domain (${answers.domain}) to write these records:`, answers.domain))) ask.log("  not the domain: type it again, or Ctrl-C to stop (the DNS is not touched; run again when ready).");
     await dns.apply(answers.zone, records);
     const label = `bivy-${randomBytes(3).toString("hex")}`;
     await waitUntil(deps, "public DNS", 60 * 60_000, () => propagated(deps.dns, answers.domain, ipv4, label));
@@ -455,7 +460,7 @@ async function run(deps: InitDependencies, state: InitState): Promise<InitState>
       // Typed by whoever opened the page: no terminal control characters.
       ask.log(`  account created: ${account.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?").replace("|", ", ")}`);
       // Someone sharing this IPv4 (a carrier's NAT) could have been first: only the owner can tell.
-      if (ask.tty && !(await ask.typed("If that account is yours, type 'done' once your two passkeys are registered:", "done"))) {
+      if (ask.tty && !(await ask.typed("If that account is yours, type 'done' once your passkeys are registered (two are safer: one on each device):", "done"))) {
         throw new InitError("not confirmed as yours: /setup is still open to your address. Look in Pocket ID's admin screen, then run again (it closes the page)");
       }
     }

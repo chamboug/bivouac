@@ -1120,14 +1120,19 @@ already created at Hetzner stays, and is found again by name).
 adds a part the platform does not have yet; a part already set up is
 changed by hand (sections 10 and 12).
 
-**Typed confirmations**: a mistyped domain at the cost confirmation stops
-the run with nothing created; run again, it resumes at that question.
-After `done`, the first-admin page closes when the server next reads Git
-(a minute or two).
+**Typed confirmations**: a mistyped domain, at the cost or the DNS
+confirmation, asks again; Ctrl-C stops with nothing created (or the DNS
+untouched), and the next run resumes at that question. Anything but `done`
+after the first admin is created stops the run with `/setup` still open to
+your address. After `done`, the first-admin page closes when the server next
+reads Git (a minute or two).
+
+**Git identity**: bivy stops before any question if git has no `user.name`
+or `user.email`, since it commits to the instance repo in the owner's name.
 
 **Trying it without touching a platform you have**: run it with an empty
 home, so bivy sees none of your credentials or host keys, and give that
-home a git identity first (without one, git invents `you@machine.local`):
+home a git identity first (bivy stops without one):
 
 ```bash
 mkdir -p ~/bivy-trial && cd ~/bivy-trial && HOME=$PWD git config --global user.email you@users.noreply.github.com && HOME=$PWD git config --global user.name "Your Name"

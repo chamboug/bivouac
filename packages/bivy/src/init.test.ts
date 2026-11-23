@@ -147,6 +147,8 @@ function scriptedAsker(script: Script, log: (message: string) => void, asked: st
     },
     async typed(message, expected) {
       if (!(script.tty ?? true)) throw new AskError(`${message} needs a terminal`);
+      // Nothing left to type: the person pressed Ctrl-C, as the real asker reports it.
+      if (script.typed.length === 0) throw new AskError("cancelled: nothing more was done");
       const answer = script.typed.shift();
       asked.push(`typed:${expected}`);
       return answer === expected;
@@ -241,7 +243,8 @@ const typedAll = () => ["apps.example.org", "stored", "apps.example.org", "done"
 
 describeWithDocker("bivy init", () => {
   it("goes from an empty project to a running platform, asking for consent three times", async () => {
-    const run = setup({ answers: {}, typed: typedAll() });
+    // A typo in each domain confirmation: asked again, nothing stops (D99 trial).
+    const run = setup({ answers: {}, typed: ["apps.example.com", "apps.example.org", "stored", "apps.exmple.org", "apps.example.org", "done"] });
     const state = await init(run.deps);
 
     // The instance repo, pushed to the empty repo, valid, its secrets encrypted for the new age key.
@@ -272,7 +275,8 @@ describeWithDocker("bivy init", () => {
 
     // DNS: the wildcard and a DMARC, written only after the typed consent.
     expect(run.written).toEqual([{ type: "A", name: "*.apps", value: "203.0.113.10", ttl: 3600 }, { type: "TXT", name: "_dmarc", value: "v=DMARC1; p=none", ttl: 3600 }]);
-    expect(run.asked.filter((entry) => entry.startsWith("typed:"))).toEqual(["typed:apps.example.org", "typed:stored", "typed:apps.example.org", "typed:done"]);
+    expect(run.asked.filter((entry) => entry.startsWith("typed:"))).toEqual(["typed:apps.example.org", "typed:apps.example.org", "typed:stored", "typed:apps.example.org", "typed:apps.example.org", "typed:done"]);
+    expect(run.logs.filter((line) => line.includes("not the domain: type it again"))).toHaveLength(2);
 
     // The age key is shown once, and the state file never holds a secret.
     const secret = readFileSync(run.deps.ageKeyFile, "utf8").split("\n").find((line) => line.startsWith("AGE-SECRET-KEY-")) as string;
@@ -284,21 +288,31 @@ describeWithDocker("bivy init", () => {
     expect(summary(state)).toContain("bivy configure backups, bivy configure alerts, bivy configure mail. Without backups, keep no real data on it");
   }, 120_000);
 
-  it("creates nothing without the typed confirmation", async () => {
+  it("creates nothing without the typed confirmation: a typo asks again, Ctrl-C stops", async () => {
     const run = setup({ answers: {}, typed: ["apps.example.com"] });
-    await expect(init(run.deps)).rejects.toThrow(/not confirmed: nothing was created/);
+    await expect(init(run.deps)).rejects.toThrow(/cancelled/);
+    expect(run.logs).toContain("  not the domain: type it again, or Ctrl-C to stop (nothing was created).");
     expect(run.provider.calls).toEqual(["projectProblems"]);
     expect(existsSync(run.dir)).toBe(false);
   });
 
   it("does not print the new-repo link again when a run resumes after the repo was answered", async () => {
     const run = setup({ answers: {}, typed: ["apps.example.com"] });
-    await expect(init(run.deps)).rejects.toThrow(/not confirmed/);
+    await expect(init(run.deps)).rejects.toThrow(/cancelled/);
     expect(run.logs.filter((line) => line.includes("EMPTY PRIVATE repo"))).toHaveLength(1);
     run.logs.length = 0;
     run.deps.asker = scriptedAsker({ answers: {}, typed: ["apps.example.com"] }, (message) => run.logs.push(message), run.asked);
-    await expect(init(run.deps)).rejects.toThrow(/not confirmed/);
+    await expect(init(run.deps)).rejects.toThrow(/cancelled/);
     expect(run.logs.filter((line) => line.includes("EMPTY PRIVATE repo"))).toHaveLength(0);
+  });
+
+  it("stops before any question when git has no identity to commit with", async () => {
+    const run = setup({ answers: {}, typed: typedAll() });
+    const withIdentity = run.deps.git;
+    run.deps.git = (cwd, args) => (args[0] === "config" && args[1] === "user.email" ? { status: 1, stdout: "", stderr: "" } : withIdentity(cwd, args));
+    await expect(init(run.deps)).rejects.toThrow(/git has no user.email on this machine[\s\S]*git config --global user.email/);
+    expect(run.asked).toEqual([]);
+    expect(run.provider.calls).toEqual([]);
   });
 
   it("never asks a script to agree: the cost confirmation needs a terminal", async () => {
@@ -404,7 +418,7 @@ describeWithDocker("bivy init", () => {
 describe("bivy init without Docker", () => {
   it("leaves no state behind when a typed confirmation is refused before anything", async () => {
     const run = setup({ answers: {}, typed: ["nope"] });
-    await expect(init(run.deps)).rejects.toThrow(/not confirmed/);
+    await expect(init(run.deps)).rejects.toThrow(/cancelled/);
     const state = JSON.parse(readFileSync(run.deps.stateFile, "utf8")) as InitState;
     // The answers are kept for the next run; nothing else happened.
     expect(state.recorded.zone).toBe("example.org");
