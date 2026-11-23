@@ -82,8 +82,8 @@ export async function makeFlatcarSnapshot(deps: FlatcarDependencies, location: s
     const tokenFile = deps.config("hetzner-token-upload");
     const token = await deps.ask.secret({
       path: tokenFile,
-      what: "a TEMPORARY Hetzner token, for the snapshot tool only",
-      hint: "The snapshot tool is not Hetzner's own, and a Hetzner token opens the whole project: give it a token of its own, deleted right after.\nHetzner Console → the project → Security → API tokens → Generate (Read & Write), named 'snapshot, delete me'.",
+      what: "a SECOND Hetzner token, for the image tool only",
+      hint: "Not the one you gave earlier: only the tool that makes the server's image uses it, for about five minutes. That tool is not Hetzner's own, and a token opens your whole project, so it gets one of its own.\nYou delete it right after: bivy keeps working with your first token.\nHetzner Console → the project → Security → API tokens → Generate (Read & Write), named 'snapshot, delete me'.",
     });
     const type = uploadServerType(await deps.hetzner.serverTypes(), location, serverDisk);
     log(`  making the snapshot with a temporary ${type} in ${location} (about 5 minutes, a few cents)…`);
