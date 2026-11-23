@@ -1,0 +1,117 @@
+/*
+ * Bivouac's brand (docs/brand/README.md) on Starlight's theme variables.
+ * Starlight names its scale from "white" (strongest text) to "black" (page
+ * background), so in light mode "white" is ink and "black" is the page.
+ */
+
+:root {
+  --sl-font: "IBM Plex Sans", sans-serif;
+  --sl-font-mono: "IBM Plex Mono", monospace;
+  /* A 680 px reading column. */
+  --sl-content-width: 42.5rem;
+
+  /* Dark mode (Starlight's default). */
+  --sl-color-white: #edf0ea; /* ink */
+  --sl-color-gray-1: #edf0ea; /* ink */
+  --sl-color-gray-2: #b0b8b3; /* ink-soft: body text */
+  --sl-color-gray-3: #8e9893; /* ink-faint */
+  --sl-color-gray-4: #6b7672; /* hairline-strong */
+  --sl-color-gray-5: #2c3633; /* hairline */
+  --sl-color-gray-6: #1a2220; /* surface */
+  --sl-color-black: #111715; /* background */
+
+  --sl-color-accent-low: #3d1e10;
+  --sl-color-accent: #ee6a33; /* canvas */
+  --sl-color-accent-high: #f59466; /* canvas-shade: links */
+
+  --sl-color-text: #edf0ea;
+  --sl-color-bg-nav: #111715;
+  --sl-color-bg-sidebar: #111715;
+}
+
+:root[data-theme="light"] {
+  --sl-color-white: #1a221f; /* ink */
+  --sl-color-gray-1: #1a221f; /* ink */
+  --sl-color-gray-2: #1a221f; /* ink: body text */
+  --sl-color-gray-3: #4e5955; /* ink-soft */
+  --sl-color-gray-4: #5f6965; /* ink-faint */
+  --sl-color-gray-5: #e2ddd2; /* hairline */
+  --sl-color-gray-6: #ebe6dc; /* between hairline and background: inline code */
+  --sl-color-gray-7: #ffffff; /* surface */
+  --sl-color-black: #f5f2eb; /* background */
+
+  --sl-color-accent-low: #f6dccd;
+  --sl-color-accent: #a8400f; /* canvas-shade: links, buttons */
+  --sl-color-accent-high: #7a2e0a;
+
+  --sl-color-text: #1a221f;
+  --sl-color-bg-nav: #f5f2eb;
+  --sl-color-bg-sidebar: #f5f2eb;
+  --sl-color-hairline-light: #e2ddd2;
+  --sl-color-hairline-shade: #e2ddd2;
+}
+
+/* Borders, not shadows. */
+:root {
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: none;
+}
+
+/* Headings in 600, as the brand asks. */
+.sl-markdown-content :is(h1, h2, h3, h4),
+h1#_top {
+  font-weight: 600;
+}
+
+/*
+ * A message shown on screen, used as a heading ("If something goes wrong"):
+ * the size of body text, in monospace, so it reads as the screen's words.
+ */
+.sl-markdown-content h3:has(> code:only-child) {
+  line-height: 1.4;
+}
+.sl-markdown-content h3 > code:only-child {
+  font-size: inherit;
+  background: none;
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Calmer headings than Starlight's (42/35/29 px on a wide screen), and a
+ * fixed space above them instead of 1.5 times their size.
+ */
+:root {
+  --sl-text-h1: var(--sl-text-4xl); /* 35 px */
+  --sl-text-h2: var(--sl-text-2xl); /* 24 px */
+  --sl-text-h3: var(--sl-text-lg); /* 18 px */
+}
+.sl-markdown-content :not(h1, h2, h3, h4, h5, h6, .sl-heading-wrapper) + .sl-heading-wrapper.level-h2 {
+  margin-top: 2.5rem;
+}
+.sl-markdown-content :not(h1, h2, h3, h4, h5, h6, .sl-heading-wrapper) + .sl-heading-wrapper.level-h3 {
+  margin-top: 1.75rem;
+}
+
+/*
+ * Inline code (the owner's choice, 23 Nov. 2026): dark brick on a light
+ * brick tint, from the brand's orange (6.6:1 light, 6.8:1 dark). Darker than
+ * links (canvas-shade), which keep their underline. Code blocks stay on night.
+ */
+:root {
+  --bivouac-code-ink: #f59466;
+  --bivouac-code-tint: #33201a;
+}
+:root[data-theme="light"] {
+  --bivouac-code-ink: #8f2f0b;
+  --bivouac-code-tint: #f8e4d8;
+}
+.sl-markdown-content :not(pre) > code {
+  color: var(--bivouac-code-ink);
+  background-color: var(--bivouac-code-tint);
+}
+/* A message used as a heading stays in the heading's colour. */
+.sl-markdown-content h3 > code:only-child {
+  color: inherit;
+}

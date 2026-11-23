@@ -120,7 +120,7 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
 | D108 | `bivy secret set`: one platform secret changed | |
 | D109 | Base images updated once a month by Renovate; rollback on a broken Caddy or Postgres | |
 | D110 | `bivy restore pocket-id`: Pocket ID's database back to a nightly copy | |
-| D111 | The `bivy` user guide: Starlight on GitHub Pages | not built |
+| D111 | The `bivy` user guide: Starlight on GitHub Pages | started: site set up, first page |
 | D112 | `bivy` picks the SSH key from `~/.ssh` and remembers it | |
 
 ---
@@ -682,6 +682,15 @@ Status: **current** unless marked. *Deferred*: recorded, not built. *Not built*:
   - **Verified** (npm registry and website, 23 Nov. 2026): `@bivouac` is an organization with no public package, and `@bivy` is taken; `@bivouacjs` was free (created at once). npm's dispute policy: it "does not resolve squatting claims on demand" and transfers a name only for a trademark, so `@bivouac` cannot be asked for. An organization can be deleted; its packages go with it only if they can be unpublished, otherwise they are deprecated; an organization cannot be renamed (moving means republishing under the new scope).
   - **Rejected**: a standalone binary (`node --build-sea` still in active development, a bundler to add, an unsigned binary blocked by macOS when downloaded in a browser); Homebrew (one more repository to update on every release, no Windows); a Docker image (`bivy` runs Docker and needs the SSH keys itself); the unscoped name `bivy` (the owner prefers one scope for everything); `@getbivouac`, `@bivouac-sh`, `@bivouac-dev` and the like (a slogan, a domain we do not have, a development build); `@bivouac-platform` (the name of the private instance repo).
 - **Accepted**: before 1.0, a Starlight update can break the site's build; Renovate and CI show it at once, and the worst case is a guide a few days out of date.
+- **Set up** (23 Nov. 2026, the owner's wish, to judge the rendering before more pages): `guide/`, its own npm project outside the workspaces (Starlight 0.43.1, Astro 7.4.13, `starlight-llms-txt` 0.12.0, exact versions), `site`/`base` for `chamboug.github.io/bivouac`. The brand (`docs/brand/README.md`) on Starlight's variables in `guide/src/styles/bivouac.css`: IBM Plex, a 680 px column, `canvas-shade` for links, no shadow, code blocks on `night` in both themes (one Expressive Code theme, `github-dark`); after the owner's review, smaller headings with a fixed space above them, and inline code in dark brick on a brick tint (the colours in the brand's README). Built and seen on the Mac only; the GitHub Pages workflow is not written yet.
+- **The model page** (`bivy backup`, approved by the owner on 23 Nov. 2026). Every command page follows it:
+  - frontmatter `title` (the command, e.g. `bivy backup`) and `description` (one sentence); one opening sentence saying what the command does;
+  - `## Usage`: the synopsis in a `sh` block, where to run it, a table of options; `## When to use it`; `## What it does`; `## Example`; `## If something goes wrong`; `## See also`. A section with nothing to say is left out;
+  - the example is a `text` block with `frame="terminal"`: `$ ` before the command, then the lines exactly as `bivy` prints them, taken from the code, never invented; only the run a newcomer meets, variants in one sentence after it;
+  - each message under "If something goes wrong" is an `###` heading holding the message in code, as the screen says it (variable parts as `…`), followed by what it means and what to do; "On this page" lists the `##` sections only (`tableOfContents` in `guide/astro.config.mjs`, the owner's choice: the messages made it a block), the messages keeping their own link;
+  - every statement is checked against the code; what was not is said to the owner, never written;
+  - links between pages are relative (`../../reference/glossary/`), since the site lives under `/bivouac/`; no link to a page not written yet;
+  - a word shown on screen that a newcomer cannot know (`reconciler`, `pass`) gets one line in `reference/glossary.md`.
 - **Rejected**: VitePress (stable line idle for 15 months, a 2.0 migration ahead); MkDocs Material (Python beside an all-Node repo, rule 9, and its authors moving to Zensical, whose plugins do not run MkDocs ones yet); a single Markdown page on GitHub (Claude's first proposal; the owner wants a real site); an MCP server for the guide (above).
 
 ### D112 — `bivy` picks the SSH key from `~/.ssh` and remembers it

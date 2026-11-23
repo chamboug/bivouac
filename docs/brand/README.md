@@ -79,7 +79,9 @@ the logo, **`bivy`** always lower case and in monospace.
 - **GitHub**: `bivouac-avatar.png` as avatar; the README opens with the logo,
   switching with GitHub's theme through `<picture>`.
 - **Documentation site** (later): pages on `background`, a 680 px reading column,
-  links in `canvas-shade`, code blocks on `night`.
+  links in `canvas-shade`, code blocks on `night`, inline code in a dark brick
+  (`#8f2f0b`, dark mode `#f59466`) on a brick tint (`#f8e4d8`, dark mode
+  `#33201a`), 6.6:1 and more (`guide/src/styles/bivouac.css`).
 - **`bivy`**: the ASCII tent (`packages/bivy/src/banner.ts`), shown only in a
   terminal, without colour when `NO_COLOR` is set:
 
