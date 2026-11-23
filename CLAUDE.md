@@ -112,11 +112,11 @@ Details and verified facts per part: [`docs/architecture.md`](docs/architecture.
 
 ## Open items
 
-Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to plan; the second waits for its trigger and costs nothing until then.
+Three groups, sorted with the owner on 21 Nov. 2026. Only the first is work to plan (empty since 23 Nov. 2026); the second waits for its trigger and costs nothing until then.
 
 ### To do
 
-- **`bivy status` dates an open incident 1 Jan. 1970**: the reconciler's API gives the incident's pass count as its date (`openIncidents` in `api.ts`); keep a first-seen time instead. Small.
+Nothing at the moment.
 
 ### When a need comes
 

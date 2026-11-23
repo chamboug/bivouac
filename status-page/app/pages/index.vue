@@ -170,7 +170,7 @@ const backupLate = computed(() => {
         color="error"
         icon="i-lucide-triangle-alert"
         :title="incident.message"
-        :description="`Since ${ago(incident.since)} (${incident.key})`"
+        :description="incident.since ? `Since ${ago(incident.since)} (${incident.key})` : incident.key"
       />
       <UAlert
         v-for="failure in state.lastPass?.failures ?? []"

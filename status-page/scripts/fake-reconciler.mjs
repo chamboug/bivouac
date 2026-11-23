@@ -25,7 +25,11 @@ const state = () => ({
     container("bivouac-reconciler", "ghcr.io/example/bivouac-reconciler:sha-df59c98", { memory: { usedBytes: 70 * MiB, limitBytes: 3900 * MiB } }),
   ],
   backup: { lastSuccessAt: iso(16 * 3600_000), lastAttemptAt: iso(16 * 3600_000), lastError: null, restoreTestWeekPassed: 2968, restoreError: null, maintenanceError: null },
-  incidents: process.env.FAKE_INCIDENT ? [{ key: "disk:host", message: "The disk is 85% full", since: iso(3600_000) }] : [],
+  incidents: process.env.FAKE_INCIDENT ? [
+    { key: "disk:host", message: "The disk is 85% full", since: iso(3600_000) },
+    // Recorded before the first-seen time existed: no date to show.
+    { key: "app:recipes", message: "App recipes failed: unhealthy", since: null },
+  ] : [],
   host: {
     disk: { totalBytes: 31 * 1024 ** 3, availableBytes: 22 * 1024 ** 3 },
     memory: { totalBytes: 3900 * MiB, availableBytes: 2800 * MiB },

@@ -56,6 +56,20 @@ describe("one alert per incident (D45)", () => {
     expect(messages).toEqual([{ title: "Bivouac: problem", message: "App recipes failed: unhealthy", priority: null }]);
   });
 
+  it("keeps when a problem was first seen, for bivy status and the status page", async () => {
+    const { stateDir, clock, passes } = setup();
+    const first = clock.now;
+    await passes(appFails, 1);
+    clock.now += DAY;
+    await passes(appFails, CONFIRMATIONS + 3);
+    // A clean pass after the alert keeps the incident open, and its date.
+    await passes(healthy, 1);
+    clock.now += 60_000;
+    await passes(appFails, 1);
+    const saved = JSON.parse(readFileSync(join(stateDir, "alerts", "state.json"), "utf8"));
+    expect(saved.incidents["app:recipes"]).toMatchObject({ since: first });
+  });
+
   it("forgets a problem that went away before being announced", async () => {
     const { messages, passes } = setup();
     await passes(appFails, CONFIRMATIONS - 1);

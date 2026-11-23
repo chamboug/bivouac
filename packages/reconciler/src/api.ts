@@ -266,11 +266,12 @@ export function backupSummary(stateDir: string): unknown {
 /** What the alerts consider still wrong (alerts.ts). */
 export function openIncidents(stateDir: string): { key: string; message: string; since: string | null }[] {
   const state = readJson(join(stateDir, "alerts", "state.json"));
-  const incidents = (state?.incidents ?? {}) as Record<string, { message?: unknown; seen?: unknown }>;
+  const incidents = (state?.incidents ?? {}) as Record<string, { message?: unknown; since?: unknown }>;
   return Object.entries(incidents).map(([key, incident]) => ({
     key,
     message: typeof incident.message === "string" ? incident.message : "",
-    since: iso(incident.seen),
+    // `seen` is a pass count, not a date (it showed as 1 Jan. 1970).
+    since: iso(incident.since),
   }));
 }
 

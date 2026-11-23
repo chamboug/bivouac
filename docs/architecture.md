@@ -168,7 +168,7 @@ TypeScript on Node LTS (`packages/bivy`), run with `npx` or as an image. It talk
 
 ## Alerts
 
-Pushover, every message at normal priority (D45, D82). The server reports failed deployments, disk above 80%, failed backup or restore test, secrets that fail to decrypt, a refused SSH key list, and the quarterly rebuild-test reminder; one message per change of state, one reminder a day at most (D76). healthchecks.io watches the nightly backup, the weekly restore test and the reconciler heartbeat, and notifies Pushover itself.
+Pushover, every message at normal priority (D45, D82). The server reports failed deployments, disk above 80%, failed backup or restore test, secrets that fail to decrypt, a refused SSH key list, and the quarterly rebuild-test reminder; one message per change of state, one reminder a day at most (D76). Each open incident keeps the time it was first seen, which `bivy status` and the status page show; one recorded before 23 Nov. 2026 has none and shows without a date. healthchecks.io watches the nightly backup, the weekly restore test and the reconciler heartbeat, and notifies Pushover itself.
 
 ## Tests
 

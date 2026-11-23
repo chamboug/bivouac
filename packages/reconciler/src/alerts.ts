@@ -145,6 +145,9 @@ export function observeDisk(percent: number, alreadyAlerting: boolean): Observat
 const stateSchema = z.object({
   incidents: z.record(z.string(), z.object({
     message: z.string(),
+    /** When the problem was first seen (epoch ms); absent in records written before it existed. */
+    since: z.number().optional(),
+    /** Passes in a row that saw it: a count, not a date. */
     seen: z.number(),
     missed: z.number(),
     lastSent: z.number().optional(),
@@ -213,7 +216,7 @@ export class Watch {
       current.add(incident.key);
       // The first message stays: it holds the cause, and later passes may only
       // repeat that the problem is known ("failed its health check earlier").
-      const entry = (state.incidents[incident.key] ??= { message: redact(incident.message), seen: 0, missed: 0 });
+      const entry = (state.incidents[incident.key] ??= { message: redact(incident.message), since: now, seen: 0, missed: 0 });
       entry.seen += 1;
       entry.missed = 0;
       if (entry.lastSent === undefined) {

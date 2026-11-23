@@ -172,7 +172,14 @@ describe("internal API", () => {
     writeFileSync(join(stateDir, "backup", "state.json"), JSON.stringify({ attempts: 1, lastSuccessAt: 1794880825346, restoreWeek: 2968 }));
     expect(backupSummary(stateDir)).toMatchObject({ lastSuccessAt: "2026-11-17T02:00:25.346Z", restoreTestWeekPassed: 2968, lastError: null, request: null });
     mkdirSync(join(stateDir, "alerts"));
-    writeFileSync(join(stateDir, "alerts", "state.json"), JSON.stringify({ incidents: { "disk:host": { message: "Disk 85%", seen: 1794880825346, missed: 0 } } }));
-    expect(openIncidents(stateDir)).toEqual([{ key: "disk:host", message: "Disk 85%", since: "2026-11-17T02:00:25.346Z" }]);
+    writeFileSync(join(stateDir, "alerts", "state.json"), JSON.stringify({ incidents: {
+      "disk:host": { message: "Disk 85%", since: 1794880825346, seen: 3, missed: 0 },
+      "pass:failed": { message: "Older record", seen: 2, missed: 0 },
+    } }));
+    expect(openIncidents(stateDir)).toEqual([
+      { key: "disk:host", message: "Disk 85%", since: "2026-11-17T02:00:25.346Z" },
+      // Written before `since` existed: no date rather than the pass count read as one.
+      { key: "pass:failed", message: "Older record", since: null },
+    ]);
   });
 });
