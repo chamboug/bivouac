@@ -60,33 +60,15 @@ Pressing Ctrl-C, or losing the connection, stops only the display. The backup ca
 
 A failed backup counts as a failed nightly one: `bivy status` lists it and, if alerts are set up, the server sends you one a few minutes later. The next backup that works clears it.
 
-### `Still waiting: …`
-
-Shown once if the backup has not started after three minutes, with the reason. The server runs one backup or restore at a time: if another one is running, the backup starts when it ends. `bivy backup` keeps following it either way.
-
-### `The backup failed: backups are not configured on this platform`
-
-Backup storage was skipped during `bivy init`. Set it up with `bivy configure backups`.
-
-### `The backup failed: it was interrupted by a restart of the reconciler`
-
-The reconciler restarted during the backup, for example after an update. Nothing is retried on its own: run `bivy backup` again.
-
-### `The restore test failed: …`
-
-The backup itself worked, but the latest copy could not be read back. The message says why. Do not make the change you were preparing until a restore test passes.
-
-### `No SSH key at …`
-
-`bivy` found no key to use. Pass yours with `--ssh-key <file>`; the message lists the keys it found in `~/.ssh`, if any.
-
-### `No valid platform.yml in …`
-
-You are not in your instance repository. Change to its folder, or pass it: `bivy backup <dir>`.
-
-### `The server's reconciler is older than this command`
-
-The server runs a version from before `bivy backup` existed. Update the platform first.
+| The message starts with | What it means, and what to do |
+|---|---|
+| <samp>Still waiting</samp> | The backup has not started after three minutes; the reason follows. The server runs one backup or restore at a time, so it starts when the other one ends. `bivy backup` keeps following it. |
+| <samp>The backup failed: backups are not configured</samp> | Backup storage was skipped during `bivy init`. Set it up with `bivy configure backups`. |
+| <samp>The backup failed: it was interrupted by a restart</samp> | The reconciler restarted during the backup, for example after an update. Nothing is retried on its own: run `bivy backup` again. |
+| <samp>The restore test failed</samp> | The backup worked, but the latest copy could not be read back; the reason follows. Make no change that could lose data until a restore test passes. |
+| <samp>No SSH key at</samp> | `bivy` found no key to use. Pass yours with `--ssh-key <file>`; the message lists the keys it found in `~/.ssh`, if any. |
+| <samp>No valid platform.yml in</samp> | You are not in your instance repository. Change to its folder, or pass it: `bivy backup <dir>`. |
+| <samp>The server's reconciler is older than this command</samp> | The server runs a version from before `bivy backup` existed. Update the platform first. |
 
 ## See also
 
