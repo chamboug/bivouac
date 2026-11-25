@@ -7,8 +7,8 @@
 :root {
   --sl-font: "IBM Plex Sans", sans-serif;
   --sl-font-mono: "IBM Plex Mono", monospace;
-  /* A 680 px reading column. */
-  --sl-content-width: 42.5rem;
+  /* A 760 px reading column (Starlight's default is 720 px). */
+  --sl-content-width: 47.5rem;
 
   /* Dark mode (Starlight's default). */
   --sl-color-white: #edf0ea; /* ink */
@@ -114,4 +114,25 @@ h1#_top {
 /* A message used as a heading stays in the heading's colour. */
 .sl-markdown-content h3 > code:only-child {
   color: inherit;
+}
+
+/*
+ * "On this page" as wide as the left sidebar (the owner's wish, 25 Nov.
+ * 2026), instead of growing with the screen as Starlight's does, so the text
+ * sits centred between the two.
+ */
+:root {
+  --bivouac-toc-width: var(--sl-sidebar-width);
+}
+@media (min-width: 72rem) {
+  .right-sidebar-container {
+    width: var(--bivouac-toc-width);
+  }
+  .right-sidebar-panel .sl-container {
+    width: calc(var(--bivouac-toc-width) - 2 * var(--sl-sidebar-pad-x));
+  }
+  [data-has-sidebar][data-has-toc] .main-pane {
+    --sl-content-margin-inline: auto;
+    width: calc(100% - var(--bivouac-toc-width));
+  }
 }
