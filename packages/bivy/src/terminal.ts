@@ -1,5 +1,6 @@
 import * as prompts from "@clack/prompts";
 import { Cancelled, type Choice, type Guide, type Progress } from "./guide.js";
+import { capitalised, failed } from "./say.js";
 
 /**
  * The guide and the progress of a person at a terminal (clack), or plain
@@ -91,8 +92,8 @@ export class TerminalProgress implements Progress {
 
   fail(sentence: string): void {
     this.inStep = false;
-    if (this.spinner) this.spinner.end("✗", sentence);
-    else if (!this.tty) console.log(`✗ ${sentence}`);
+    if (this.spinner) this.spinner.end("✗", capitalised(sentence));
+    else if (!this.tty) console.log(failed(sentence));
     this.spinner = undefined;
   }
 

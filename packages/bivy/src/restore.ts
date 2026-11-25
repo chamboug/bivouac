@@ -1,6 +1,7 @@
 import type { AppManifest } from "@bivouac/manifest";
 import { Cancelled, type Guide, type Progress } from "./guide.js";
 import { shellQuote } from "./ssh.js";
+import { failed } from "./say.js";
 
 /**
  * `bivy restore <app>`, guided (D101): one app's data back to a nightly copy,
@@ -45,6 +46,10 @@ export interface RestoreRequest {
   only?: string | undefined;
   /** Only read: show the plan, change nothing. */
   plan: boolean;
+  /** Only read: list every copy of the app, with its ID. */
+  list?: boolean | undefined;
+  /** Refused: a restore is confirmed by typing, never by a flag (rule 5). */
+  yes?: boolean | undefined;
 }
 
 export interface RestoreDeps {
@@ -60,7 +65,7 @@ export interface RestoreDeps {
   timeZone?: string | undefined;
 }
 
-/** How many nightly copies the question offers; older ones by `--snapshot`. */
+/** How many nightly copies the question offers; older ones by `--list`, then `--snapshot`. */
 export const COPIES_OFFERED = 14;
 
 const RECONCILER = "bivouac-reconciler";
@@ -201,7 +206,7 @@ export async function restoreCommand(deps: RestoreDeps, request: RestoreRequest)
       return 1;
     }
     if (error instanceof RestoreError) {
-      deps.log(`✗ ${error.message}`);
+      deps.log(failed(error.message));
       return 1;
     }
     throw error;
@@ -210,6 +215,7 @@ export async function restoreCommand(deps: RestoreDeps, request: RestoreRequest)
 
 async function restore(deps: RestoreDeps, request: RestoreRequest): Promise<number> {
   const { guide, log } = deps;
+  if (request.yes) throw new RestoreError("bivy restore has no --yes: a restore replaces live data, so it is confirmed by typing the name in a terminal. Nothing was changed.");
   if (request.snapshot !== undefined && !COPY_ID.test(request.snapshot)) throw new RestoreError("--snapshot takes a copy's ID, as the list of copies shows it");
   if (request.snapshot !== undefined && request.before !== undefined) throw new RestoreError("--snapshot and --before cannot be used together");
   if (request.only !== undefined && request.only !== "database" && request.only !== "files") throw new RestoreError("--only takes 'database' or 'files'");
@@ -233,6 +239,7 @@ async function restore(deps: RestoreDeps, request: RestoreRequest): Promise<numb
     app = candidates.find((entry) => entry.name === name) as AppManifest;
   }
   const name = app.name;
+  if (request.list) return listCopies(deps, name, name);
 
   // 2. Which copy: from the server's own list, unless named.
   const snapshot = await chooseCopy(deps, name, request);
@@ -296,9 +303,26 @@ async function chooseCopy(deps: RestoreDeps, name: string, request: RestoreReque
   const nightly = readCopies(listed.stdout).filter((copy) => copy.tags.includes("nightly")).slice(0, COPIES_OFFERED);
   if (nightly.length === 0) throw new RestoreError("the server has no nightly copy yet");
   return deps.guide.select(
-    `Which nightly copy? (your computer's time; older ones: --snapshot <id>)`,
+    `Which nightly copy? (your computer's time; older ones: bivy restore ${name} --list)`,
     nightly.map((copy, index) => ({ value: copy.id, label: when(copy.time, deps.timeZone), hint: index === 0 ? `the latest, ${copy.id}` : copy.id })),
   );
+}
+
+/** `--list`: every copy that holds the app's data, newest first, with the ID `--snapshot` takes. Only reads. */
+function listCopies(deps: RestoreDeps, name: string, label: string): number {
+  const listed = deps.remote.run(restoreAppCommand(name, ["--list"]));
+  if (listed.status !== 0) throw new RestoreError(`cannot read the backup copies: ${failure(listed)}`);
+  // A safety copy holds one app's data, or Pocket ID's: only its own are listed.
+  const own = name === POCKET_ID ? "platform:pocket-id" : `app:${name}`;
+  const copies = readCopies(listed.stdout).filter((copy) => !copy.tags.includes("pre-restore") || copy.tags.includes(own));
+  if (copies.length === 0) throw new RestoreError("the server has no backup copy yet");
+  const kind = (tags: string[]) =>
+    tags.includes("pre-restore") ? "safety copy, from just before a restore" : tags.includes("incomplete") ? "incomplete: something is missing from it" : "nightly";
+  deps.log(`Backup copies of ${label}, newest first (your computer's time):`);
+  for (const copy of copies) deps.log(`  ${when(copy.time, deps.timeZone).padEnd(18)} ${copy.id}  ${kind(copy.tags)}`);
+  deps.log("");
+  deps.log(`To bring one back: bivy restore ${name} --snapshot <id>, in a terminal. Nothing was changed.`);
+  return 0;
 }
 
 const copyArgs = (snapshot: string | undefined, request: RestoreRequest) =>
@@ -340,6 +364,7 @@ async function confirm(deps: RestoreDeps, request: RestoreRequest, name: string,
  */
 async function restorePocketId(deps: RestoreDeps, request: RestoreRequest): Promise<number> {
   const { guide, log } = deps;
+  if (request.list) return listCopies(deps, POCKET_ID, "Pocket ID");
   const snapshot = await chooseCopy(deps, POCKET_ID, request);
   const plan = readPlanFor(deps, POCKET_ID, copyArgs(snapshot, request));
   const taken = when(plan.taken, deps.timeZone);
@@ -438,7 +463,7 @@ async function run(deps: RestoreDeps, name: string, label: string, plan: Plan, o
     log("");
     log(`✓ ${label} is back to the copy of ${when(plan.taken, deps.timeZone)}.`);
     if (undo) log(`  To undo it: ${undo}`);
-    if (kept) log(`  The replaced database is kept as ${kept}: not backed up, it takes room on the disk until you ask to drop it.`);
+    if (kept) log(`  The replaced database is kept as ${kept}: not backed up, it is not in the backups, and takes room on the disk: no bivy command removes it yet.`);
     return 0;
   }
   if (error) {

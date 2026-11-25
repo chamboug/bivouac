@@ -21,6 +21,7 @@ import { dockerSops } from "./sops.js";
 import { SSH_KEY_MEMORY, findSshKeys, rememberSshKey } from "./ssh-key.js";
 import { printBanner } from "./banner.js";
 import { buildButane, compileButane } from "./ignition.js";
+import { failed } from "./say.js";
 
 /**
  * `bivy init` and `bivy configure <part>`: their own flags, kept apart from
@@ -98,7 +99,7 @@ export async function initCli(argv: string[]): Promise<number> {
   try {
     parsed = parseArgs({ args: argv, allowPositionals: true, options: { ...options, help: { type: "boolean", short: "h" } } });
   } catch (error) {
-    console.error(`✗ ${(error as Error).message}`);
+    console.error(failed((error as Error).message));
     return 1;
   }
   const { positionals, values } = parsed;
@@ -172,7 +173,7 @@ export async function initCli(argv: string[]): Promise<number> {
     return 0;
   } catch (error) {
     if (error instanceof InitError || error instanceof AskError || error instanceof CredentialError || error instanceof ConfigureError || error instanceof RebuildError) {
-      console.error(`✗ ${error.message}`);
+      console.error(failed(error.message));
       if (command === "init" && existsSync(config("init.json"))) console.error("Run the same command again to carry on: answers given and steps done are kept.");
       return 1;
     }

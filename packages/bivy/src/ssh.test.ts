@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { SshError, execCommand, serverAddress, shellQuote, splitAtDoubleDash, sshArguments } from "./ssh.js";
+import { SshError, execCommand, hostCommand, serverAddress, shellQuote, splitAtDoubleDash, sshArguments } from "./ssh.js";
 
 describe("shellQuote", () => {
   it("leaves plain words alone and quotes the rest", () => {
@@ -16,6 +16,17 @@ describe("shellQuote", () => {
       const echoed = spawnSync("sh", ["-c", `printf '%s' ${shellQuote(argument)}`], { encoding: "utf8" });
       expect(echoed.stdout).toBe(argument);
     }
+  });
+});
+
+describe("hostCommand", () => {
+  it("runs bivy ssh's command on the server, each word quoted as given", () => {
+    expect(hostCommand(["docker", "logs", "--tail", "50", "bivouac-pocket-id"])).toBe("docker logs --tail 50 bivouac-pocket-id");
+    expect(hostCommand(["echo", "a b; rm -rf /"])).toBe("echo 'a b; rm -rf /'");
+  });
+
+  it("opens a shell with no command", () => {
+    expect(hostCommand([])).toBeUndefined();
   });
 });
 

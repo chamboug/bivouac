@@ -4,11 +4,11 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { generateCaddyfile, loadInstance, withStatusApp } from "@bivouac/manifest";
-import { CaddyError, validateCaddyfile } from "./caddy.js";
-import { EXAMPLE_IPV6, IPV6_PLACEHOLDER, IgnitionError, buildButane, compileButane } from "./ignition.js";
+import { loadInstance } from "@bivouac/manifest";
+import { IgnitionError, buildButane, compileButane } from "./ignition.js";
+import { validateInstance } from "./validate.js";
 import { rebuildCommand } from "./rebuild-cli.js";
-import { SshError, execCommand, serverAddress, splitAtDoubleDash, sshArguments } from "./ssh.js";
+import { SshError, execCommand, hostCommand, serverAddress, splitAtDoubleDash, sshArguments } from "./ssh.js";
 import * as prompts from "@clack/prompts";
 import { type AskSecret, CredentialError, credential } from "./credentials.js";
 import { resolve4 } from "node:dns/promises";
@@ -25,6 +25,7 @@ import { RebuildError, instanceIdentity } from "./rebuild.js";
 import { checkoutProblems } from "./rebuild-real.js";
 import { SopsError, dockerSops } from "./sops.js";
 import { machineSshKey } from "./ssh-key.js";
+import { failed } from "./say.js";
 
 const USAGE = `Usage: bivy <command> [instance-dir]
 
@@ -41,7 +42,9 @@ Commands:
                               (v1.0.<n>, D109), then validates (D106). Commits nothing.
       --instance <dir>        the instance repo (default: the current directory)
 
-  ssh [dir]                   open a shell on the server, as core
+  ssh [dir] [-- command...]   open a shell on the server, as core; with a
+                              command, run it there instead
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
   exec [app] [-- command...]  run a command in an app's container; with no
                               command, a shell; with no app, choose it from a list
       --instance <dir>        the instance repo (default: the current directory)
@@ -50,10 +53,12 @@ Commands:
   status [dir]                how the platform is: containers, last pass, backups,
                               host, open incidents; only reads (D104)
       --json                  the server's answer as it is
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
   backup [dir]                back up the platform now, instead of waiting for
                               the night, and follow it to its end; before any
                               change that can lose data (D89)
       --restore-test          also run the weekly restore test right after
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
 
   login-link <user> [dir]     a one-time sign-in link for a Pocket ID user, by
                               username or email, for an admin who lost every
@@ -61,6 +66,7 @@ Commands:
                               credential: shown only to a person at a terminal,
                               never to a script or to Claude, and never written
                               anywhere.
+      --ssh-key <file>        default: the key chosen before, else ~/.ssh
 
   secret set <path> [dir]     change one value of secrets/platform.sops.yaml (D108),
                               typed twice with hidden input; every other value is
@@ -80,6 +86,7 @@ Commands:
                               a terminal. In a terminal, it asks what the options
                               below say.
       --plan                  only read, and say what it would do
+      --list                  only read: every backup copy, with its ID
       --snapshot <id>         this copy (default: the latest nightly one)
       --before <date>         the latest nightly copy at or before that day (UTC)
       --only database|files   one part only (default: both)
@@ -148,6 +155,7 @@ async function main(argv: string[]): Promise<number> {
       yes: { type: "boolean" },
       instance: { type: "string" },
       json: { type: "boolean" },
+      list: { type: "boolean" },
       "restore-test": { type: "boolean" },
       "from-file": { type: "string" },
     },
@@ -168,7 +176,7 @@ async function main(argv: string[]): Promise<number> {
     case "rebuild":
       return rebuildCommand(root, values, hetznerToken);
     case "ssh":
-      return ssh(values.instance ? resolve(values.instance) : root, undefined, [], values["ssh-key"]);
+      return ssh(values.instance ? resolve(values.instance) : root, undefined, inner, values["ssh-key"]);
     case "exec":
       return ssh(resolve(values.instance ?? "."), positionals[1] ?? null, inner, values["ssh-key"]);
     case "restore":
@@ -190,49 +198,11 @@ async function main(argv: string[]): Promise<number> {
 }
 
 function validate(root: string): number {
-  const instance = loadInstance(root);
-  const errors = [...instance.errors];
-  // The server runs this image with the Docker socket: a tag can be pushed
-  // again by whoever can publish the package, a digest names one content
-  // (D61). Required here, at merge time, rather than in the schema, so a
-  // reconciler that reads an older platform.yml still finds its version.
-  if (instance.platform && !/@sha256:[a-f0-9]{64}$/.test(instance.platform.reconciler.image)) {
-    errors.push({
-      file: "platform.yml",
-      message: "reconciler.image must be pinned by digest (ghcr.io/<owner>/bivouac-reconciler:v<x.y.z>@sha256:<digest> or :sha-<commit>@…, D61, D109)",
-    });
+  if (!existsSync(join(root, "platform.yml"))) {
+    console.error(`✗ No platform.yml in ${root}: run bivy from the instance repo, or pass it (bivy validate <dir>).`);
+    return 1;
   }
-  // The status page holds the token of the reconciler's API: the same rule.
-  const status = instance.platform?.status;
-  if (status && !/@sha256:[a-f0-9]{64}$/.test(status.image)) {
-    errors.push({
-      file: "platform.yml",
-      message: "status.image must be pinned by digest (ghcr.io/<owner>/bivouac-status:v<x.y.z>@sha256:<digest> or :sha-<commit>@…)",
-    });
-  }
-  if (instance.sshKeys && instance.platform) {
-    try {
-      compileButane(buildButane(root, instance.platform, instance.sshKeys, readFileSync(join(root, "butane", "server.bu"), "utf8").includes(IPV6_PLACEHOLDER) ? EXAMPLE_IPV6 : undefined));
-    } catch (error) {
-      if (!(error instanceof IgnitionError)) throw error;
-      errors.push({ file: "butane/server.bu", message: error.message });
-    }
-  }
-  // Only check the Caddyfile when the manifests themselves are valid: an
-  // invalid manifest is left out of the instance and would hide its route.
-  if (instance.platform && errors.length === 0) {
-    const generated = generateCaddyfile(instance.platform, withStatusApp(instance.platform, instance.apps), instance.sites);
-    errors.push(...generated.errors);
-    if (generated.errors.length === 0) {
-      try {
-        validateCaddyfile(generated.caddyfile);
-      } catch (error) {
-        if (!(error instanceof CaddyError)) throw error;
-        errors.push({ file: "(generated Caddyfile)", message: error.message });
-      }
-    }
-  }
-
+  const { instance, errors } = validateInstance(root);
   if (errors.length > 0) {
     console.error(`✗ ${errors.length} problem${errors.length > 1 ? "s" : ""} found:\n`);
     for (const { file, message } of errors) {
@@ -307,7 +277,7 @@ async function ssh(root: string, app: string | null | undefined, command: string
     return 1;
   }
 
-  let remote: string | undefined;
+  let remote = app === undefined ? hostCommand(command) : undefined;
   if (app !== undefined) {
     const names = instance.apps.map((entry) => entry.name).sort();
     let chosen = app;
@@ -334,7 +304,7 @@ async function ssh(root: string, app: string | null | undefined, command: string
     return result.status ?? 1;
   } catch (error) {
     if (!(error instanceof SshError)) throw error;
-    console.error(`✗ ${error.message}`);
+    console.error(failed(error.message));
     return 1;
   }
 }
@@ -359,7 +329,7 @@ async function restore(root: string, app: string | undefined, values: Record<str
     host = await serverAddress(instance.platform.domain, resolve4);
   } catch (error) {
     if (!(error instanceof SshError)) throw error;
-    console.error(`✗ ${error.message}`);
+    console.error(failed(error.message));
     return 1;
   }
   const tty = interactive();
@@ -392,7 +362,7 @@ async function restore(root: string, app: string | undefined, values: Record<str
         },
       },
     },
-    { app, snapshot: text("snapshot"), before: text("before"), only: text("only"), plan: values.plan === true },
+    { app, snapshot: text("snapshot"), before: text("before"), only: text("only"), plan: values.plan === true, list: values.list === true, yes: values.yes === true },
   );
 }
 
@@ -414,7 +384,7 @@ async function server(root: string, sshKey: string | undefined): Promise<{ host:
     return { host: await serverAddress(instance.platform.domain, resolve4), identity, knownHosts, domain: instance.platform.domain };
   } catch (error) {
     if (!(error instanceof SshError)) throw error;
-    console.error(`✗ ${error.message}`);
+    console.error(failed(error.message));
     return undefined;
   }
 }
@@ -442,7 +412,7 @@ async function status(root: string, sshKey: string | undefined, json: boolean): 
     return 1;
   } catch (error) {
     if (!(error instanceof StatusError) && !(error instanceof RemoteError)) throw error;
-    console.error(`✗ ${error.message}`);
+    console.error(failed(error.message));
     return 1;
   }
 }
@@ -526,7 +496,7 @@ async function secret(args: string[], valueFile: string | undefined, ageKey: str
     return 0;
   } catch (error) {
     if (!(error instanceof SecretError) && !(error instanceof SopsError) && !(error instanceof RebuildError)) throw error;
-    console.error(`✗ ${error.message}`);
+    console.error(failed(error.message));
     if (valueFile && existsSync(valueFile)) console.error(`  The value is still in ${resolve(valueFile)}: run this again once fixed, or delete it.`);
     return 1;
   }
@@ -550,7 +520,7 @@ async function hetznerToken(path: string | undefined): Promise<string | undefine
     return await credential({ path: path ?? config("hetzner-token"), what: "the Hetzner token", hint: HETZNER_HINT }, askSecret);
   } catch (error) {
     if (!(error instanceof CredentialError)) throw error;
-    console.error(`✗ ${error.message}`);
+    console.error(failed(error.message));
     return undefined;
   }
 }

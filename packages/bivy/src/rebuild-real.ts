@@ -26,6 +26,7 @@ import {
   type RunState,
 } from "./rebuild.js";
 import type { Remote } from "./remote.js";
+import { failed } from "./say.js";
 
 /**
  * `bivy rebuild` (D91): the real platform brought back from the latest
@@ -280,7 +281,7 @@ export function describePlan(plan: RebuildPlan, domain: string): string {
       : `  Last backup of the old server: ${plan.backup.lastSuccessAt ?? "none"}. A fresh one is made first; nothing is erased if it fails.`,
     "  Afterwards: you add the new server's read-only deploy key on GitHub when asked, and remove the old one at the end.",
   ];
-  if (plan.problems.length > 0) lines.push("", "Stops here:", ...plan.problems.map((problem) => `  ✗ ${problem}`));
+  if (plan.problems.length > 0) lines.push("", "Stops here:", ...plan.problems.map((problem) => `  ${failed(problem)}`));
   return lines.join("\n");
 }
 

@@ -67,11 +67,11 @@ The link stays in your terminal's scrollback. It is worth nothing once used or a
 | <samp>Whose link? bivy login-link &lt;username or email&gt;.</samp> | The username is missing. |
 | <samp>Pocket ID has no user with that username or email.</samp> | Check the spelling. The username is the one shown in Pocket ID's user list. |
 | <samp>'…' is neither a Pocket ID username nor an email address bivy accepts …</samp> | The name holds characters a Pocket ID username cannot have. Only letters, digits and `. _ @ + -` are accepted. |
-| <samp>no bivouac-pocket-id container on the server: …</samp> | Pocket ID is not running. Run `bivy status` to see what is. |
-| <samp>the server could not be reached …</samp> | The SSH connection failed. The message says why. |
+| <samp>No bivouac-pocket-id container on the server: …</samp> | Pocket ID is not running. Run `bivy status` to see what is. |
+| <samp>The server could not be reached …</samp> | The SSH connection failed. The message says why. |
 | <samp>Pocket ID made no link: …</samp> | Pocket ID's command failed. The message gives its last words. |
 | <samp>Pocket ID answered, but not with a sign-in link: …</samp> | Pocket ID printed something `bivy` does not recognise, probably after a Pocket ID update that changed the command. No link is shown. |
-| <samp>the link is not on https://auth.…: …</samp> | Pocket ID made a link for another address than the one in your `platform.yml`. No link is shown. |
+| <samp>The link is not on https://auth.…: …</samp> | Pocket ID made a link for another address than the one in your `platform.yml`. No link is shown. |
 | <samp>No SSH key at …</samp> | `bivy` found no key to use. Pass yours with `--ssh-key <file>`; the message lists the keys it found in `~/.ssh`, if any. |
 | <samp>No valid platform.yml in …</samp> | You are not in your instance repository. Change to its folder, or pass it: `bivy login-link <user> <dir>`. |
 

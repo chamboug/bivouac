@@ -98,9 +98,9 @@ Then it prints one of these messages instead of the state, and shows nothing abo
 | <samp>No valid platform.yml in</samp> | You are not in your instance repository. Change to its folder, or pass it: `bivy status <dir>`. |
 | <samp>No SSH key at</samp> | `bivy` found no key to use. Pass yours with `--ssh-key <file>`; the message lists the keys it found in `~/.ssh`, if any. |
 | <samp>No known host key for the platform in</samp> | This computer has no record of your server's identity, so `bivy` cannot prove it is talking to your own server, and stops. |
-| <samp>cannot find the server</samp> | The domain in `platform.yml` does not point to exactly one address. The message says what it found. |
-| <samp>the server did not answer</samp> | The connection or the command on the server failed. The message ends with the last thing the server or SSH said. |
-| <samp>the server's reconciler is older than this command</samp> | The server runs a version from before `bivy status` existed. Update the platform first. |
+| <samp>Cannot find the server</samp> | The domain in `platform.yml` does not point to exactly one address. The message says what it found. |
+| <samp>The server did not answer</samp> | The connection or the command on the server failed. The message ends with the last thing the server or SSH said. |
+| <samp>The server's reconciler is older than this command</samp> | The server runs a version from before `bivy status` existed. Update the platform first. |
 
 ## See also
 

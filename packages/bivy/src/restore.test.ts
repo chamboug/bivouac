@@ -180,7 +180,7 @@ describe("bivy restore, with a person at the terminal", () => {
     expect(await restoreCommand({ apps: APPS, remote: server.remote, ...out, guide: at.guide, typed: at.typed }, request())).toBe(1);
     expect(server.streamed).toEqual([]);
     expect(server.commands.some((command) => command.includes("--yes"))).toBe(false);
-    expect(out.said.join("\n")).toContain("not confirmed: nothing was changed");
+    expect(out.said.join("\n")).toContain("✗ Not confirmed: nothing was changed");
   });
 
   it("warns when the app was deployed after the copy, and stops if asked", async () => {
@@ -214,11 +214,11 @@ describe("bivy restore refuses before changing anything", () => {
   };
 
   it("while a backup or another restore runs", async () => {
-    expect(await refused({ busy: "backup" })).toContain("a backup is running on the server");
+    expect(await refused({ busy: "backup" })).toContain("✗ A backup is running on the server");
   });
 
   it("without enough free disk", async () => {
-    expect(await refused({ freeBytes: GIB })).toContain("not enough free disk");
+    expect(await refused({ freeBytes: GIB })).toContain("✗ Not enough free disk");
   });
 
   it("one part only, after an interrupted restore", async () => {
@@ -227,7 +227,7 @@ describe("bivy restore refuses before changing anything", () => {
 
   it("an app without data, or unknown", async () => {
     expect(await refused({}, { app: "static" })).toContain("nothing to restore");
-    expect(await refused({}, { app: "nope" })).toContain("no app 'nope'");
+    expect(await refused({}, { app: "nope" })).toContain("✗ No app 'nope'");
   });
 
   it("a malformed copy ID, before reaching the server", async () => {
@@ -241,7 +241,7 @@ describe("bivy restore refuses before changing anything", () => {
     const server = fakeServer({ planStatus: 1, planOutput: line("restore failed", { error: "no nightly copy at or before that date" }) });
     const out = recorder();
     expect(await restoreCommand({ apps: APPS, remote: server.remote, ...out }, request({ app: "biblio", before: "2020-01-01" }))).toBe(1);
-    expect(out.said.join("\n")).toContain("no nightly copy at or before that date");
+    expect(out.said.join("\n")).toContain("No nightly copy at or before that date");
   });
 });
 
@@ -267,6 +267,45 @@ describe("bivy restore, without a terminal (a script, Claude)", () => {
     const out = recorder();
     expect(await restoreCommand({ apps: APPS, remote: fakeServer().remote, ...out }, request())).toBe(1);
     expect(out.said.join("\n")).toContain("Apps with data: biblio, recettes");
+  });
+});
+
+describe("bivy restore --list", () => {
+  it("lists every copy of the app with its ID, newest first, its own safety copies included, and changes nothing", async () => {
+    const server = fakeServer();
+    const out = recorder();
+    const others = LIST + "\n" + line("copy", { id: "eeee5555", time: "2026-11-19T13:00:00Z", tags: ["pre-restore", "app:recettes"] });
+    const remote: RestoreRemote = { ...server.remote, run: (command) => (server.remote.run(command), { status: 0, stdout: others, stderr: "" }) };
+    expect(await restoreCommand({ apps: APPS, remote, ...out, timeZone: "UTC" }, request({ app: "biblio", list: true }))).toBe(0);
+    expect(server.commands).toEqual([expect.stringMatching(/restore-app biblio --list$/)]);
+    expect(server.streamed).toEqual([]);
+    const said = out.said.join("\n");
+    expect(said).toContain("Backup copies of biblio, newest first");
+    expect(said).toMatch(/Thu 19 Nov, 12:00 +bbbb2222 {2}safety copy, from just before a restore/);
+    expect(said).toMatch(/aaaa1111 {2}nightly/);
+    // The oldest, past the 14 the question offers.
+    expect(said).toContain("c0ffee01");
+    expect(said).not.toContain("eeee5555");
+    expect(said).toContain("To bring one back: bivy restore biblio --snapshot <id>, in a terminal.");
+  });
+
+  it("lists Pocket ID's copies", async () => {
+    const server = fakeServer();
+    const out = recorder();
+    expect(await restoreCommand({ apps: APPS, remote: server.remote, ...out }, request({ app: "pocket-id", list: true }))).toBe(0);
+    expect(server.commands).toEqual([expect.stringMatching(/restore-pocket-id --list$/)]);
+    expect(out.said.join("\n")).not.toContain("bbbb2222");
+  });
+});
+
+describe("bivy restore --yes", () => {
+  it("is refused: a restore is confirmed by typing the name", async () => {
+    const server = fakeServer();
+    const out = recorder();
+    const at = person(ANSWERS);
+    expect(await restoreCommand({ apps: APPS, remote: server.remote, ...out, guide: at.guide, typed: at.typed }, request({ app: "biblio", yes: true }))).toBe(1);
+    expect(server.commands).toEqual([]);
+    expect(out.said.join("\n")).toContain("bivy restore has no --yes");
   });
 });
 

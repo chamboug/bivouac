@@ -1,4 +1,5 @@
 import type { CommandOutput } from "./remote.js";
+import { failed } from "./say.js";
 
 /**
  * `bivy login-link <username or email>` (D107): a one-time sign-in link for
@@ -106,7 +107,7 @@ export async function loginLink(login: string | undefined, deps: LoginLinkDeps):
     return 0;
   } catch (error) {
     if (!(error instanceof LoginLinkError)) throw error;
-    deps.error(`✗ ${error.message}`);
+    deps.error(failed(error.message));
     return 1;
   }
 }

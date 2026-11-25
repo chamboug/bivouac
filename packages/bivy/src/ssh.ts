@@ -33,6 +33,14 @@ export function execCommand(app: string, command: readonly string[], tty: boolea
 }
 
 /**
+ * The command the server's shell runs for `bivy ssh -- <command>`, each word
+ * quoted as given; undefined with no command, for a shell.
+ */
+export function hostCommand(command: readonly string[]): string | undefined {
+  return command.length > 0 ? command.map(shellQuote).join(" ") : undefined;
+}
+
+/**
  * The arguments of the system's `ssh`. A person at a terminal gets a
  * terminal on the server and may be asked for their key's passphrase; a
  * script (or Claude) gets neither, and never waits for a question.

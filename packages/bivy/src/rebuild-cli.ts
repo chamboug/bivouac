@@ -15,6 +15,7 @@ import { checkoutProblems, rebuildReal, type RealState } from "./rebuild-real.js
 import { SshRemote, scanHostKey } from "./remote.js";
 import { machineSshKey } from "./ssh-key.js";
 import { TerminalProgress, duration, interactive, onInterrupt, terminalGuide } from "./terminal.js";
+import { failed } from "./say.js";
 
 /**
  * `bivy rebuild` and `bivy rebuild --test`, guided (D93): what the terminal
@@ -212,7 +213,7 @@ What is left for you:
     return 0;
   } catch (error) {
     progress.pause();
-    console.error(`✗ ${error instanceof Cancelled ? "Stopped at your request." : (error as Error).message}`);
+    console.error(failed(error instanceof Cancelled ? "Stopped at your request." : (error as Error).message));
     // The test server may hold the age key and a full copy of the data.
     const hint = leftBehind();
     if (hint) console.error(hint);
@@ -285,7 +286,7 @@ The platform's known_hosts from before the rebuild is kept in ${done.knownHostsB
     return 0;
   } catch (error) {
     progress.pause();
-    console.error(`✗ ${error instanceof Cancelled ? "Stopped at your request." : (error as Error).message}`);
+    console.error(failed(error instanceof Cancelled ? "Stopped at your request." : (error as Error).message));
     if (existsSync(stateFile)) console.error("Run 'bivy rebuild' again to carry on from where it stopped: a step already done is never repeated.");
     return 1;
   } finally {

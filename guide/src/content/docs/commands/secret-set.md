@@ -113,13 +113,13 @@ Every error below leaves the secrets file as it was.
 | <samp>… is never changed by bivy: …</samp> | The value is one of the three above. The message says why. |
 | <samp>'…' is not a value bivy can change. It can change: …</samp> | The path is misspelled, or not in the table above. |
 | <samp>… has no … yet</samp> | The value was never set, usually because that part was skipped during `bivy init`. Add it with `bivy configure`. |
-| <samp>the new value is typed by a person at a terminal …</samp> | `bivy` was not started from a terminal, so it cannot ask you. Run it in a terminal, or use `--from-file`. |
-| <samp>the instance checkout should not be changed now: …</samp> | Your instance repository has other uncommitted changes, or is not exactly what is on GitHub. Commit or undo those changes, or pull, then run it again. The encrypted file cannot be merged, so changing an old copy would undo someone else's change once pushed. |
-| <samp>the two values differ: nothing was changed</samp> | The two values you typed are not the same. Run it again. |
-| <samp>the new value of … cannot be used: …</samp> | The value is empty, holds a line break, starts or ends with a space, is longer than 4 KiB, or does not match what the table says (`https://`, at least 16 characters). The message says which. |
-| <samp>no age key at …</samp> | Your age key is not at the default place. Pass it with `--age-key <file>`. |
-| <samp>the age key file holds no key for the recipients of .sops.yaml …</samp> | The key file does not hold the key this instance repository is encrypted for. Pass the right one with `--age-key <file>`. |
-| <samp>could not run Docker (is it installed and started?): …</samp> | Start Docker, then run it again. |
+| <samp>The new value is typed by a person at a terminal …</samp> | `bivy` was not started from a terminal, so it cannot ask you. Run it in a terminal, or use `--from-file`. |
+| <samp>The instance checkout should not be changed now: …</samp> | Your instance repository has other uncommitted changes, or is not exactly what is on GitHub. Commit or undo those changes, or pull, then run it again. The encrypted file cannot be merged, so changing an old copy would undo someone else's change once pushed. |
+| <samp>The two values differ: nothing was changed</samp> | The two values you typed are not the same. Run it again. |
+| <samp>The new value of … cannot be used: …</samp> | The value is empty, holds a line break, starts or ends with a space, is longer than 4 KiB, or does not match what the table says (`https://`, at least 16 characters). The message says which. |
+| <samp>No age key at …</samp> | Your age key is not at the default place. Pass it with `--age-key <file>`. |
+| <samp>The age key file holds no key for the recipients of .sops.yaml …</samp> | The key file does not hold the key this instance repository is encrypted for. Pass the right one with `--age-key <file>`. |
+| <samp>Could not run Docker (is it installed and started?): …</samp> | Start Docker, then run it again. |
 | <samp>… is inside the instance repo, where it could be committed: …</samp> | With `--from-file`: move the file outside your instance repository. |
 | <samp>… can be read by others: it must be mode 600 …</samp> | With `--from-file`: run `chmod 600` on the file, or write it again with the command above. Other messages about the file say what is wrong with it. |
 | <samp>The value is still in …: run this again once fixed, or delete it.</samp> | Shown after an error with `--from-file`: the value is still in that file. |

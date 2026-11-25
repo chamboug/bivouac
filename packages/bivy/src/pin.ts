@@ -4,6 +4,7 @@
 // Written with the release tag of the same digest (`v1.0.<n>`), the one
 // Renovate orders in the instance repo (D109).
 import { createHash } from "node:crypto";
+import { failed } from "./say.js";
 
 export class PinError extends Error {}
 
@@ -225,7 +226,7 @@ export async function pin(dependencies: PinDependencies, part: string | undefine
       }
       throw error;
     }
-    log(`✗ ${error.message}`);
+    log(failed(error.message));
     return 1;
   }
 }

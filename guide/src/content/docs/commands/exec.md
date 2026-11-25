@@ -62,7 +62,7 @@ bivy exec notes -- node scripts/invite.mjs --uses 1
 | <samp>Which app? bivy exec &lt;app&gt; -- &lt;command&gt;. Apps: …</samp> | No app was given, and there is no terminal to choose from a list. Name the app. |
 | <samp>No app '…' in this instance. Apps: …</samp> | No manifest in your instance repository has that name. The message lists the ones that do. |
 | <samp>No known host key for the platform in …</samp> | This computer has no list of known server keys, so nothing proves the server is yours. See [`bivy ssh`](../ssh/#if-something-goes-wrong). |
-| <samp>cannot find the server: …</samp> | The address of the server could not be found from your domain. See [`bivy ssh`](../ssh/#if-something-goes-wrong). |
+| <samp>Cannot find the server: …</samp> | The address of the server could not be found from your domain. See [`bivy ssh`](../ssh/#if-something-goes-wrong). |
 | <samp>No SSH key at …</samp> | `bivy` found no key to use. Pass yours with `--ssh-key <file>`; the message lists the keys it found in `~/.ssh`, if any. |
 | <samp>No valid platform.yml in …</samp> | You are not in your instance repository. Change to its folder, or pass it: `bivy exec --instance <dir>`. |
 

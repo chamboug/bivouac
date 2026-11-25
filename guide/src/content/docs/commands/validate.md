@@ -55,7 +55,8 @@ Most messages say what to change. These are the ones that need more.
 
 | The message says | What it means, and what to do |
 |---|---|
-| <samp>platform.yml: is missing</samp> | You are not in your instance repository. Change to its folder, or pass it: `bivy validate <dir>`. |
+| <samp>No platform.yml in …: run bivy from the instance repo, or pass it (bivy validate &lt;dir&gt;).</samp> | You are not in your instance repository, or the folder does not exist. Change to its folder, or pass it: `bivy validate <dir>`. |
+| <samp>butane/server.bu: butane/server.bu is missing</samp> | The server's start configuration is not in the repository. Put it back from the repository's history. |
 | <samp>butane/server.bu: could not run Docker (is it installed and started?): …</samp> | Start Docker, then run `bivy validate` again. |
 | <samp>…: is not encrypted with SOPS (no 'sops' section): encrypt it before committing</samp> | A file in `secrets/` was saved without encryption. Do not commit it: encrypt it with `sops` first. |
 | <samp>…: has a value in plain text at '…'</samp> | A value was added to an encrypted file without going through `sops`. Do not commit it. Values are added with `sops edit <file>`, which encrypts them on save. |

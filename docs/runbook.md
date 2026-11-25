@@ -733,6 +733,7 @@ copy, without touching the other apps, Pocket ID or the reconciler's passes.
 ```bash
 bivy restore            # asks the app, the copy and the part, shows the plan, then asks to type the app's name
 bivy restore biblio --plan                   # only reads: what it would do, the disk needed and free
+bivy restore biblio --list                   # only reads: every copy with its ID, older and safety copies included
 bivy restore biblio --snapshot <id> --only database
 ```
 
@@ -1299,7 +1300,7 @@ running, and people already signed in keep using them.
 
 **1. Read before acting.** The alert says "A reconciler pass failed:
 bivouac-pocket-id … not healthy". `bivy status`, then Pocket ID's logs (the
-status page's logs, or `bivy exec` on `bivouac-pocket-id` for reading). A
+status page's logs, or `bivy ssh -- docker logs --tail 100 bivouac-pocket-id`). A
 migration that is only slow passes on its own within a few minutes: wait for
 the next passes. A "dirty" database, or a crash at every start, is broken.
 

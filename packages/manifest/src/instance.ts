@@ -48,6 +48,12 @@ const IGNORED_DIRECTORIES = new Set([".git", "node_modules"]);
 export function loadInstance(root: string): Instance {
   const errors: ValidationError[] = [];
   const report = (file: string, message: string) => errors.push({ file, message });
+  // Not an instance repo (or no folder at all): say so at once, rather than
+  // read every file below it looking for secrets.
+  if (!existsSync(join(root, "platform.yml"))) {
+    report("platform.yml", "is missing");
+    return { platform: undefined, sshKeys: undefined, apps: [], sites: [], errors };
+  }
 
   const platform = loadYaml(root, "platform.yml", platformConfigSchema, report);
   const sshKeys = loadYaml(root, "ssh-keys.yml", sshKeysSchema, report);

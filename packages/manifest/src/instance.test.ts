@@ -46,6 +46,15 @@ describe("instance repo", () => {
     expect(errorsOf(root)).toEqual([expect.stringMatching(/^ssh-keys\.yml: 'keys' must list at least one key/)]);
   });
 
+  it("stops at once in a folder with no platform.yml, or no folder at all", () => {
+    const root = mkdtempSync(join(tmpdir(), "bivouac-not-instance-"));
+    roots.push(root);
+    // A private key below it would be reported if the folder were walked.
+    write(root, "deep/id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\n");
+    expect(errorsOf(root)).toEqual(["platform.yml: is missing"]);
+    expect(errorsOf(join(root, "does-not-exist"))).toEqual(["platform.yml: is missing"]);
+  });
+
   it("a filled-in template is valid", () => {
     expect(errorsOf(makeInstance())).toEqual([]);
   });
