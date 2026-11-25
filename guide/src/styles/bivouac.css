@@ -136,3 +136,32 @@ h1#_top {
     width: calc(100% - var(--bivouac-toc-width));
   }
 }
+
+/*
+ * In a table, a short option or name in the first column stays on one line
+ * (`--ssh-key <file>`, not `--ssh-key` then `<file>`), while a long one
+ * still wraps, within 14rem.
+ */
+.sl-markdown-content td:first-child code {
+  display: inline-block;
+  width: max-content;
+  max-width: 14rem;
+  vertical-align: top;
+}
+
+/*
+ * What the screen shows, in a table or a sentence (<samp>): monospace, in
+ * the text's own colour, on a neutral tint with a hairline border. The
+ * brick colour stays for what the reader types (`code`).
+ */
+.sl-markdown-content samp {
+  font-family: var(--__sl-font-mono);
+  font-size: 0.875em;
+  color: var(--sl-color-white);
+  background-color: var(--sl-color-gray-6);
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 4px;
+  padding: 0.0625rem 0.3rem;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
