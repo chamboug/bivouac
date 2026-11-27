@@ -6,8 +6,9 @@ import { parseArgs } from "node:util";
 import { AskError, type Asker, terminalAsker } from "./ask.js";
 import { ConfigureError, PARTS, type PartName, configurePart } from "./configure.js";
 import { CredentialError } from "./credentials.js";
-import { ManualDns, publicDns, type DnsProvider } from "./dns.js";
-import { Hetzner } from "./hetzner.js";
+import { DnsError, ManualDns, publicDns, type DnsProvider } from "./dns.js";
+import { FlatcarError } from "./flatcar.js";
+import { Hetzner, HetznerError } from "./hetzner.js";
 import { newHostKey } from "./hostkey.js";
 import { InitError, init, showOnce, summary, type InitDependencies } from "./init.js";
 import { OvhDns, ovhKeysLink } from "./ovh.js";
@@ -17,10 +18,10 @@ import { checkoutProblems } from "./rebuild-real.js";
 import { SshRemote, scanHostKey } from "./remote.js";
 import { HetznerProvider } from "./server-provider.js";
 import { checkSmtp } from "./smtp.js";
-import { dockerSops } from "./sops.js";
+import { SopsError, dockerSops } from "./sops.js";
 import { SSH_KEY_MEMORY, findSshKeys, rememberSshKey } from "./ssh-key.js";
 import { printBanner } from "./banner.js";
-import { buildButane, compileButane } from "./ignition.js";
+import { IgnitionError, buildButane, compileButane } from "./ignition.js";
 import { failed } from "./say.js";
 
 /**
@@ -172,8 +173,10 @@ export async function initCli(argv: string[]): Promise<number> {
     console.log(`\n${summary(state)}`);
     return 0;
   } catch (error) {
-    if (error instanceof InitError || error instanceof AskError || error instanceof CredentialError || error instanceof ConfigureError || error instanceof RebuildError) {
-      console.error(failed(error.message));
+    // Every error bivy words itself, the steps' own included: a stack trace would hide the next line.
+    const known = [InitError, AskError, CredentialError, ConfigureError, RebuildError, FlatcarError, HetznerError, DnsError, SopsError, IgnitionError];
+    if (known.some((kind) => error instanceof kind)) {
+      console.error(failed((error as Error).message));
       if (command === "init" && existsSync(config("init.json"))) console.error("Run the same command again to carry on: answers given and steps done are kept.");
       return 1;
     }
