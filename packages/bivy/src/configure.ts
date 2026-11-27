@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { encryptedEntries, loadInstance, readSopsConfigRecipients } from "@bivouac/manifest";
 import { parse, parseDocument, stringify } from "yaml";
 import type { Asker } from "./ask.js";
-import { channels, createChecks } from "./healthchecks.js";
+import { HealthchecksError, channels, createChecks } from "./healthchecks.js";
 import { PRESETS, S3Error, checkBucket, checkDestination, checkEndpoint, regionOf, resticRepository } from "./s3.js";
-import type { Sops } from "./sops.js";
+import { type Sops, SopsError } from "./sops.js";
 
 /**
  * The parts of the platform that can wait (D93): backups, alerts and
@@ -112,10 +112,19 @@ async function askAlerts(deps: PartDependencies, domain: string): Promise<PartRe
   const pushoverToken = await ask.secret({ path: tokenFile, what: "the Pushover application's API token" });
   const pushoverUser = await ask.secret({ path: userFile, what: "your Pushover user key" });
   const apiKey = await ask.secret({ path: keyFile, what: "the healthchecks.io read-write API key" });
-  const integrations = await channels(deps.fetch, apiKey);
+  // A refusal or a network error is said plainly, never as a stack trace.
+  const healthchecks = async <T>(call: () => Promise<T>): Promise<T> => {
+    try {
+      return await call();
+    } catch (error) {
+      if (error instanceof HealthchecksError) throw new ConfigureError(`${error.message}. Fix it, or delete ${keyFile} to type the key again.`);
+      throw new ConfigureError(`could not reach healthchecks.io: ${(error as Error).message}`);
+    }
+  };
+  const integrations = await healthchecks(() => channels(deps.fetch, apiKey));
   if (integrations.length === 0) throw new ConfigureError("the healthchecks.io project has no integration: add Pushover there first (Integrations), or a missing ping would alert nobody");
   if (!integrations.some((entry) => entry.kind === "po")) ask.log("  ! no Pushover integration in that project: its alerts go to the others only");
-  const pings = await createChecks(deps.fetch, apiKey, domain);
+  const pings = await healthchecks(() => createChecks(deps.fetch, apiKey, domain));
   ask.log(`  ✓ healthchecks.io: the checks '${domain} heartbeat', 'backup' and 'restore' exist, sending to ${integrations.map((entry) => entry.name || entry.kind).join(", ")}`);
   return {
     platform: {},
@@ -175,13 +184,38 @@ export function recipientOf(root: string): string {
   return recipients[0] as string;
 }
 
-/** Decrypts the secrets file, adds the part's values, encrypts it again: plain values only in memory. */
-export function addSecrets(root: string, sops: Sops, identity: Buffer, additions: Record<string, unknown>): void {
+/** Docker missing or sops refusing is said plainly, never as a stack trace. */
+function sopsStep<T>(step: () => T): T {
+  try {
+    return step();
+  } catch (error) {
+    if (error instanceof SopsError) throw new ConfigureError(`${error.message}. Nothing was written`);
+    throw error;
+  }
+}
+
+/** Decrypts the secrets file: plain values only in memory. */
+export function decryptSecrets(root: string, sops: Sops, identity: Buffer): Record<string, unknown> {
   const file = join(root, "secrets", "platform.sops.yaml");
-  const plain = parse(sops.decrypt(readFileSync(file, "utf8"), identity)) as Record<string, unknown>;
+  return sopsStep(() => parse(sops.decrypt(readFileSync(file, "utf8"), identity)) as Record<string, unknown>);
+}
+
+/** Adds the part's values to the decrypted secrets and encrypts the file again. */
+export function addSecrets(root: string, sops: Sops, plain: Record<string, unknown>, additions: Record<string, unknown>): void {
   for (const key of Object.keys(additions)) if (key in plain) throw new ConfigureError(`the secrets already hold '${key}'`);
-  const encrypted = sops.encrypt(stringify({ ...plain, ...additions }, { lineWidth: 0 }), recipientOf(root));
-  writeFileSync(file, encrypted);
+  const encrypted = sopsStep(() => sops.encrypt(stringify({ ...plain, ...additions }, { lineWidth: 0 }), recipientOf(root)));
+  writeFileSync(join(root, "secrets", "platform.sops.yaml"), encrypted);
+}
+
+/** The age identity; a missing key file is said plainly. */
+function readIdentity(deps: ConfigureDependencies): Buffer {
+  try {
+    return deps.identity();
+  } catch (error) {
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT" ? (error as NodeJS.ErrnoException).path : undefined;
+    if (missing) throw new ConfigureError(`no age key at ${missing}: the secrets cannot be decrypted. Nothing was written`);
+    throw error;
+  }
 }
 
 export interface ConfigureDependencies extends PartDependencies {
@@ -205,10 +239,10 @@ export async function configurePart(deps: ConfigureDependencies, root: string, p
   const problems = deps.checkout();
   if (problems.length > 0) throw new ConfigureError(`the instance checkout cannot be pushed as is: ${problems.join("; ")}`);
   const result = await askPart(deps, part, instance.platform.domain);
-  // Decrypted before anything is shown: a wrong age key stops here, with nothing to keep.
-  const identity = deps.identity();
+  // Decrypted before anything is shown: a wrong age key, or Docker not running, stops here, with nothing to keep.
+  const plain = decryptSecrets(root, deps.sops, readIdentity(deps));
   if (result.keep.length > 0) await deps.showOnce(result.keep);
-  addSecrets(root, deps.sops, identity, result.secrets);
+  addSecrets(root, deps.sops, plain, result.secrets);
   if (Object.keys(result.platform).length > 0) {
     const path = join(root, "platform.yml");
     writeFileSync(path, addToPlatformYml(readFileSync(path, "utf8"), result.platform));

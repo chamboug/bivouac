@@ -9,7 +9,7 @@ import { keyFile, newAgeIdentity } from "./age.js";
 import { AskError, type Asker, terminalAsker } from "./ask.js";
 import { type ConfigureDependencies, addToPlatformYml, configurePart, configured } from "./configure.js";
 import { TEMPLATE } from "./init.js";
-import { dockerSops } from "./sops.js";
+import { SopsError, dockerSops } from "./sops.js";
 
 const hasDocker = spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 const describeWithDocker = hasDocker || process.env.CI ? describe : describe.skip;
@@ -98,6 +98,40 @@ describeWithDocker("bivy configure", () => {
       sops: dockerSops, identity: () => repo.key, checkout: () => ["uncommitted changes"], git: repo.git, showOnce: async () => {},
     };
     await expect(configurePart(deps, repo.root, "alerts")).rejects.toThrow(/cannot be pushed as is: uncommitted changes/);
+  }, 120_000);
+
+  it("says plainly what stops it, before any secret is shown, and writes nothing", async () => {
+    const repo = instance();
+    const secretsBefore = readFileSync(join(repo.root, "secrets", "platform.sops.yaml"), "utf8");
+    let shown = false;
+    const base = {
+      config: (name: string) => join(repo.config, name), checkSmtp: async () => {}, now: Date.now,
+      sops: dockerSops, identity: () => repo.key, checkout: () => [], git: repo.git,
+      showOnce: async () => {
+        shown = true;
+      },
+    };
+    const refused = (async () => new Response("{}", { status: 401 })) as typeof fetch;
+    await expect(configurePart({ ...base, ask: asker({}, { "pushover-token": "t", "pushover-user": "u", "healthchecks-api-key": "k" }), fetch: refused }, repo.root, "alerts"))
+      .rejects.toThrow(/healthchecks.io GET \/channels\/: the API key is wrong or read-only .*\. Fix it, or delete .*healthchecks-api-key to type the key again/);
+    const offline = (async () => {
+      throw new TypeError("fetch failed");
+    }) as typeof fetch;
+    await expect(configurePart({ ...base, ask: asker({}, {}), fetch: offline }, repo.root, "alerts")).rejects.toThrow(/could not reach healthchecks.io: fetch failed/);
+
+    const mail = asker({ "smtp-host": "smtp.example.org", "smtp-user": "contact@example.org" }, { "smtp-password": "p" });
+    const noKey = () => readFileSync(join(repo.config, "keys.txt"));
+    await expect(configurePart({ ...base, ask: mail, fetch: globalThis.fetch, identity: noKey }, repo.root, "mail")).rejects.toThrow(/no age key at .*keys\.txt: the secrets cannot be decrypted/);
+
+    // Docker down: found before the restic password is shown, which would otherwise be kept for nothing.
+    const emptyBucket = (async () => new Response("<ListBucketResult><KeyCount>0</KeyCount></ListBucketResult>")) as typeof fetch;
+    const noDocker = { ...dockerSops, decrypt: () => {
+      throw new SopsError("could not run Docker (is it installed and started?): spawn docker ENOENT");
+    } };
+    const backups = asker({ "backup-provider": "b2", "backup-region": "eu-central-003", "backup-bucket": "a-bucket" }, { "backup-key-id": "id", "backup-secret-key": "secret" });
+    await expect(configurePart({ ...base, ask: backups, fetch: emptyBucket, sops: noDocker }, repo.root, "backups")).rejects.toThrow(/could not run Docker .*\. Nothing was written/);
+    expect(shown).toBe(false);
+    expect(readFileSync(join(repo.root, "secrets", "platform.sops.yaml"), "utf8")).toBe(secretsBefore);
   }, 120_000);
 });
 
