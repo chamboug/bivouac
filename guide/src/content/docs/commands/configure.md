@@ -67,6 +67,8 @@ Alerts reach your phone through Pushover. healthchecks.io notices when the serve
 1. In Pushover (pushover.net): note your user key, then create an application and note its API token.
 2. In healthchecks.io: create a project; in Integrations, add Pushover; in Settings, API Keys, create a read-write key.
 
+`bivy` checks the Pushover token and user key with Pushover. The user key must have at least one device with the Pushover app. In a terminal, `bivy configure` then offers to send a test alert to your phone, and asks whether it arrived. (`bivy init` does not: the server sends one once it runs.) You can skip it. If it did not arrive, `bivy` stops: check that the Pushover app on your phone is signed in with that user key and allowed to notify, then run it again.
+
 `bivy` creates three checks in that project, named after your platform's domain: `apps.example.org heartbeat`, `apps.example.org backup` and `apps.example.org restore`. Each one sends to every integration of the project. Run again, it finds the same checks by name instead of making new ones.
 
 If the project has no Pushover integration, `bivy` warns that the alerts go to the other integrations only.
@@ -149,7 +151,9 @@ Without a terminal, a missing answer stops `bivy` with the question, and the opt
 | <samp>The instance checkout cannot be pushed as is: …</samp> | Your instance repository has uncommitted changes, or is not exactly what is on GitHub. Commit or undo those changes, or pull, then run it again. |
 | <samp>The storage refused: …</samp> | The storage did not accept the key: the reason follows (unknown key, wrong secret, no such bucket, wrong region, a key that may not list the bucket). Fix it at the provider, or delete the two key files to type them again. |
 | <samp>The bucket … is not empty</samp> | The bucket already holds files, maybe an old platform's backups. Use a new, empty bucket. |
-| <samp>Could not reach …</samp> | The storage's address is wrong, your computer is offline, or healthchecks.io is down. The address follows. |
+| <samp>Could not reach …</samp> | The storage's address is wrong, your computer is offline, or Pushover or healthchecks.io is down. What could not be reached follows. |
+| <samp>Pushover refused: …</samp> | Pushover did not accept the token or the user key: its reason follows. Fix it, or delete `~/.config/bivouac/pushover-token` and `~/.config/bivouac/pushover-user` to type them again. |
+| <samp>The test alert did not arrive</samp> | You answered that the test alert did not reach your phone. Check the Pushover app on your phone, then run it again. |
 | <samp>The healthchecks.io project has no integration</samp> | Add Pushover to the project in healthchecks.io (Integrations), then run it again. Without one, a silent server would alert nobody. |
 | <samp>healthchecks.io … the API key is wrong or read-only</samp> | Create a read-write key in the project's settings, delete `~/.config/bivouac/healthchecks-api-key`, then run it again. |
 | <samp>…:587 refused: …</samp> | The mail server refused the connection, the encryption or the login: the reason follows. Fix it, or delete `~/.config/bivouac/smtp-password` to type the password again. |

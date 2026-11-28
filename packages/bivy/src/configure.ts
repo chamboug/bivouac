@@ -3,8 +3,9 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { encryptedEntries, loadInstance, readSopsConfigRecipients } from "@bivouac/manifest";
 import { parse, parseDocument, stringify } from "yaml";
-import type { Asker } from "./ask.js";
+import { AskError, type Asker } from "./ask.js";
 import { HealthchecksError, channels, createChecks } from "./healthchecks.js";
+import { PushoverError, sendTest, validateUser } from "./pushover.js";
 import { PRESETS, S3Error, checkBucket, checkDestination, checkEndpoint, regionOf, resticRepository } from "./s3.js";
 import { type Sops, SopsError } from "./sops.js";
 
@@ -46,10 +47,14 @@ export interface PartResult {
 const EMAIL = /^[^\s@]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 
-/** Asks for one part and checks every answer against the real service. Changes nothing anywhere. */
-export async function askPart(deps: PartDependencies, part: PartName, domain: string): Promise<PartResult> {
+/**
+ * Asks for one part and checks every answer against the real service. Changes nothing anywhere.
+ * `testAlert` offers a test alert from this computer: `bivy configure` only, since `bivy init`
+ * sends one from the server once it runs.
+ */
+export async function askPart(deps: PartDependencies, part: PartName, domain: string, options: { testAlert?: boolean } = {}): Promise<PartResult> {
   if (part === "backups") return askBackups(deps);
-  if (part === "alerts") return askAlerts(deps, domain);
+  if (part === "alerts") return askAlerts(deps, domain, options.testAlert ?? false);
   return askMail(deps);
 }
 
@@ -99,7 +104,7 @@ async function askBackups(deps: PartDependencies): Promise<PartResult> {
   };
 }
 
-async function askAlerts(deps: PartDependencies, domain: string): Promise<PartResult> {
+async function askAlerts(deps: PartDependencies, domain: string, testAlert: boolean): Promise<PartResult> {
   const { ask } = deps;
   ask.log([
     "Alerts go to your phone through Pushover; healthchecks.io notices when the server goes silent (D45).",
@@ -111,6 +116,20 @@ async function askAlerts(deps: PartDependencies, domain: string): Promise<PartRe
   const keyFile = deps.config("healthchecks-api-key");
   const pushoverToken = await ask.secret({ path: tokenFile, what: "the Pushover application's API token" });
   const pushoverUser = await ask.secret({ path: userFile, what: "your Pushover user key" });
+  try {
+    await validateUser(deps.fetch, pushoverToken, pushoverUser);
+    ask.log("  ✓ Pushover: the token and the user key are valid");
+    // Optional, and only with a person to say whether it arrived.
+    if (testAlert && ask.tty && (await ask.select("test-alert", "Send a test alert to your phone now?", [{ value: "send", label: "Send one" }, { value: "skip", label: "Skip" }])) === "send") {
+      await sendTest(deps.fetch, pushoverToken, pushoverUser, domain);
+      const arrived = await ask.select("test-alert-arrived", "Did the test alert reach your phone?", [{ value: "yes", label: "Yes" }, { value: "no", label: "No" }]);
+      if (arrived === "no") throw new ConfigureError("the test alert did not arrive: check that the Pushover app on your phone is signed in with that user key and allowed to notify, then run it again");
+    }
+  } catch (error) {
+    if (error instanceof PushoverError) throw new ConfigureError(`${error.message}. Fix it, or delete ${tokenFile} and ${userFile} to type them again.`);
+    if (error instanceof ConfigureError || error instanceof AskError) throw error;
+    throw new ConfigureError(`could not reach Pushover: ${(error as Error).message}`);
+  }
   const apiKey = await ask.secret({ path: keyFile, what: "the healthchecks.io read-write API key" });
   // A refusal or a network error is said plainly, never as a stack trace.
   const healthchecks = async <T>(call: () => Promise<T>): Promise<T> => {
@@ -238,7 +257,7 @@ export async function configurePart(deps: ConfigureDependencies, root: string, p
   }
   const problems = deps.checkout();
   if (problems.length > 0) throw new ConfigureError(`the instance checkout cannot be pushed as is: ${problems.join("; ")}`);
-  const result = await askPart(deps, part, instance.platform.domain);
+  const result = await askPart(deps, part, instance.platform.domain, { testAlert: true });
   // Decrypted before anything is shown: a wrong age key, or Docker not running, stops here, with nothing to keep.
   const plain = decryptSecrets(root, deps.sops, readIdentity(deps));
   if (result.keep.length > 0) await deps.showOnce(result.keep);

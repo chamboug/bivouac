@@ -111,13 +111,16 @@ describeWithDocker("bivy configure", () => {
         shown = true;
       },
     };
-    const refused = (async () => new Response("{}", { status: 401 })) as typeof fetch;
+    // Pushover accepts the keys; healthchecks.io refuses its key.
+    const refused = (async (url: string | URL | Request) => String(url).startsWith("https://api.pushover.net/")
+      ? Response.json({ status: 1 })
+      : new Response("{}", { status: 401 })) as typeof fetch;
     await expect(configurePart({ ...base, ask: asker({}, { "pushover-token": "t", "pushover-user": "u", "healthchecks-api-key": "k" }), fetch: refused }, repo.root, "alerts"))
       .rejects.toThrow(/healthchecks.io GET \/channels\/: the API key is wrong or read-only .*\. Fix it, or delete .*healthchecks-api-key to type the key again/);
     const offline = (async () => {
       throw new TypeError("fetch failed");
     }) as typeof fetch;
-    await expect(configurePart({ ...base, ask: asker({}, {}), fetch: offline }, repo.root, "alerts")).rejects.toThrow(/could not reach healthchecks.io: fetch failed/);
+    await expect(configurePart({ ...base, ask: asker({}, {}), fetch: offline }, repo.root, "alerts")).rejects.toThrow(/could not reach Pushover: fetch failed/);
 
     const mail = asker({ "smtp-host": "smtp.example.org", "smtp-user": "contact@example.org" }, { "smtp-password": "p" });
     const noKey = () => readFileSync(join(repo.config, "keys.txt"));
