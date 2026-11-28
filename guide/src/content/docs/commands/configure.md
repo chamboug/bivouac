@@ -11,7 +11,7 @@ description: Add backups, alerts or mail to a platform that was set up without t
 bivy configure backups|alerts|mail [dir] [options]
 ```
 
-Run it on your computer, in a terminal, from the folder of your instance repository, or pass that folder as `dir`. It needs Docker running, and your age key, the key that decrypts your secrets, at `~/.config/sops/age/keys.txt`.
+Run it on your computer, in a terminal, from the folder of your instance repository, or pass that folder as `dir`. It needs Docker running, and your age key, the key that decrypts your secrets, at `~/.config/sops/age/keys.txt`. On the computer where you ran `bivy init`, it is already there: `bivy init` put it there. On another computer, copy it there from your password manager.
 
 Each question can also be answered with an option, the same ones `bivy init` takes:
 
